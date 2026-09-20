@@ -22,3 +22,6 @@ export function allowAction(userId: string): boolean {
   existing.tokens -= 1;
   return true;
 }
+
+const cleanup = setInterval(() => { const cutoff = Date.now() - 60_000; for (const [id, bucket] of buckets) if (bucket.lastRefill < cutoff) buckets.delete(id); }, 60_000);
+cleanup.unref();

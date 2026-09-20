@@ -30,3 +30,9 @@ export async function api<T>(
   }
   return body;
 }
+
+let pendingRefresh: Promise<import("@poker/shared").AuthResponse> | null = null;
+export function refreshSession() {
+  if (!pendingRefresh) pendingRefresh = api<import("@poker/shared").AuthResponse>("/api/auth/refresh", { method: "POST" }).finally(() => { pendingRefresh = null; });
+  return pendingRefresh;
+}

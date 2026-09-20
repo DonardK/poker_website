@@ -1,5 +1,6 @@
 "use client";
 
+
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SOCKET_EVENTS, type ActionType, type LegalActionSet } from "@poker/shared";
 import { getSocket } from "@/lib/socket";
@@ -7,12 +8,14 @@ import { playSound } from "@/lib/sounds";
 
 export function ActionBar({
   tableId,
+  revision,
   accessToken,
   legal,
   stack,
   pot,
 }: {
   tableId: string;
+  revision: number;
   accessToken: string;
   legal: LegalActionSet;
   stack: number;
@@ -47,6 +50,7 @@ export function ActionBar({
     playSound(action === "FOLD" ? "turn" : "chip");
     getSocket(accessToken).emit(SOCKET_EVENTS.ACTION_INTENT, {
       tableId,
+      revision,
       action,
       amount: value,
       clientActionId: crypto.randomUUID(),

@@ -122,7 +122,7 @@ function gto(
     if (equity > 0.55 || chen >= 9 - pos || bluff) return betSize(legal, pot, 0.66);
     return legal.actions.includes("CHECK") ? { action: "CHECK" } : { action: "FOLD" };
   }
-  const evCall = equity * (pot + toCall) - (1 - equity) * toCall;
+  const evCall = equity * pot - (1 - equity) * toCall;
   if (equity > 0.72 && legal.actions.includes("RAISE")) return betSize(legal, pot, 0.75);
   if (evCall > 0 || equity >= potOdds) return callOrCheck(legal);
   return foldOrCheck(legal);

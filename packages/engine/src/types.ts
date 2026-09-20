@@ -10,6 +10,7 @@ import type {
 } from "@poker/shared";
 import type { EvaluatedHand } from "@poker/shared";
 import type { BuiltPot } from "./pots.js";
+import type { DeckCommitment } from "./fairness.js";
 
 export class EngineError extends Error {
   constructor(
@@ -41,6 +42,15 @@ export interface EnginePlayer {
 }
 
 export interface EngineTable {
+  revision: number;
+  fairness: DeckCommitment | null;
+  dealtSeats: number[];
+  lastActedBet: (number | null)[];
+  actions: { seq: number; seatIndex: number; street: HandPhase; action: ActionType | "POST_SB" | "POST_BB" | "TIMEOUT_CHECK" | "TIMEOUT_FOLD"; amount: number; toAmount: number; at: string }[];
+  awards: import("@poker/shared").PotShare[];
+  refunds: { seatIndex: number; amount: number }[];
+  startedAt: number | null;
+  settledAt: number | null;
   tableId: string;
   name: string;
   maxSeats: number;

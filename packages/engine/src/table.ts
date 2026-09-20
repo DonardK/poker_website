@@ -3,6 +3,7 @@ import { burnAndDealFlop, burnAndDealOne, dealHoleCards, shuffledDeck } from "./
 import { legalActions } from "./legal.js";
 import { awardPots, buildSidePots, returnUncalledBets, type Contribution } from "./pots.js";
 import { pushLog } from "./public.js";
+import { commitDeck } from "./fairness.js";
 import {
   anyoneNeedsAction,
   contenders,
@@ -32,7 +33,15 @@ function cloneTable(table: EngineTable): EngineTable {
 }
 
 export function createTable(cfg: CreateTableConfig): EngineTable {
+  if (!Number.isInteger(cfg.maxSeats) || cfg.maxSeats < 2 || cfg.maxSeats > 9 ||
+      !Number.isSafeInteger(cfg.smallBlind) || cfg.smallBlind <= 0 || cfg.smallBlind > 100_000 ||
+      cfg.bigBlind !== cfg.smallBlind * 2 || !Number.isInteger(cfg.timeBankMs) || cfg.timeBankMs <= 0) {
+    throw new EngineError("BAD_CONFIG", "Invalid table configuration");
+  }
   return {
+    revision: 0, fairness: null, dealtSeats: [], actions: [], awards: [], refunds: [],
+    lastActedBet: Array.from({ length: cfg.maxSeats }, () => null),
+    startedAt: null, settledAt: null,
     tableId: cfg.tableId,
     name: cfg.name,
     maxSeats: cfg.maxSeats,
@@ -67,7 +76,8 @@ export function createTable(cfg: CreateTableConfig): EngineTable {
 
 export function sitDown(table: EngineTable, seatIndex: number, cfg: SeatPlayerConfig): EngineTable {
   const next = cloneTable(table);
-  if (seatIndex < 0 || seatIndex >= next.maxSeats) throw new EngineError("BAD_SEAT", "Invalid seat");
+  if (!Number.isInteger(seatIndex) || seatIndex < 0 || seatIndex >= next.maxSeats) throw new EngineError("BAD_SEAT", "Invalid seat");
+  if (!Number.isSafeInteger(cfg.buyIn) || cfg.buyIn <= 0 || cfg.buyIn > 2_000_000_000) throw new EngineError("BUYIN", "Invalid buy-in");
   if (next.players[seatIndex]) throw new EngineError("SEAT_TAKEN", "Seat is occupied");
   if (next.players.some((p) => p?.userId === cfg.userId)) {
     throw new EngineError("ALREADY_SEATED", "Already seated at this table");
@@ -104,9 +114,9 @@ export function sitOut(table: EngineTable, userId: string): EngineTable {
   const next = cloneTable(table);
   const player = requirePlayer(next, userId);
   player.sittingOut = true;
-  player.status = "SIT_OUT";
+  if (next.phase === "WAITING" || next.phase === "COMPLETE") player.status = "SIT_OUT";
   pushLog(next, player.seatIndex, `${player.username} sits out`);
-  if (next.toActSeat === player.seatIndex) return applyTimeout(next);
+  if (next.toActSeat === player.seatIndex && player.status === "ACTIVE") return applyTimeout(next);
   return next;
 }
 
@@ -124,14 +134,13 @@ export function leaveSeat(table: EngineTable, userId: string): EngineTable {
   const player = requirePlayer(next, userId);
   const inProgress = next.phase !== "WAITING" && next.phase !== "COMPLETE" && next.phase !== "SHOWDOWN";
   if (inProgress) {
-    const wasToAct = next.toActSeat === player.seatIndex;
-    player.status = "FOLDED";
     player.sittingOut = true;
     player.pendingLeave = true;
-    next.actedThisStreet[player.seatIndex] = true;
     pushLog(next, player.seatIndex, `${player.username} leaves the table`);
     next.animToken += 1;
-    if (wasToAct) progressAfterAction(next);
+    // All-in hands remain eligible. Other departures check/fold on their turn;
+    // out-of-turn folds can strand side pots with no eligible player.
+    if (next.toActSeat === player.seatIndex && player.status === "ACTIVE") return applyTimeout(next);
     return next;
   }
   next.cashOuts.push({ userId: player.userId, stack: player.stack });
@@ -142,6 +151,7 @@ export function leaveSeat(table: EngineTable, userId: string): EngineTable {
 }
 
 export function startHand(table: EngineTable, now = Date.now()): EngineTable {
+  if (table.phase !== "WAITING" && table.phase !== "COMPLETE") throw new EngineError("IN_HAND", "Hand already in progress");
   const next = cloneTable(table);
   const live = liveDealSeats(next);
   if (live.length < 2) throw new EngineError("NOT_ENOUGH_PLAYERS", "Need at least two players with chips");
@@ -165,6 +175,13 @@ export function startHand(table: EngineTable, now = Date.now()): EngineTable {
   }
 
   next.handNumber += 1;
+  next.phase = "PREFLOP";
+  next.actions = [];
+  next.awards = [];
+  next.refunds = [];
+  next.log = [];
+  next.startedAt = now;
+  next.settledAt = null;
   next.winners = [];
   next.board = [];
   next.burns = [];
@@ -184,6 +201,9 @@ export function startHand(table: EngineTable, now = Date.now()): EngineTable {
 }
 
 export function applyAction(table: EngineTable, userId: string, intent: EngineIntent, now = Date.now()): EngineTable {
+  if (intent.amount !== undefined && (!Number.isSafeInteger(intent.amount) || intent.amount <= 0)) {
+    throw new EngineError("BAD_AMOUNT", "Amount must be a positive whole number of chips");
+  }
   const next = cloneTable(table);
   if (next.toActSeat == null) throw new EngineError("NO_TURN", "No one to act");
   const player = next.players[next.toActSeat];
@@ -192,7 +212,9 @@ export function applyAction(table: EngineTable, userId: string, intent: EngineIn
   if (!legal || !legal.actions.includes(intent.action)) {
     throw new EngineError("ILLEGAL", "That action is not legal");
   }
+  const before = player.committedThisStreet;
   executeIntent(next, player, intent, legal);
+  recordAction(next, player, intent.action, player.committedThisStreet - before, now);
   next.animToken += 1;
   progressAfterAction(next, now);
   return next;
@@ -204,6 +226,7 @@ export function applyTimeout(table: EngineTable, now = Date.now()): EngineTable 
   const player = next.players[next.toActSeat];
   if (!player) return next;
   const legal = legalActions(next, player.seatIndex);
+  const before = player.committedThisStreet;
   if (legal?.actions.includes("CHECK")) {
     executeIntent(next, player, { action: "CHECK" }, legal);
   } else if (legal?.actions.includes("FOLD")) {
@@ -214,6 +237,7 @@ export function applyTimeout(table: EngineTable, now = Date.now()): EngineTable 
     pushLog(next, player.seatIndex, `${player.username} folds (time)`);
   }
   const last = next.log[next.log.length - 1];
+  recordAction(next, player, player.status === "FOLDED" ? "TIMEOUT_FOLD" : "TIMEOUT_CHECK", player.committedThisStreet - before, now);
   if (last && !last.text.endsWith("(time)")) last.text = `${last.text} (time)`;
   next.animToken += 1;
   progressAfterAction(next, now);
@@ -221,6 +245,7 @@ export function applyTimeout(table: EngineTable, now = Date.now()): EngineTable 
 }
 
 export function completeHand(table: EngineTable): EngineTable {
+  if (table.phase !== "SHOWDOWN" && table.phase !== "COMPLETE") throw new EngineError("IN_HAND", "Cannot complete an unsettled hand");
   const next = cloneTable(table);
   next.phase = "WAITING";
   next.status = "WAITING";
@@ -253,21 +278,32 @@ function assignButtonAndBlinds(table: EngineTable): void {
     table.dealerSeat = live[0]!;
   } else if (live.length === 2) {
     table.dealerSeat = nextLiveSeat(table, table.dealerSeat) ?? live[0]!;
-  } else {
+    } else {
     table.dealerSeat = nextIndex(table.dealerSeat, table.maxSeats);
   }
 
   if (live.length === 2) {
+    if (table.handNumber > 1 && table.bbSeat != null) {
+      const nextBB = nextLiveSeat(table, table.bbSeat);
+      table.dealerSeat = live.find((seat) => seat !== nextBB)!;
+    }
     if (!isLiveForDeal(table.players[table.dealerSeat])) {
       table.dealerSeat = live[0]!;
     }
     table.sbSeat = table.dealerSeat;
     table.bbSeat = nextLiveSeat(table, table.dealerSeat);
   } else {
-    table.sbSeat = nextLiveSeat(table, table.dealerSeat);
-    table.bbSeat = table.sbSeat != null ? nextLiveSeat(table, table.sbSeat) : null;
+    if (table.handNumber > 1 && table.bbSeat != null) {
+      const previousBB = table.bbSeat;
+      table.bbSeat = nextLiveSeat(table, previousBB);
+      table.sbSeat = isLiveForDeal(table.players[previousBB]) ? previousBB : null;
+      table.dealerSeat = (previousBB - 1 + table.maxSeats) % table.maxSeats;
+    } else {
+      table.sbSeat = nextLiveSeat(table, table.dealerSeat);
+      table.bbSeat = table.sbSeat != null ? nextLiveSeat(table, table.sbSeat) : null;
+    }
   }
-  if (table.sbSeat == null || table.bbSeat == null) {
+  if (table.bbSeat == null) {
     throw new EngineError("BLINDS", "Could not place blinds");
   }
 }
@@ -281,17 +317,21 @@ function postBlind(table: EngineTable, seat: number | null, amount: number, labe
   player.committedThisStreet += pay;
   player.committedThisHand += pay;
   if (player.stack === 0) player.status = "ALL_IN";
-  pushLog(table, seat, `${player.username} posts ${label} $${pay}`);
+  pushLog(table, seat, `${player.username} posts ${label} ${pay}`);
+  recordAction(table, player, label === "small blind" ? "POST_SB" : "POST_BB", pay);
 }
 
 function dealHoles(table: EngineTable): void {
   table.deck = shuffledDeck();
   const order: number[] = [];
-  let seat = table.sbSeat!;
+  // First card goes left of the button, including heads-up (the BB).
+  let seat = nextIndex(table.dealerSeat, table.maxSeats);
   for (let i = 0; i < table.maxSeats; i += 1) {
     if (receivesCards(table.players[seat])) order.push(seat);
     seat = nextIndex(seat, table.maxSeats);
   }
+  table.dealtSeats = order;
+  table.fairness = commitDeck(table.deck, table.tableId, table.handNumber);
   const dealt = dealHoleCards(table.deck, order.length);
   table.deck = dealt.deck;
   order.forEach((s, i) => {
@@ -309,10 +349,11 @@ function beginStreet(table: EngineTable, phase: EngineTable["phase"], now: numbe
     table.lastFullRaiseSize = table.bigBlind;
     table.lastAggressorSeat = null;
   } else {
-    table.currentBet = Math.max(...table.players.map((p) => p?.committedThisStreet ?? 0), 0);
+    table.currentBet = Math.max(...table.players.map((p) => p?.committedThisStreet ?? 0), table.bigBlind);
     table.lastFullRaiseSize = table.bigBlind;
   }
   table.actedThisStreet = table.actedThisStreet.map(() => false);
+  table.lastActedBet = table.lastActedBet.map(() => null);
   table.toActSeat = firstToAct(table);
   table.turnStartedAt = table.toActSeat == null ? null : now;
   refreshPots(table);
@@ -331,6 +372,9 @@ function executeIntent(
   intent: EngineIntent,
   legal: NonNullable<ReturnType<typeof legalActions>>,
 ): void {
+  if (intent.amount !== undefined && intent.amount > legal.maxRaiseTo) {
+    throw new EngineError("BAD_AMOUNT", "Bet exceeds available stack");
+  }
   switch (intent.action) {
     case "FOLD":
       player.status = "FOLDED";
@@ -387,7 +431,7 @@ function raiseTo(table: EngineTable, player: EnginePlayer, toAmount: number, all
   const raiseSize = target - table.currentBet;
   const isRaise = target > table.currentBet;
   const full = opening
-    ? target >= table.bigBlind || !allIn
+    ? target >= table.bigBlind
     : raiseSize >= table.lastFullRaiseSize;
 
   player.stack -= putting;
@@ -417,15 +461,25 @@ function progressAfterAction(table: EngineTable, now = Date.now()): void {
     settle(table, "fold");
     return;
   }
+  const canBet = alive.filter((p) => p.status === "ACTIVE" && p.stack > 0);
+  const lone = canBet[0];
+  const facing = lone ? Math.max(...alive.filter((p) => p !== lone).map((p) => p.committedThisStreet), 0) : 0;
+  if (canBet.length === 0 || (canBet.length === 1 && lone!.committedThisStreet >= facing)) {
+    runout(table);
+    settle(table, "showdown");
+    return;
+  }
   if (anyoneNeedsAction(table)) {
     const current = table.toActSeat != null ? table.players[table.toActSeat] : null;
     if (!current || !needsAction(table, current)) {
       table.toActSeat = nextToActSeat(table, table.toActSeat ?? table.dealerSeat);
     }
     table.turnStartedAt = table.toActSeat == null ? null : now;
+    if (table.toActSeat != null && table.players[table.toActSeat]?.sittingOut) {
+      Object.assign(table, applyTimeout(table, now));
+    }
     return;
   }
-  const canBet = alive.filter((p) => p.status === "ACTIVE" && p.stack > 0);
   if (canBet.length <= 1) {
     runout(table);
     settle(table, "showdown");
@@ -439,7 +493,7 @@ function progressAfterAction(table: EngineTable, now = Date.now()): void {
   const nextPhase =
     table.phase === "PREFLOP" ? "FLOP" : table.phase === "FLOP" ? "TURN" : "RIVER";
   beginStreet(table, nextPhase, now);
-  if (!anyoneNeedsAction(table)) progressAfterAction(table, now);
+  if (!anyoneNeedsAction(table) || (table.toActSeat != null && table.players[table.toActSeat]?.sittingOut)) progressAfterAction(table, now);
 }
 
 function dealNextBoard(table: EngineTable): void {
@@ -501,6 +555,9 @@ function settle(table: EngineTable, reason: "fold" | "showdown"): void {
     maxSeats: table.maxSeats,
   });
 
+  table.awards = awarded.pots;
+  table.refunds = [...awarded.returned].map(([seatIndex, amount]) => ({ seatIndex, amount }));
+  table.settledAt = Date.now();
   table.pots = awarded.pots.map((p) => ({
     potIndex: p.potIndex,
     amount: p.amount,
@@ -512,7 +569,8 @@ function settle(table: EngineTable, reason: "fold" | "showdown"): void {
     const player = table.players[seat];
     if (!player) continue;
     player.stack += amt;
-    bySeat.set(seat, (bySeat.get(seat) ?? 0) + amt);
+    const won = amt - (awarded.returned.get(seat) ?? 0);
+    if (won > 0) bySeat.set(seat, (bySeat.get(seat) ?? 0) + won);
     const ev = awarded.evaluations.get(seat);
     if (ev) player.handResult = ev;
   }
@@ -554,4 +612,9 @@ function refreshPots(table: EngineTable): void {
   }
   const { adjusted } = returnUncalledBets(contribs);
   table.pots = buildSidePots(adjusted);
+}
+
+function recordAction(table: EngineTable, player: EnginePlayer, action: EngineTable["actions"][number]["action"], amount: number, now = Date.now()): void {
+  table.actions.push({ seq: table.actions.length, seatIndex: player.seatIndex, street: table.phase, action, amount, toAmount: player.committedThisStreet, at: new Date(now).toISOString() });
+  if (action !== "POST_SB" && action !== "POST_BB") table.lastActedBet[player.seatIndex] = table.currentBet;
 }

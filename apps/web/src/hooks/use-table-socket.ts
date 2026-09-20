@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { SOCKET_EVENTS, type PublicTableState, type UserPatchPayload } from "@poker/shared";
+import { SOCKET_EVENTS, verifyTableCards, type PublicTableState, type UserPatchPayload } from "@poker/shared";
 import { getSocket } from "@/lib/socket";
 import { useAuthStore, useTableStore } from "@/stores/session";
 
@@ -21,11 +21,32 @@ export function useTableSocket(tableId: string | undefined, accessToken: string 
     const onConnect = () => {
       setSocketStatus("connected");
       socket.emit(SOCKET_EVENTS.TABLE_JOIN, { tableId });
-      socket.emit(SOCKET_EVENTS.REHYDRATE, { tableId });
+
     };
+    let cancelled = false;
+    let queue = Promise.resolve();
     const onSnap = (payload: PublicTableState) => {
-      setSnapshot(payload);
-      setSocketStatus("live");
+      if (payload.tableId !== tableId) return;
+      queue = queue.then(async () => {
+        if (cancelled) return;
+        const previous = useTableStore.getState().snapshot;
+        if (previous && payload.revision < previous.revision) return;
+        if (!await verifyTableCards(payload)) throw new Error("Card verification failed. Reconnect before playing.");
+        if (payload.fairness) {
+          const key = "poker-commit:" + tableId;
+          const commitment = JSON.stringify([payload.handNumber, payload.fairness.root, payload.fairness.dealtSeats]);
+          const prior = sessionStorage.getItem(key);
+          if (prior) {
+            const [hand] = JSON.parse(prior) as [number];
+            if (hand === payload.handNumber && prior !== commitment) throw new Error("Deck commitment changed. Stop playing this hand.");
+          }
+          sessionStorage.setItem(key, commitment);
+        }
+        if (!cancelled) { setSnapshot(payload); setSocketStatus(payload.fairness ? "cards verified" : "live"); }
+      }).catch((err: Error) => {
+        setSnapshot(null); setTableError(err.message); setSocketStatus("verification failed");
+        socket.disconnect();
+      });
     };
     const onAuth = () => setSocketStatus("authenticated");
     const onError = (payload: { code: string; message: string }) => {
@@ -52,6 +73,7 @@ export function useTableSocket(tableId: string | undefined, accessToken: string 
     }, 8_000);
 
     return () => {
+      cancelled = true;
       window.clearTimeout(watchdog);
       socket.off("connect", onConnect);
       socket.off(SOCKET_EVENTS.AUTH_OK, onAuth);

@@ -1,6 +1,7 @@
 import type { Card, HandHistoryLogEntry, PublicPlayerView, PublicTableState } from "@poker/shared";
 import { legalActions } from "./legal.js";
 import type { EngineTable } from "./types.js";
+import { cardProof } from "./fairness.js";
 
 const REVEAL_PHASES = new Set(["SHOWDOWN", "COMPLETE"]);
 
@@ -12,7 +13,21 @@ export function toPublicTableState(table: EngineTable, viewerUserId: string | nu
       ? legalActions(table, table.toActSeat)
       : null;
 
+  const players = table.players.map((p, seatIndex) => playerView(table, p, seatIndex, viewerUserId, viewerSeat, reveal));
+  const positions: number[] = [];
+  const count = table.dealtSeats.length;
+  for (const p of players) {
+    if (!p.holeCards) continue;
+    const index = table.dealtSeats.indexOf(p.seatIndex);
+    positions.push(index, index + count);
+  }
+  positions.push(...[2 * count + 1, 2 * count + 2, 2 * count + 3, 2 * count + 5, 2 * count + 7].slice(0, table.board.length));
   return {
+    revision: table.revision,
+    fairness: table.fairness ? {
+      version: "merkle-sha256-v1", context: table.fairness.context, root: table.fairness.root,
+      dealtSeats: [...table.dealtSeats], proofs: positions.map((index) => cardProof(table.fairness!, index)),
+    } : null,
     tableId: table.tableId,
     name: table.name,
     status: table.status,
@@ -25,7 +40,7 @@ export function toPublicTableState(table: EngineTable, viewerUserId: string | nu
     potTotal: table.potTotal,
     toActSeat: table.toActSeat,
     actorLegal,
-    players: table.players.map((p, seatIndex) => playerView(table, p, seatIndex, viewerUserId, viewerSeat, reveal)),
+    players,
     logTail: table.log.slice(-40),
     winners: table.winners,
     animToken: table.animToken,

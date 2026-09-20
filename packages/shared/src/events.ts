@@ -1,5 +1,5 @@
-import type { ActionType, BotProfile, HandPhase, PlayerKind, PlayerStatus, TableStatus } from "./constants";
-import type { Card } from "./poker";
+import type { ActionType, BotProfile, HandPhase, PlayerKind, PlayerStatus, TableStatus } from "./constants.js";
+import type { Card } from "./poker.js";
 
 export const SOCKET_EVENTS = {
   TABLE_JOIN: "TABLE_JOIN",
@@ -34,6 +34,7 @@ export interface SitTogglePayload {
 }
 
 export interface ActionIntentPayload {
+  revision: number;
   tableId: string;
   action: ActionType;
   /** Absolute raise-to / bet size in chips. Ignored for fold/check/call/all-in. */
@@ -96,6 +97,8 @@ export interface LegalActionSet {
 }
 
 export interface PublicTableState {
+  revision: number;
+  fairness: import("./fairness.js").PublicFairness | null;
   tableId: string;
   name: string;
   status: TableStatus;
@@ -150,6 +153,8 @@ export interface ClientToServerEvents {
 }
 
 export interface SocketData {
+  sessionId: string;
+  token: string;
   userId: string;
   username: string;
 }

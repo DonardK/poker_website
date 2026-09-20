@@ -13,13 +13,17 @@
     "dev:server": "npm run dev -w @poker/server",
     "dev:web": "npm run dev -w @poker/web",
     "build": "npm run build -w @poker/shared && npm run build -w @poker/engine && npm run build -w @poker/server && npm run build -w @poker/web",
-    "typecheck": "npm run typecheck --workspaces --if-present",
+    "typecheck": "npm run build:core && npm run typecheck --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
     "db:up": "docker compose up -d",
     "db:down": "docker compose down",
     "db:migrate": "npm run prisma:migrate -w @poker/server",
     "db:seed": "npm run prisma:seed -w @poker/server",
-    "db:reset": "npm run prisma:reset -w @poker/server"
+    "db:reset": "npm run prisma:reset -w @poker/server",
+    "build:core": "npm run build -w @poker/shared && npm run build -w @poker/engine",
+    "predev": "npm run build:core",
+    "predev:server": "npm run build:core",
+    "pretest": "npm run build:core"
   },
   "engines": {
     "node": ">=20.11.0"
@@ -27,5 +31,9 @@
   "devDependencies": {
     "concurrently": "^9.1.2",
     "typescript": "^5.9.2"
+  },
+  "overrides": {
+    "postcss": "8.5.28",
+    "deepmerge-ts": "8.0.2"
   }
 }

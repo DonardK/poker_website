@@ -5,7 +5,7 @@ export function isOccupied(p: EnginePlayer | null | undefined): p is EnginePlaye
 }
 
 export function isLiveForDeal(p: EnginePlayer | null | undefined): p is EnginePlayer {
-  return isOccupied(p) && !p.sittingOut && p.status !== "SIT_OUT" && p.stack > 0;
+  return isOccupied(p) && !p.sittingOut && p.stack > 0;
 }
 
 export function receivesCards(p: EnginePlayer | null | undefined): p is EnginePlayer {

@@ -13,7 +13,9 @@ export function legalActions(table: EngineTable, seatIndex: number): LegalAction
   const minBet = table.bigBlind;
   const minRaiseTo =
     table.currentBet === 0 ? minBet : table.currentBet + table.lastFullRaiseSize;
-  const mayRaise = !table.actedThisStreet[seatIndex];
+  const lastBet = table.lastActedBet[seatIndex];
+  const opponentCanBet = table.players.some((p) => p && p.seatIndex !== seatIndex && canAct(p));
+  const mayRaise = opponentCanBet && (!table.actedThisStreet[seatIndex] || lastBet == null || lastBet === 0 || table.currentBet - lastBet >= table.lastFullRaiseSize);
 
   const actions: ActionType[] = [];
   if (toCall === 0) {
@@ -22,14 +24,12 @@ export function legalActions(table: EngineTable, seatIndex: number): LegalAction
       if (table.currentBet === 0) actions.push("BET");
       else actions.push("RAISE");
       actions.push("ALL_IN");
-    } else if (player.stack > 0) {
-      actions.push("ALL_IN");
     }
   } else {
     actions.push("FOLD");
-    if (player.stack >= toCall) actions.push("CALL");
+    actions.push("CALL");
     if (player.stack > toCall && mayRaise) actions.push("RAISE");
-    actions.push("ALL_IN");
+    if (player.stack <= toCall || mayRaise) actions.push("ALL_IN");
   }
 
   return {

@@ -1,4 +1,4 @@
-import type { BotProfile, PlayerKind, TableStatus, UserRole } from "./constants";
+import type { BotProfile, PlayerKind, TableStatus, UserRole } from "./constants.js";
 
 export interface PublicUser {
   id: string;

@@ -113,10 +113,13 @@ model Table {
   updatedAt  DateTime    @updatedAt
   closedAt   DateTime?
 
+  stateCiphertext String?
+
   seats TableSeat[]
   hands Hand[]
 
   @@index([status])
+  @@index([hostId])
 }
 
 model TableSeat {
@@ -124,7 +127,7 @@ model TableSeat {
   tableId    String
   table      Table       @relation(fields: [tableId], references: [id], onDelete: Cascade)
   seatIndex  Int
-  userId     String?
+  userId     String?     @unique
   user       User?       @relation(fields: [userId], references: [id])
   playerKind PlayerKind  @default(HUMAN)
   botProfile BotProfile?
@@ -134,7 +137,6 @@ model TableSeat {
   joinedAt   DateTime    @default(now())
 
   @@unique([tableId, seatIndex])
-  @@index([userId])
 }
 
 model Hand {
@@ -152,6 +154,8 @@ model Hand {
   startedAt  DateTime  @default(now())
   endedAt    DateTime?
   snapshot   Json?
+  fairnessRoot String?
+  fairnessAudit String?
 
   players HandPlayer[]
   actions HandAction[]
@@ -170,6 +174,7 @@ model HandPlayer {
   playerKind    PlayerKind
   botProfile    BotProfile?
   holeCards     String[]
+  encryptedHoleCards String?
   startingStack Int
   endingStack   Int
   net           Int

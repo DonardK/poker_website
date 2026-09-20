@@ -73,7 +73,7 @@ describe("game loop", () => {
     table = sitIn(table, idleId);
     const view = toPublicTableState(table, idleId).players.find((p) => p.userId === idleId);
     expect(view?.sittingOut).toBe(false);
-    expect(view?.status).toBe("SIT_OUT");
+    expect(view?.status).toBe("ACTIVE");
   });
 
   it("rejects a raise below the minimum", () => {
@@ -232,7 +232,7 @@ describe("game loop", () => {
     let guard = 0;
     while (table.phase !== "SHOWDOWN" && table.toActSeat != null && guard < 20) {
       guard += 1;
-      table = applyAction(table, table.players[table.toActSeat]!.userId, { action: "ALL_IN" });
+      table = applyAction(table, table.players[table.toActSeat]!.userId, { action: legalActions(table, table.toActSeat!)!.actions.includes("ALL_IN") ? "ALL_IN" : "CALL" });
     }
     expect(table.phase).toBe("SHOWDOWN");
     table = completeHand(table);
@@ -319,7 +319,7 @@ describe("leaveSeat", () => {
     const leaverSeat = leaver.seatIndex;
     table = leaveSeat(table, leaverId);
     expect(table.players[leaverSeat]?.pendingLeave).toBe(true);
-    expect(table.players[leaverSeat]?.status).toBe("FOLDED");
+    expect(table.players[leaverSeat]?.status).toBe("ACTIVE");
 
     let guard = 0;
     while (table.phase !== "SHOWDOWN" && table.toActSeat != null && guard < 40) {

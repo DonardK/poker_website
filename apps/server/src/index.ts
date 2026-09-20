@@ -1,4 +1,4 @@
-import "dotenv/config";
+import { tableManager } from "./game/manager.js";
 import { createServer, type Server as HttpServer } from "node:http";
 import { createApp } from "./app.js";
 import { env } from "./config.js";
@@ -39,13 +39,16 @@ async function main() {
 
   const app = createApp();
   const httpServer = createServer(app);
-  createSocketServer(httpServer);
+  const io = createSocketServer(httpServer);
+  await tableManager.recover();
 
   await listen(httpServer, env.PORT);
   logger.info(`Poker server listening on :${env.PORT}`);
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, "shutting down");
+    tableManager.stop();
+    io.close();
     await new Promise<void>((resolve) => httpServer.close(() => resolve()));
     await prisma.$disconnect();
     await disconnectRedis();

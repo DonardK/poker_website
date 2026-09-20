@@ -14,16 +14,16 @@ import { prisma } from "../db/prisma.js";
 import { requireAuth, type AuthedRequest } from "../auth/middleware.js";
 import { tableManager } from "../game/manager.js";
 import { logger } from "../logger.js";
-import { setActiveTableForUser } from "../redis/table-state.js";
+import { EngineError } from "@poker/engine";
 
 export const tablesRouter = Router();
 
 const createTableSchema = z.object({
   name: z.string().min(1).max(40).optional(),
   maxSeats: z.number().int().min(2).max(ABSOLUTE_MAX_SEATS).optional(),
-  smallBlind: z.number().int().positive(),
-  bigBlind: z.number().int().positive(),
-  buyIn: z.number().int().positive(),
+  smallBlind: z.number().int().positive().max(100_000),
+  bigBlind: z.number().int().positive().max(200_000),
+  buyIn: z.number().int().positive().max(40_000_000),
   botCount: z.number().int().min(0).max(ABSOLUTE_MAX_SEATS - 1),
   botProfiles: z.array(z.enum(["TAG", "LOOSE_PASSIVE", "MANIAC", "GTO"])).optional(),
 });
@@ -37,7 +37,7 @@ function cycleProfiles(count: number, requested?: BotProfile[]): BotProfile[] {
 
 tablesRouter.get("/", requireAuth, async (_req, res) => {
   const tables = await prisma.table.findMany({
-    where: { status: { not: "CLOSED" } },
+    where: { status: { not: "CLOSED" }, isPrivate: false },
     include: { seats: true },
     orderBy: { createdAt: "desc" },
     take: 50,
@@ -67,7 +67,7 @@ tablesRouter.get("/:id", requireAuth, async (req, res) => {
     where: { id },
     include: { seats: { include: { user: true }, orderBy: { seatIndex: "asc" } } },
   });
-  if (!table) {
+  if (!table || (table.isPrivate && table.hostId !== (req as AuthedRequest).userId && !table.seats.some((seat) => seat.userId === (req as AuthedRequest).userId))) {
     res.status(404).json({ error: "Table not found" });
     return;
   }
@@ -124,12 +124,16 @@ tablesRouter.post("/", requireAuth, async (req: AuthedRequest, res) => {
     return;
   }
 
+  const table = await prisma.$transaction(async (tx) => {
+  const paid = await tx.user.updateMany({ where: { id: host.id, kind: "HUMAN", bankroll: { gte: body.buyIn } }, data: { bankroll: { decrement: body.buyIn } } });
+  if (!paid.count) throw new EngineError("BANKROLL", "Not enough bankroll");
+  if (await tx.tableSeat.findFirst({ where: { userId: host.id } })) throw new EngineError("ALREADY_SEATED", "Leave your current table before creating another");
   const profiles = cycleProfiles(body.botCount, body.botProfiles);
   const bots = await Promise.all(
     profiles.map(async (profile, i) => {
       const pool = BOT_USERNAMES[profile];
       const username = `${pool[i % pool.length]}_${randomBytes(3).toString("hex")}`;
-      return prisma.user.create({
+      return tx.user.create({
         data: {
           username,
           kind: "BOT",
@@ -143,7 +147,7 @@ tablesRouter.post("/", requireAuth, async (req: AuthedRequest, res) => {
     }),
   );
 
-  const table = await prisma.table.create({
+  const created = await tx.table.create({
     data: {
       name: body.name ?? `${req.username ?? "Player"}'s Table`,
       hostId: req.userId,
@@ -182,11 +186,9 @@ tablesRouter.post("/", requireAuth, async (req: AuthedRequest, res) => {
     include: { seats: true },
   });
 
-  await prisma.user.update({
-    where: { id: host.id },
-    data: { bankroll: { decrement: body.buyIn } },
-  });
-  await setActiveTableForUser(host.id, table.id);
+  return created;
+  }, { maxWait: 10_000, timeout: 20_000 });
+
   await tableManager.hydrateFromDb(table.id);
   try {
     await tableManager.tryStart(table.id);

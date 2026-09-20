@@ -7,7 +7,7 @@ healthRouter.get("/health", (_req, res) => {
   res.json({
     ok: true,
     service: "poker-server",
-    redis: redisEnabled ? "configured" : "in-memory",
+    redis: redisEnabled ? "configured" : "disabled",
     timestamp: new Date().toISOString(),
   });
 });

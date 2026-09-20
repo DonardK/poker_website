@@ -17,7 +17,7 @@ const usernameSchema = z
   .min(3)
   .max(24)
   .regex(/^[a-zA-Z0-9_]+$/);
-const passwordSchema = z.string().min(8).max(128);
+const passwordSchema = z.string().min(12).max(72).refine((v) => Buffer.byteLength(v, "utf8") <= 72);
 
 function toPublicUser(user: User): PublicUser {
   return {
@@ -55,7 +55,7 @@ async function issueSession(user: User, req: import("express").Request, res: imp
   const session = await prisma.session.create({
     data: {
       userId: user.id,
-      refreshToken: "pending",
+      refreshToken: newOpaqueId(),
       expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
       userAgent: req.headers["user-agent"]?.slice(0, 256),
       ip: req.ip,
@@ -69,7 +69,7 @@ async function issueSession(user: User, req: import("express").Request, res: imp
   setRefreshCookie(res, refreshToken);
   return {
     user: toPublicUser(user),
-    accessToken: signAccessToken(user.id, user.username),
+    accessToken: signAccessToken(user.id, user.username, session.id),
   };
 }
 
@@ -77,7 +77,7 @@ authRouter.post("/register", async (req, res) => {
   const parsed = z
     .object({
       username: usernameSchema,
-      email: z.string().email(),
+      email: z.string().email().transform((v) => v.toLowerCase()),
       password: passwordSchema,
     })
     .safeParse(req.body);
@@ -107,7 +107,7 @@ authRouter.post("/register", async (req, res) => {
 
 authRouter.post("/login", async (req, res) => {
   const parsed = z
-    .object({ username: z.string().min(1), password: z.string().min(1) })
+    .object({ username: z.string().min(1).max(24), password: z.string().min(1).max(128).refine((v) => Buffer.byteLength(v, "utf8") <= 72) })
     .safeParse(req.body);
   if (!parsed.success) {
     res.status(400).json({ error: "Invalid login payload" });
@@ -165,14 +165,15 @@ authRouter.post("/refresh", async (req, res) => {
       return;
     }
     const nextRefresh = signRefreshToken(user.id, session.id);
-    await prisma.session.update({
-      where: { id: session.id },
+    const rotated = await prisma.session.updateMany({
+      where: { id: session.id, refreshToken: hashRefresh(token) },
       data: { refreshToken: hashRefresh(nextRefresh), expiresAt: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000) },
     });
+    if (rotated.count !== 1) { res.status(401).json({ error: "Session already refreshed" }); return; }
     setRefreshCookie(res, nextRefresh);
     res.json({
       user: toPublicUser(user),
-      accessToken: signAccessToken(user.id, user.username),
+      accessToken: signAccessToken(user.id, user.username, session.id),
     });
   } catch {
     clearRefreshCookie(res);

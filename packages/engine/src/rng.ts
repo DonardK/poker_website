@@ -1,19 +1,15 @@
-import { randomBytes } from "node:crypto";
+import { randomBytes, randomInt } from "node:crypto";
 
 /**
  * Uniform integer in [0, maxExclusive) via CSPRNG with rejection sampling
  * (avoids modulo bias).
  */
 export function secureRandomInt(maxExclusive: number): number {
-  if (maxExclusive <= 0 || !Number.isInteger(maxExclusive)) {
-    throw new Error("maxExclusive must be a positive integer");
+  if (maxExclusive <= 0 || !Number.isSafeInteger(maxExclusive) || maxExclusive >= 2 ** 48) {
+    throw new Error("maxExclusive must be a positive safe integer below 2^48");
   }
   if (maxExclusive === 1) return 0;
-  const limit = Math.floor(0x1_0000_0000 / maxExclusive) * maxExclusive;
-  for (;;) {
-    const n = randomBytes(4).readUInt32BE(0);
-    if (n < limit) return n % maxExclusive;
-  }
+  return randomInt(maxExclusive);
 }
 
 export function secureRandomFloat(): number {

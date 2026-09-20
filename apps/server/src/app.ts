@@ -1,3 +1,5 @@
+import { EngineError } from "@poker/engine";
+import { logger } from "./logger.js";
 import cookieParser from "cookie-parser";
 import cors from "cors";
 import express from "express";
@@ -10,7 +12,7 @@ import { tablesRouter } from "./routes/tables.js";
 
 export function createApp() {
   const app = express();
-  app.set("trust proxy", 1);
+  app.set("trust proxy", env.TRUST_PROXY_HOPS || false);
   app.use(helmet());
   app.use(
     cors({
@@ -30,12 +32,13 @@ export function createApp() {
   );
 
   app.use("/api", healthRouter);
-  app.use("/api/auth", authRouter);
+  app.use("/api/auth", rateLimit({ windowMs: 60_000, limit: 15, standardHeaders: true, legacyHeaders: false }), authRouter);
   app.use("/api/tables", tablesRouter);
 
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
-    const message = err instanceof Error ? err.message : "Unexpected error";
-    res.status(500).json({ error: message });
+    logger.error({ err }, "request failed");
+    if (err instanceof EngineError) { res.status(409).json({ error: err.message }); return; }
+    res.status(500).json({ error: "Request could not be completed" });
   });
 
   return app;

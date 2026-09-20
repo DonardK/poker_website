@@ -78,7 +78,10 @@ export default function LoginPage() {
         ) : null}
         <input
           className="rounded-xl border border-white/15 bg-black/30 px-4 py-3"
-          placeholder="Password"
+          placeholder={mode === "register" ? "Password (12–72 characters)" : "Password"}
+          minLength={mode === "register" ? 12 : undefined}
+          maxLength={72}
+          required
           type="password"
           value={password}
           onChange={(e) => setPassword(e.target.value)}

@@ -1,40 +1,12 @@
-# Supabase inventory (AI source of truth)
+# Supabase OnlinePoker
 
-Read this folder before creating tables, migrations, Edge Functions, Auth, Storage, or a Supabase client in this repo.
+Project: `tgfudufxslhrxbdxcnyl` (OnlinePoker), region `eu-west-1`.
+Dashboard: https://supabase.com/dashboard/project/tgfudufxslhrxbdxcnyl
 
-**Snapshot date:** 2026-09-20  
-**This poker app does not use Supabase yet.** Local play uses Docker Postgres (`DATABASE_URL` in `.env.example`).
+Nine poker application tables enforce row-level security. Browser roles have no access; game requests go through the authenticated server. The limited `poker_server` login has no administrator, DDL, or RLS-bypass privileges. Completed hand records are append-only to this role. Table and user deletion is reserved for administrators to prevent cascading history removal.
 
-## What to open
+SSL enforcement is enabled. The application uses the session pooler on port 5432 with strict certificate verification and the official public Supabase CA in `apps/server/certs`. The generated password and encryption/session keys live only in the ignored root `.env`.
 
-| File | What it answers |
-| --- | --- |
-| [ACCESS.md](ACCESS.md) | Configured project vs authenticated project |
-| [mcp.md](mcp.md) | Cursor MCP setup |
-| [authenticated-account/PROJECT.md](authenticated-account/PROJECT.md) | The only project this MCP login can currently see |
+Prisma migrations under `apps/server/prisma/migrations` are canonical. Supabase MCP applied the initial schema and security patches. The security patch copies in this folder record the submitted DDL; do not run `supabase db reset` expecting a complete initial schema here.
 
-## Configured for this repo
-
-- MCP URL project ref: `tgfudufxslhrxbdxcnyl` (from the dashboard snippet in `.cursor/mcp.json`)
-- Status on 2026-09-20: **not accessible** with the current MCP OAuth token (`You do not have permission to perform this action`; public host also 404s)
-
-Until that project is reachable, there is **no poker schema on Supabase** for this repo to consume.
-
-## What MCP can actually see
-
-The Cursor Supabase plugin is logged into org **ConstrctionCompany** (`revgjxjuggzodkfuvghl`, free plan). That org has **one** project:
-
-- Name: **DonardK's Project**
-- Ref: `gwnaqmbbxfzhgzcfxsvm`
-- Region: `eu-west-1`
-- Postgres 17.6
-- App: construction ERP (employees, attendance, vehicles, diesel, …)
-
-That project is documented under [authenticated-account/](authenticated-account/PROJECT.md). It is **not** the poker platform. Do not add poker tables there.
-
-## Skills
-
-Installed for agents in this repo:
-
-- `.agents/skills/supabase/`
-- `.agents/skills/supabase-postgres-best-practices/`
+The `authenticated-account` directory is a historical snapshot of an unrelated construction project. It does not describe OnlinePoker and was not used or modified for the poker database.

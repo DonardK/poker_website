@@ -89,7 +89,7 @@ export default function TablePage() {
 
       <div className="mx-auto mt-6 grid max-w-5xl gap-4 lg:grid-cols-[2fr_1fr]">
         {legal && params.id && hero && snapshot ? (
-          <ActionBar tableId={params.id} accessToken={token} legal={legal} stack={hero.stack} pot={snapshot.potTotal} />
+          <ActionBar revision={snapshot.revision} tableId={params.id} accessToken={token} legal={legal} stack={hero.stack} pot={snapshot.potTotal} />
         ) : (
           <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-emerald-100/60">
             {hero?.sittingOut
