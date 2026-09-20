@@ -1,0 +1,227 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  PLAYER
+  ADMIN
+}
+
+enum PlayerKind {
+  HUMAN
+  BOT
+}
+
+enum BotProfile {
+  TAG
+  LOOSE_PASSIVE
+  MANIAC
+  GTO
+}
+
+enum TableStatus {
+  WAITING
+  IN_HAND
+  PAUSED
+  CLOSED
+}
+
+enum SeatStatus {
+  EMPTY
+  OCCUPIED
+  SIT_OUT
+}
+
+enum HandPhase {
+  WAITING
+  PREFLOP
+  FLOP
+  TURN
+  RIVER
+  SHOWDOWN
+  COMPLETE
+}
+
+enum PokerAction {
+  POST_SB
+  POST_BB
+  POST_DEAD
+  FOLD
+  CHECK
+  CALL
+  BET
+  RAISE
+  ALL_IN
+  TIMEOUT_FOLD
+  TIMEOUT_CHECK
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String?     @unique
+  username     String      @unique
+  passwordHash String?
+  isGuest      Boolean     @default(false)
+  role         UserRole    @default(PLAYER)
+  kind         PlayerKind  @default(HUMAN)
+  botProfile   BotProfile?
+  bankroll     Int         @default(10000)
+  avatarHue    Int         @default(210)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  lastSeenAt   DateTime?
+
+  sessions    Session[]
+  seats       TableSeat[]
+  hostedTables Table[]      @relation("TableHost")
+  handPlayers HandPlayer[]
+  botStats    BotStatistic?
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshToken String   @unique
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  userAgent    String?
+  ip           String?
+
+  @@index([userId])
+}
+
+model Table {
+  id         String      @id @default(cuid())
+  name       String
+  hostId     String?
+  host       User?       @relation("TableHost", fields: [hostId], references: [id])
+  status     TableStatus @default(WAITING)
+  maxSeats   Int         @default(6)
+  smallBlind Int
+  bigBlind   Int
+  minBuyIn   Int
+  maxBuyIn   Int
+  timeBankMs Int         @default(15000)
+  isPrivate  Boolean     @default(false)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  closedAt   DateTime?
+
+  seats TableSeat[]
+  hands Hand[]
+
+  @@index([status])
+}
+
+model TableSeat {
+  id         String      @id @default(cuid())
+  tableId    String
+  table      Table       @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  seatIndex  Int
+  userId     String?
+  user       User?       @relation(fields: [userId], references: [id])
+  playerKind PlayerKind  @default(HUMAN)
+  botProfile BotProfile?
+  stack      Int         @default(0)
+  status     SeatStatus  @default(EMPTY)
+  sittingOut Boolean     @default(false)
+  joinedAt   DateTime    @default(now())
+
+  @@unique([tableId, seatIndex])
+  @@index([userId])
+}
+
+model Hand {
+  id         String    @id @default(cuid())
+  tableId    String
+  table      Table     @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  handNumber Int
+  phase      HandPhase @default(COMPLETE)
+  dealerSeat Int
+  sbSeat     Int?
+  bbSeat     Int?
+  board      String[]
+  potTotal   Int       @default(0)
+  rake       Int       @default(0)
+  startedAt  DateTime  @default(now())
+  endedAt    DateTime?
+  snapshot   Json?
+
+  players HandPlayer[]
+  actions HandAction[]
+  pots    HandPot[]
+
+  @@unique([tableId, handNumber])
+}
+
+model HandPlayer {
+  id            String      @id @default(cuid())
+  handId        String
+  hand          Hand        @relation(fields: [handId], references: [id], onDelete: Cascade)
+  userId        String?
+  user          User?       @relation(fields: [userId], references: [id])
+  seatIndex     Int
+  playerKind    PlayerKind
+  botProfile    BotProfile?
+  holeCards     String[]
+  startingStack Int
+  endingStack   Int
+  net           Int
+  showedCards   Boolean     @default(false)
+  won           Boolean     @default(false)
+  handRankName  String?
+  handRankValue BigInt?
+
+  @@unique([handId, seatIndex])
+  @@index([userId])
+}
+
+model HandAction {
+  id        String      @id @default(cuid())
+  handId    String
+  hand      Hand        @relation(fields: [handId], references: [id], onDelete: Cascade)
+  seq       Int
+  seatIndex Int
+  street    HandPhase
+  action    PokerAction
+  amount    Int         @default(0)
+  toAmount  Int?
+  createdAt DateTime    @default(now())
+
+  @@unique([handId, seq])
+}
+
+model HandPot {
+  id             String @id @default(cuid())
+  handId         String
+  hand           Hand   @relation(fields: [handId], references: [id], onDelete: Cascade)
+  potIndex       Int
+  amount         Int
+  eligibleSeats  Int[]
+  winnerSeats    Int[]
+  oddChipSeat    Int?
+
+  @@unique([handId, potIndex])
+}
+
+model BotStatistic {
+  id              String     @id @default(cuid())
+  userId          String     @unique
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profile         BotProfile
+  handsPlayed     Int        @default(0)
+  vpipHands       Int        @default(0)
+  pfrHands        Int        @default(0)
+  aggressionBets  Int        @default(0)
+  aggressionCalls Int        @default(0)
+  showdowns       Int        @default(0)
+  showdownsWon    Int        @default(0)
+  chipsWon        Int        @default(0)
+  updatedAt       DateTime   @updatedAt
+}

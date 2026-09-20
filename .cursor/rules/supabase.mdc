@@ -1,0 +1,13 @@
+---
+description: Live Supabase inventory and MCP setup for this repo
+alwaysApply: true
+---
+
+# Supabase
+
+Before any Supabase work, read `supabase/README.md`. That folder is the live inventory of what MCP can see.
+
+- This poker app currently uses local Docker Postgres (`DATABASE_URL`), not Supabase.
+- MCP is configured for project ref `tgfudufxslhrxbdxcnyl` in `.cursor/mcp.json`.
+- The authenticated MCP login currently only reaches a different project (construction ERP). Do not use those tables (`employees`, `vehicles`, `attendance`, …) in poker code.
+- Do not commit service-role keys. Publishable/anon keys belong only in env files, not in source.

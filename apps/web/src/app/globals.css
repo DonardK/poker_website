@@ -1,0 +1,24 @@
+@import "tailwindcss";
+
+:root {
+  --felt: #0b2e24;
+  --felt-rim: #c9a227;
+  --ink: #f4efe4;
+}
+
+html,
+body {
+  min-height: 100%;
+  background: radial-gradient(ellipse at top, #143d31 0%, #071912 55%, #050d0a 100%);
+  color: var(--ink);
+}
+
+body {
+  font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+}
+
+@keyframes timebank-drain {
+  to {
+    transform: scaleX(0);
+  }
+}
