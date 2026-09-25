@@ -49,6 +49,11 @@ export function returnUncalledBets(contribs: readonly Contribution[]): {
   return { returned, adjusted };
 }
 
+/**
+ * Cuts the chips at every distinct commitment level, folded players' levels
+ * included. Consecutive levels can therefore share the same eligible players.
+ * awardPots merges those levels into one pot (see mergePotsByEligibility).
+ */
 export function buildSidePots(contribs: readonly Contribution[]): BuiltPot[] {
   const active = contribs.filter((c) => c.committed > 0);
   if (active.length === 0) return [];
@@ -65,6 +70,31 @@ export function buildSidePots(contribs: readonly Contribution[]): BuiltPot[] {
     prev = level;
   }
   return pots;
+}
+
+/**
+ * COMPLIANCE NOTE (pot identity): a pot is defined by the players who can
+ * win it. A side pot starts only where a live player's all-in amount is
+ * exceeded. A folded player's chips are dead money in the pots they reach
+ * and never open a pot of their own. This merges consecutive levels from
+ * buildSidePots that have the same eligible players. Without the merge, each
+ * piece is split separately with its own odd chip. Example: with folds at 5,
+ * 25 and 56, a 220-chip pot split two ways paid 111 / 109 instead of
+ * 110 / 110.
+ */
+export function mergePotsByEligibility(pots: readonly BuiltPot[]): BuiltPot[] {
+  const merged: BuiltPot[] = [];
+  for (const pot of pots) {
+    const last = merged[merged.length - 1];
+    // Eligible sets are nested (each level's is a subset of the one below), so equal sets are always adjacent.
+    if (last && last.eligibleSeatIndexes.length === pot.eligibleSeatIndexes.length &&
+        last.eligibleSeatIndexes.every((seat) => pot.eligibleSeatIndexes.includes(seat))) {
+      last.amount += pot.amount;
+    } else {
+      merged.push({ potIndex: merged.length, amount: pot.amount, eligibleSeatIndexes: [...pot.eligibleSeatIndexes] });
+    }
+  }
+  return merged;
 }
 
 /** Clockwise from left of the dealer (SB in a full ring) — casino odd-chip order. */
@@ -114,7 +144,7 @@ export function awardPots(opts: {
   evaluations: Map<number, EvaluatedHand>;
 } {
   const { returned, adjusted } = returnUncalledBets(opts.contribs);
-  const built = buildSidePots(adjusted);
+  const built = mergePotsByEligibility(buildSidePots(adjusted));
   const evaluations = new Map<number, EvaluatedHand>();
   const payouts = new Map<number, number>();
   const add = (seat: number, amt: number) => payouts.set(seat, (payouts.get(seat) ?? 0) + amt);

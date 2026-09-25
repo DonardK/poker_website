@@ -15,14 +15,31 @@ export interface BotDecision {
 
 export function decideBotAction(table: EngineTable): BotDecision {
   if (table.toActSeat == null) throw new Error("No actor");
-  const player = table.players[table.toActSeat];
-  const legal = legalActions(table, table.toActSeat);
+  const view = botInformationView(table);
+  const player = view.players[view.toActSeat!];
+  const legal = legalActions(view, view.toActSeat!);
   if (!player || !legal || !player.holeCards) {
     return { intent: { action: "FOLD" }, delayMs: 800 };
   }
   const profile = player.botProfile ?? "TAG";
-  const intent = choose(table, player, legal, profile);
-  return { intent, delayMs: botDelayMs(table, intent) };
+  const intent = choose(view, player, legal, profile);
+  return { intent, delayMs: botDelayMs(view, intent) };
+}
+
+/** Give bot strategy only its own cards and public table information. */
+export function botInformationView(table: EngineTable): EngineTable {
+  return {
+    ...table,
+    deck: [],
+    burns: [],
+    fairness: null,
+    audit: null,
+    players: table.players.map((player, seat) => player ? {
+      ...player,
+      holeCards: seat === table.toActSeat ? player.holeCards : null,
+      handResult: seat === table.toActSeat ? player.handResult : null,
+    } : null),
+  };
 }
 
 function choose(

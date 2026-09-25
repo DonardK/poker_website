@@ -1,6 +1,6 @@
 import { BOT_THINK_FOLD_MS, BOT_THINK_RIVER_RAISE_MS } from "@poker/shared";
 import { chenScore } from "../bots/chen.js";
-import { decideBotAction } from "../bots/decide.js";
+import { botInformationView, decideBotAction } from "../bots/decide.js";
 import { botDelayMs } from "../bots/delay.js";
 import { monteCarloEquity } from "../bots/montecarlo.js";
 import { analyzeBoard, hasFlushBlocker } from "../bots/texture.js";
@@ -87,6 +87,22 @@ describe("humanized delays", () => {
 });
 
 describe("decideBotAction legality", () => {
+  it("does not expose the deck or opponents' cards to bot strategy", () => {
+    let table = createTable({ tableId: "private", name: "Private", maxSeats: 3, smallBlind: 5, bigBlind: 10, timeBankMs: 15_000 });
+    for (let seat = 0; seat < 3; seat++) {
+      table = sitDown(table, seat, { userId: `bot-${seat}`, username: `Bot ${seat}`, avatarHue: 0, kind: "BOT", botProfile: "TAG", buyIn: 1000 });
+    }
+    table = startHand(table);
+    const actor = table.toActSeat!;
+    const view = botInformationView(table);
+    expect(view.players[actor]!.holeCards).toEqual(table.players[actor]!.holeCards);
+    expect(view.players.filter((player, seat) => player && seat !== actor).every((player) => player!.holeCards === null)).toBe(true);
+    expect(view.deck).toEqual([]);
+    expect(view.burns).toEqual([]);
+    expect(view.fairness).toBeNull();
+    expect(table.deck.length).toBeGreaterThan(0);
+  });
+
   it("only emits legal intents across profiles and streets", () => {
     const profiles: BotProfile[] = ["TAG", "LOOSE_PASSIVE", "MANIAC", "GTO"];
     for (const profile of profiles) {

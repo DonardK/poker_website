@@ -1,13 +1,13 @@
 import { tableManager } from "./game/manager.js";
-import { createServer, type Server as HttpServer } from "node:http";
 import { createApp } from "./app.js";
 import { env } from "./config.js";
 import { prisma } from "./db/prisma.js";
 import { logger } from "./logger.js";
 import { connectRedis, disconnectRedis } from "./redis/client.js";
 import { createSocketServer } from "./socket/index.js";
+import { createListener, type WebServer } from "./transport.js";
 
-async function listen(httpServer: HttpServer, port: number, attempts = 10): Promise<void> {
+async function listen(httpServer: WebServer, port: number, attempts = 10): Promise<void> {
   for (let i = 0; i < attempts; i += 1) {
     try {
       await new Promise<void>((resolve, reject) => {
@@ -38,12 +38,15 @@ async function main() {
   await prisma.$connect();
 
   const app = createApp();
-  const httpServer = createServer(app);
+  // COMPLIANCE (TLS): node:https when certificate files are configured. In
+  // production without them, config.ts requires a trusted TLS proxy, and
+  // app.ts / the Socket.io handshake refuse requests that did not use TLS.
+  const { server: httpServer, secure } = createListener(app, { certFile: env.TLS_CERT_FILE, keyFile: env.TLS_KEY_FILE });
   const io = createSocketServer(httpServer);
   await tableManager.recover();
 
   await listen(httpServer, env.PORT);
-  logger.info(`Poker server listening on :${env.PORT}`);
+  logger.info({ tls: secure ? "direct" : env.TRUST_PROXY_HOPS > 0 ? "proxy" : "none" }, `Poker server listening on ${secure ? "https" : "http"}://:${env.PORT}`);
 
   const shutdown = async (signal: string) => {
     logger.info({ signal }, "shutting down");

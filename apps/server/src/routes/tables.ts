@@ -6,6 +6,8 @@ import {
   DEFAULT_MAX_SEATS,
   type BotProfile,
   type CreateTableRequest,
+  type HandAuditRecord,
+  type SealedHandAudit,
   type TableListItem,
 } from "@poker/shared";
 import { z } from "zod";
@@ -15,6 +17,8 @@ import { requireAuth, type AuthedRequest } from "../auth/middleware.js";
 import { tableManager } from "../game/manager.js";
 import { logger } from "../logger.js";
 import { EngineError } from "@poker/engine";
+import { buildParticipantAudit, rowBindingError, sealedAuditContext } from "../game/audit.js";
+import { decryptState } from "../game/encryption.js";
 
 export const tablesRouter = Router();
 
@@ -35,7 +39,7 @@ function cycleProfiles(count: number, requested?: BotProfile[]): BotProfile[] {
   return Array.from({ length: count }, (_, i) => order[i % order.length]!);
 }
 
-tablesRouter.get("/", requireAuth, async (_req, res) => {
+tablesRouter.get("/", requireAuth, async (req: AuthedRequest, res) => {
   const tables = await prisma.table.findMany({
     where: { status: { not: "CLOSED" }, isPrivate: false },
     include: { seats: true },
@@ -44,6 +48,7 @@ tablesRouter.get("/", requireAuth, async (_req, res) => {
   });
   const payload: TableListItem[] = tables.map((table) => ({
     id: table.id,
+    isSeated: table.seats.some((seat) => seat.userId === req.userId),
     name: table.name,
     status: table.status,
     maxSeats: table.maxSeats,
@@ -95,6 +100,53 @@ tablesRouter.get("/:id", requireAuth, async (req, res) => {
       })),
     },
   });
+});
+
+/**
+ * Participant post-hand audit.
+ *
+ * COMPLIANCE NOTES
+ * - Only a user dealt into the hand (a HandPlayer row) may read it; everyone
+ *   else gets the same 404 as for a missing hand.
+ * - The response is the redacted ParticipantHandAudit: the public hash-chained
+ *   record, plus Merkle openings for the caller's own hole cards, the dealt
+ *   board and hands tabled at showdown. The sealed deck, deck salt, other
+ *   Merkle salts and any other player's unshown cards are never included.
+ * - The server verifies the audit with the same public verifier the client
+ *   runs, then applies an independent redaction guard before responding. Any
+ *   failure is logged and returns 500 (fail closed).
+ */
+tablesRouter.get("/:id/hands/:handNumber/audit", requireAuth, async (req: AuthedRequest, res) => {
+  res.set("Cache-Control", "no-store");
+  const tableId = String(req.params.id);
+  const rawHandNumber = String(req.params.handNumber);
+  const handNumber = Number(rawHandNumber);
+  const userId = req.userId;
+  if (!userId) { res.status(401).json({ error: "Unauthorized" }); return; }
+  if (!/^[1-9][0-9]{0,9}$/.test(rawHandNumber) || handNumber > 2_147_483_647 || tableId.length > 128) { res.status(400).json({ error: "Invalid hand number" }); return; }
+  const hand = await prisma.hand.findUnique({
+    where: { tableId_handNumber: { tableId, handNumber } },
+    select: {
+      tableId: true, handNumber: true, handUuid: true, deckCommitment: true, finalStateHash: true, auditRecord: true, auditSealed: true,
+      players: { where: { userId }, select: { seatIndex: true }, take: 2 },
+    },
+  });
+  const viewer = hand?.players[0];
+  if (!hand || !viewer) { res.status(404).json({ error: "Completed hand not found for this player" }); return; }
+  if (hand.players.length !== 1) { logger.error({ tableId, handNumber, userId }, "user holds more than one seat in a recorded hand"); res.status(500).json({ error: "Stored hand audit failed verification" }); return; }
+  if (!hand.auditRecord || !hand.auditSealed) { res.status(409).json({ error: "This hand predates the compliance audit trail" }); return; }
+  const context = { tableId, handNumber, userId, viewerSeat: viewer.seatIndex };
+  try {
+    const record = hand.auditRecord as unknown as HandAuditRecord;
+    const binding = rowBindingError(hand, record);
+    if (binding) throw new EngineError("AUDIT_INVALID", binding);
+    const sealed = decryptState<SealedHandAudit>(hand.auditSealed, sealedAuditContext(tableId, handNumber));
+    const audit = await buildParticipantAudit(record, sealed, viewer.seatIndex);
+    res.json({ audit });
+  } catch (err) {
+    logger.error({ err, security: "AUDIT_INTEGRITY", ...context }, "participant hand audit failed verification; nothing was returned");
+    res.status(500).json({ error: "Stored hand audit failed verification" });
+  }
 });
 
 tablesRouter.post("/", requireAuth, async (req: AuthedRequest, res) => {

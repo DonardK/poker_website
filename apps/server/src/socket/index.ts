@@ -1,17 +1,17 @@
 import { allowAction } from "./rate-limit.js";
 import { createAdapter } from "@socket.io/redis-adapter";
-import type { Server as HttpServer } from "node:http";
 import { Server } from "socket.io";
 import { z } from "zod";
 import { SOCKET_EVENTS } from "@poker/shared";
 import { EngineError } from "@poker/engine";
-import { env, redisEnabled } from "../config.js";
+import { env, isProd, redisEnabled } from "../config.js";
 import { logger } from "../logger.js";
 import { prisma } from "../db/prisma.js";
 import { redisPub, redisSub } from "../redis/client.js";
 import { getActiveTableForUser } from "../redis/table-state.js";
 import { authenticate } from "../auth/middleware.js";
 import { tableManager } from "../game/manager.js";
+import { isSecureTransport, type WebServer } from "../transport.js";
 import { roomFor } from "./rooms.js";
 import type { PokerServer } from "./types.js";
 export type { PokerServer } from "./types.js";
@@ -20,11 +20,19 @@ const id = z.string().min(1).max(128);
 const tablePayload = z.object({ tableId: id }).strict();
 const actionPayload = tablePayload.extend({ revision: z.number().int().nonnegative(), action: z.enum(["FOLD", "CHECK", "CALL", "BET", "RAISE", "ALL_IN"]), amount: z.number().int().positive().max(2_000_000_000).optional(), clientActionId: z.string().uuid() });
 
-export function createSocketServer(httpServer: HttpServer): PokerServer {
+export function createSocketServer(httpServer: WebServer): PokerServer {
   const io: PokerServer = new Server(httpServer, {
     cors: { origin: env.CLIENT_ORIGIN, credentials: true },
     maxHttpBufferSize: 8192,
-    allowRequest: (req, callback) => callback(null, !req.headers.origin || req.headers.origin === env.CLIENT_ORIGIN),
+    // COMPLIANCE (TLS): hole cards are pushed over this socket, so in
+    // production the handshake must arrive over TLS (directly or via a
+    // trusted TLS proxy). The origin check applies in every environment.
+    allowRequest: (req, callback) => {
+      const originOk = !req.headers.origin || req.headers.origin === env.CLIENT_ORIGIN;
+      const transportOk = !isProd || isSecureTransport(req, env.TRUST_PROXY_HOPS);
+      if (!transportOk) logger.warn({ security: "INSECURE_TRANSPORT", remoteAddress: req.socket.remoteAddress }, "refused Socket.io handshake without TLS");
+      callback(null, originOk && transportOk);
+    },
   });
   if (redisEnabled && redisPub && redisSub) io.adapter(createAdapter(redisPub, redisSub));
   tableManager.attach(io);

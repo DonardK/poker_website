@@ -1,6 +1,6 @@
 "use client";
 
-import { motion } from "framer-motion";
+import { motion, useReducedMotion } from "framer-motion";
 import type { PublicPlayerView } from "@poker/shared";
 import { PlayingCard } from "./playing-card";
 
@@ -25,6 +25,7 @@ export function SeatHud({
   canClaim?: boolean;
   inHand: boolean;
 }) {
+  const reducedMotion = useReducedMotion();
   if (player.empty) {
     return (
       <button
@@ -45,11 +46,11 @@ export function SeatHud({
 
   return (
     <div
-      className={`w-32 rounded-2xl border bg-black/55 px-3 py-2 backdrop-blur sm:w-40 ${
+      className={`seat-hud w-32 rounded-2xl border bg-black/60 px-3 py-2 backdrop-blur sm:w-40 ${
         isWinner
-          ? "border-amber-300 shadow-[0_0_24px_rgba(251,191,36,0.45)]"
+          ? "seat-hud--winner border-amber-300 shadow-[0_0_24px_rgba(251,191,36,0.45)]"
           : isToAct
-            ? "border-amber-300 shadow-[0_0_20px_rgba(251,191,36,0.35)]"
+            ? "seat-hud--active border-amber-300 shadow-[0_0_20px_rgba(251,191,36,0.35)]"
             : "border-white/15"
       }`}
     >
@@ -65,7 +66,13 @@ export function SeatHud({
             {player.username}
             {isHero ? " (you)" : ""}
           </p>
-          <p className="text-xs text-emerald-200">${player.stack.toLocaleString()}</p>
+          <motion.p
+            key={player.stack}
+            initial={reducedMotion ? false : { opacity: 0.5, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: reducedMotion ? 0 : 0.24 }}
+            className="text-xs text-emerald-200"
+          >${player.stack.toLocaleString()}</motion.p>
         </div>
       </div>
       <div className="mt-1 flex flex-wrap gap-1 text-[10px] uppercase tracking-wider text-amber-200/80">
@@ -93,9 +100,10 @@ export function SeatHud({
       {player.committedThisStreet > 0 ? (
         <motion.p
           key={player.committedThisStreet}
-          initial={{ y: 8, opacity: 0, scale: 0.8 }}
+          initial={reducedMotion ? false : { y: 8, opacity: 0, scale: 0.8 }}
           animate={{ y: 0, opacity: 1, scale: 1 }}
-          className="mt-1 text-center text-xs text-amber-100"
+          transition={{ duration: reducedMotion ? 0 : 0.28, ease: "easeOut" }}
+          className="mx-auto mt-1 w-fit rounded-full border border-amber-200/25 bg-amber-300/10 px-2 py-0.5 text-center text-xs text-amber-100"
         >
           Bet ${player.committedThisStreet}
         </motion.p>

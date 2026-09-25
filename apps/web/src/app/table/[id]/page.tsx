@@ -11,10 +11,11 @@ import { useTableFx } from "@/hooks/use-table-fx";
 import { useTableSocket } from "@/hooks/use-table-socket";
 import { getSocket } from "@/lib/socket";
 import { useAuthStore, useTableStore } from "@/stores/session";
+import { API_UNAVAILABLE_MESSAGE } from "@/lib/api";
 
 export default function TablePage() {
   const params = useParams<{ id: string }>();
-  const { accessToken, user, hydrated } = useAuthStore();
+  const { accessToken, user, hydrated, apiOffline } = useAuthStore();
   const snapshot = useTableStore((s) => s.snapshot);
   const socketStatus = useTableStore((s) => s.socketStatus);
   const tableError = useTableStore((s) => s.tableError);
@@ -26,8 +27,8 @@ export default function TablePage() {
   if (!user || !accessToken) {
     return (
       <main className="mx-auto max-w-lg px-6 py-24 text-center">
-        <h1 className="font-[family-name:var(--font-display)] text-3xl">Sign in to sit down</h1>
-        <p className="mt-3 text-emerald-100/70">You need a session before joining a live table.</p>
+        <h1 className="font-[family-name:var(--font-display)] text-3xl">{apiOffline ? "Game server unavailable" : "Sign in to sit down"}</h1>
+        <p className="mt-3 text-emerald-100/70">{apiOffline ? API_UNAVAILABLE_MESSAGE : "You need a session before joining a live table."}</p>
         <Link href="/login" className="mt-6 inline-block rounded-full bg-amber-300 px-6 py-3 font-semibold text-emerald-950">
           Register / login
         </Link>
@@ -55,13 +56,13 @@ export default function TablePage() {
   }
 
   return (
-    <main className="min-h-screen px-4 py-6 lg:px-8">
-      <div className="mb-4 flex flex-wrap items-end justify-between gap-3">
+    <main className={`mx-auto min-h-screen max-w-[1600px] px-3 py-4 sm:px-6 sm:py-6 lg:px-8 ${legal ? "table-page-with-actions" : ""}`}>
+      <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
         <div>
           <Link href="/" className="text-sm text-amber-200/80">
             ← Lobby
           </Link>
-          <h1 className="mt-2 font-[family-name:var(--font-display)] text-3xl">{snapshot?.name ?? "Table"}</h1>
+          <h1 className="mt-2 font-[family-name:var(--font-display)] text-2xl sm:text-3xl">{snapshot?.name ?? "Table"}</h1>
           <p className="text-sm text-emerald-100/70">
             {snapshot ? `${snapshot.smallBlind}/${snapshot.bigBlind}` : "connecting"} · {statusLabel(socketStatus)}
             {` · ${user.username} · $${user.bankroll.toLocaleString()}`}
@@ -87,11 +88,15 @@ export default function TablePage() {
         <p className="py-24 text-center text-emerald-100/60">Joining table…</p>
       )}
 
-      <div className="mx-auto mt-6 grid max-w-5xl gap-4 lg:grid-cols-[2fr_1fr]">
+      <div className="mx-auto mt-5 grid max-w-6xl items-start gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(16rem,1fr)]">
         {legal && params.id && hero && snapshot ? (
-          <ActionBar revision={snapshot.revision} tableId={params.id} accessToken={token} legal={legal} stack={hero.stack} pot={snapshot.potTotal} />
+          <div className="table-action-dock lg:static">
+            <ActionBar revision={snapshot.revision} tableId={params.id} accessToken={token} legal={legal} stack={hero.stack}
+              pot={snapshot.potTotal} currentBet={Math.max(0, ...snapshot.players.map((player) => player.committedThisStreet))}
+              error={tableError} disconnected={socketStatus === "disconnected"} />
+          </div>
         ) : (
-          <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-emerald-100/60">
+          <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-emerald-100/70" role="status">
             {hero?.sittingOut
               ? "You are sitting out. Sit in to be dealt the next hand."
               : hero?.status === "ELIMINATED"
@@ -109,6 +114,8 @@ export default function TablePage() {
 
 function statusLabel(status: string): string {
   if (status === "live") return "Live";
+  if (status === "cards verified") return "Cards verified";
+  if (status === "disconnected") return "Reconnecting";
   if (status === "connected" || status === "authenticated") return "Connecting";
   if (status === "error") return "Error";
   return status;

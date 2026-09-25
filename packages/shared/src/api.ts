@@ -29,6 +29,7 @@ export interface CreateTableRequest {
 
 export interface TableListItem {
   id: string;
+  isSeated: boolean;
   name: string;
   status: TableStatus;
   maxSeats: number;

@@ -75,7 +75,7 @@ export interface PublicPlayerView {
   isSb: boolean;
   isBb: boolean;
   sittingOut: boolean;
-  /** Present only for the viewing player, or after showdown. */
+  /** Present only for the viewing player, or for hands tabled at showdown. */
   holeCards: [Card, Card] | null;
   timeBankMsRemaining: number | null;
   empty: boolean;
@@ -98,6 +98,7 @@ export interface LegalActionSet {
 
 export interface PublicTableState {
   revision: number;
+  /** Pre-deal commitments and this viewer's card openings; null between hands. */
   fairness: import("./fairness.js").PublicFairness | null;
   tableId: string;
   name: string;

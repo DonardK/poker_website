@@ -1,15 +1,17 @@
 import { authenticate } from "../auth/middleware.js";
 import {
   applyAction, applyTimeout, completeHand, createTable, decideBotAction, EngineError,
-  leaveSeat, sitDown, sitIn, sitOut, startHand, toPublicTableState,
+  leaveSeat, sitDown, sitIn, sitOut, startHand,
   type EngineIntent, type EngineTable,
 } from "@poker/engine";
-import { SOCKET_EVENTS } from "@poker/shared";
+import { SOCKET_EVENTS, type PublicTableState } from "@poker/shared";
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../db/prisma.js";
 import { logger } from "../logger.js";
+import { guardedTableState } from "../socket/mask.js";
 import type { PokerServer } from "../socket/types.js";
 import { roomFor } from "../socket/rooms.js";
+import { handAuditColumns, handContext } from "./audit.js";
 import { decryptState, encryptState } from "./encryption.js";
 
 const HAND_BREAK_MS = 3_200;
@@ -31,7 +33,12 @@ export class TableManager {
   private async load(tx: Tx, tableId: string): Promise<EngineTable | null> {
     const row = await tx.table.findUnique({ where: { id: tableId }, include: { seats: { include: { user: true }, orderBy: { seatIndex: "asc" } } } });
     if (!row || row.status === "CLOSED") return null;
-    if (row.stateCiphertext) return decryptState<EngineTable>(row.stateCiphertext, `table:${tableId}`);
+    if (row.stateCiphertext) {
+      const state = decryptState<EngineTable & { pendingShuffle?: unknown }>(row.stateCiphertext, `table:${tableId}`);
+      // Pre-upgrade state may carry the removed player-entropy shuffle round; it is never used again.
+      delete state.pendingShuffle;
+      return state;
+    }
     // Only brand-new tables may be hydrated from seats. Never redeal a lost hand.
     const lastHand = await tx.hand.findFirst({ where: { tableId }, orderBy: { handNumber: "desc" } });
     if (row.status === "IN_HAND" || lastHand) throw new EngineError("RECOVERY_REQUIRED", "Saved game state is missing; table paused for recovery");
@@ -45,11 +52,12 @@ export class TableManager {
   }
 
   async get(tableId: string): Promise<EngineTable | null> { return this.load(prisma, tableId); }
-  async snapshot(tableId: string, viewerUserId: string | null) {
+  /** Guarded snapshot for one viewer; null means nothing may be emitted. */
+  async snapshot(tableId: string, viewerUserId: string | null): Promise<PublicTableState | null> {
     const table = await this.get(tableId);
     if (!table) return null;
     this.armTimers(table);
-    return toPublicTableState(table, viewerUserId);
+    return this.project(table, viewerUserId);
   }
   async hydrateFromDb(tableId: string): Promise<EngineTable | null> { return this.get(tableId); }
 
@@ -77,7 +85,10 @@ export class TableManager {
       }
       result.cashOuts = [];
       await this.persistSeats(tx, result);
-      if (result.phase === "SHOWDOWN" && current.phase !== "SHOWDOWN") await this.persistHand(tx, result);
+      // A hand is recorded once, when it settles. The SHOWDOWN timer cleans up one
+      // hand and deals the next in a single step, and that hand can settle at once
+      // (all-in on the blinds), so compare hand numbers as well as phases.
+      if (result.phase === "SHOWDOWN" && (current.phase !== "SHOWDOWN" || current.handNumber !== result.handNumber)) await this.persistHand(tx, result);
       await tx.table.update({ where: { id: tableId }, data: { status: result.status, stateCiphertext: encryptState(result, `table:${tableId}`) } });
       return result;
     }, { maxWait: 10_000, timeout: 20_000 });
@@ -91,6 +102,7 @@ export class TableManager {
     await this.mutate(tableId, (table) => {
       if (table.phase !== "WAITING" && table.phase !== "COMPLETE") return table;
       if (!readyToDeal(table)) return table;
+      // Shuffle (OS CSPRNG), commit and open the audit, then post blinds and deal.
       return startHand(table);
     });
   }
@@ -124,11 +136,26 @@ export class TableManager {
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { bankroll: true } });
     if (user) this.io?.to(`user:${userId}`).emit(SOCKET_EVENTS.USER_PATCH, user);
   }
+  /**
+   * COMPLIANCE (state isolation): each socket receives its own projection for
+   * its authenticated user only, through the engine leak guard. A refused
+   * projection is logged as a security event and nothing is sent (fail closed).
+   */
+  private project(table: EngineTable, viewerUserId: string | null): PublicTableState | null {
+    return guardedTableState(table, viewerUserId, (event) => {
+      logger.error({ security: "LEAK_BLOCKED", ...event }, "SECURITY EVENT: leak guard refused a table-state emission; nothing was sent to this viewer");
+    });
+  }
   private async broadcast(table: EngineTable): Promise<void> {
     if (!this.io) return;
     for (const socket of await this.io.in(roomFor(table.tableId)).fetchSockets()) {
       try { await authenticate(socket.data.token); } catch { socket.disconnect(true); continue; }
-      socket.emit(SOCKET_EVENTS.STATE_SNAPSHOT, toPublicTableState(table, socket.data.userId));
+      try {
+        const state = this.project(table, socket.data.userId);
+        if (state) socket.emit(SOCKET_EVENTS.STATE_SNAPSHOT, state);
+      } catch (err) {
+        logger.error({ err, tableId: table.tableId, revision: table.revision, viewerUserId: socket.data.userId }, "table state projection failed; nothing was sent to this viewer");
+      }
       await this.patchBankroll(socket.data.userId);
     }
   }
@@ -144,6 +171,7 @@ export class TableManager {
     if (table.phase === "SHOWDOWN") {
       delay = Math.max(0, (table.settledAt ?? Date.now()) + HAND_BREAK_MS - Date.now());
       run = () => this.mutate(table.tableId, (current) => {
+        // Hand Clean-up purges the settled hand's secrets before the next shuffle.
         let next = completeHand(current);
         if (readyToDeal(next)) next = startHand(next);
         return next;
@@ -180,13 +208,33 @@ export class TableManager {
       } : { userId: null, status: "EMPTY", playerKind: "HUMAN", botProfile: null, stack: 0, sittingOut: false } });
     }
   }
+  /**
+   * COMPLIANCE (audit trail): the hand, its players, pots, actions and its
+   * verified audit columns are written in the same transaction as the settled
+   * table state, so a hand is never recorded without its audit (or the
+   * reverse). Hand rows are append-only to the runtime database role.
+   */
   private async persistHand(tx: Tx, table: EngineTable): Promise<void> {
     const dealt = table.players.filter((p) => p?.holeCards);
-    const context = `hand:${table.tableId}:${table.handNumber}`;
+    const context = handContext(table.tableId, table.handNumber);
+    // Throws AUDIT_INVALID (rolling everything back) if the sealed record does not verify.
+    const audit = await handAuditColumns(table);
+    if (!audit) {
+      const detail = { tableId: table.tableId, handNumber: table.handNumber, hasAudit: Boolean(table.audit), hasFairness: Boolean(table.fairness) };
+      if (table.audit) logger.error(detail, "hand has an audit record but no deck commitment; persisting without audit columns");
+      else logger.warn(detail, "legacy in-flight hand predates the compliance audit trail; persisting without audit columns");
+    }
     await tx.hand.create({ data: {
       tableId: table.tableId, handNumber: table.handNumber, phase: "COMPLETE", dealerSeat: table.dealerSeat, sbSeat: table.sbSeat, bbSeat: table.bbSeat,
       board: table.board, potTotal: table.potTotal, startedAt: new Date(table.startedAt!), endedAt: new Date(table.settledAt!),
-      fairnessRoot: table.fairness?.root, fairnessAudit: encryptState(table.fairness, context),
+      ...(audit ? {
+        fairnessRoot: audit.auditRecord.merkleRoot,
+        handUuid: audit.handUuid, deckCommitment: audit.deckCommitment, finalStateHash: audit.finalStateHash,
+        auditRecord: audit.auditRecord as unknown as Prisma.InputJsonValue, auditSealed: audit.auditSealed,
+      } : {
+        // Legacy hand: keep its pre-upgrade commitment evidence exactly as before.
+        fairnessRoot: table.fairness?.root ?? null, fairnessAudit: table.fairness ? encryptState(table.fairness, context) : null,
+      }),
       snapshot: JSON.parse(JSON.stringify({ winners: table.winners, refunds: table.refunds, log: table.log })) as Prisma.InputJsonValue,
       players: { create: dealt.map((p) => {
         const win = table.winners.find((w) => w.seatIndex === p!.seatIndex)?.amount ?? 0;

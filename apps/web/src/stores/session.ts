@@ -7,9 +7,11 @@ interface AuthState {
   user: PublicUser | null;
   accessToken: string | null;
   hydrated: boolean;
+  apiOffline: boolean;
   setSession: (user: PublicUser, accessToken: string) => void;
   clearSession: () => void;
   markHydrated: () => void;
+  setApiOffline: (apiOffline: boolean) => void;
   patchBankroll: (bankroll: number) => void;
 }
 
@@ -17,9 +19,11 @@ export const useAuthStore = create<AuthState>((set) => ({
   user: null,
   accessToken: null,
   hydrated: false,
-  setSession: (user, accessToken) => set({ user, accessToken, hydrated: true }),
+  apiOffline: false,
+  setSession: (user, accessToken) => set({ user, accessToken, hydrated: true, apiOffline: false }),
   clearSession: () => set({ user: null, accessToken: null, hydrated: true }),
   markHydrated: () => set({ hydrated: true }),
+  setApiOffline: (apiOffline) => set({ apiOffline }),
   patchBankroll: (bankroll) =>
     set((state) => (state.user ? { user: { ...state.user, bankroll } } : state)),
 }));

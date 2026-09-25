@@ -1,6 +1,5 @@
 "use client";
 
-
 import { useEffect, useMemo, useRef, useState } from "react";
 import { SOCKET_EVENTS, type ActionType, type LegalActionSet } from "@poker/shared";
 import { getSocket } from "@/lib/socket";
@@ -13,6 +12,9 @@ export function ActionBar({
   legal,
   stack,
   pot,
+  currentBet,
+  error,
+  disconnected = false,
 }: {
   tableId: string;
   revision: number;
@@ -20,11 +22,16 @@ export function ActionBar({
   legal: LegalActionSet;
   stack: number;
   pot: number;
+  currentBet: number;
+  error?: string | null;
+  disconnected?: boolean;
 }) {
-  const min = legal.actions.includes("BET") ? legal.minBet : legal.minRaiseTo;
   const max = legal.maxRaiseTo;
+  const min = Math.min(max, legal.actions.includes("BET") ? legal.minBet : legal.minRaiseTo);
   const [amount, setAmount] = useState(min);
+  const [pending, setPending] = useState(false);
   const lastMin = useRef(min);
+  const lastSent = useRef(0);
 
   useEffect(() => {
     if (lastMin.current !== min) {
@@ -33,10 +40,17 @@ export function ActionBar({
     }
   }, [min]);
 
+  useEffect(() => { setPending(false); }, [revision, error]);
+  useEffect(() => {
+    if (!pending) return;
+    const timeout = window.setTimeout(() => setPending(false), 4_000);
+    return () => window.clearTimeout(timeout);
+  }, [pending]);
+
   const clamped = Math.max(min, Math.min(max, amount));
 
   const shortcuts = useMemo(() => {
-    const potish = (frac: number) => Math.max(min, Math.min(max, Math.floor(pot * frac) || min));
+    const potish = (frac: number) => Math.max(min, Math.min(max, currentBet + Math.floor((pot + legal.callAmount) * frac)));
     return [
       { label: "Min", value: min },
       { label: "1/2", value: potish(0.5) },
@@ -44,9 +58,12 @@ export function ActionBar({
       { label: "Pot", value: potish(1) },
       { label: "All-in", value: max },
     ];
-  }, [min, max, pot]);
+  }, [min, max, pot, currentBet, legal.callAmount]);
 
   function send(action: ActionType, value?: number) {
+    if (pending || disconnected || Date.now() - lastSent.current < 750) return;
+    lastSent.current = Date.now();
+    setPending(true);
     playSound(action === "FOLD" ? "turn" : "chip");
     getSocket(accessToken).emit(SOCKET_EVENTS.ACTION_INTENT, {
       tableId,
@@ -61,56 +78,71 @@ export function ActionBar({
     legal.callAmount === 0 ? "Check" : legal.callAmount >= stack ? `All-in $${stack}` : `Call $${legal.callAmount}`;
 
   return (
-    <div className="rounded-2xl border border-amber-200/20 bg-black/60 p-4 backdrop-blur">
-      <div className="flex flex-wrap gap-2">
+    <div className="rounded-2xl border border-amber-200/20 bg-black/60 p-4 backdrop-blur" aria-label="Your poker actions">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-100/70">
+        <span className="font-semibold uppercase tracking-widest text-amber-200">Your turn</span>
+        <span>{disconnected ? "Reconnecting…" : legal.callAmount > 0 ? `$${legal.callAmount.toLocaleString()} to call` : "You can check for free"}</span>
+      </div>
+      <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap">
         {legal.actions.includes("FOLD") ? (
           <button
             type="button"
-            className="rounded-full bg-zinc-700 px-5 py-2 font-semibold"
+            disabled={pending || disconnected}
+            className="min-h-11 rounded-xl bg-zinc-700 px-5 py-2 font-semibold transition hover:bg-zinc-600 disabled:opacity-50"
             onClick={() => send("FOLD")}
           >
             Fold
           </button>
         ) : null}
         {legal.actions.includes("CHECK") ? (
-          <button className="rounded-full bg-emerald-700 px-5 py-2 font-semibold" onClick={() => send("CHECK")}>
+          <button disabled={pending || disconnected} className="min-h-11 rounded-xl bg-emerald-700 px-5 py-2 font-semibold transition hover:bg-emerald-600 disabled:opacity-50" onClick={() => send("CHECK")}>
             Check
           </button>
         ) : null}
         {legal.actions.includes("CALL") ? (
-          <button className="rounded-full bg-emerald-600 px-5 py-2 font-semibold" onClick={() => send("CALL")}>
+          <button disabled={pending || disconnected} className="min-h-11 rounded-xl bg-emerald-600 px-5 py-2 font-semibold transition hover:bg-emerald-500 disabled:opacity-50" onClick={() => send("CALL")}>
             {callLabel}
           </button>
         ) : null}
         {legal.actions.includes("BET") || legal.actions.includes("RAISE") ? (
           <button
-            className="rounded-full bg-amber-300 px-5 py-2 font-semibold text-emerald-950"
+            disabled={pending || disconnected}
+            className="min-h-11 rounded-xl bg-amber-300 px-5 py-2 font-semibold text-emerald-950 transition hover:bg-amber-200 disabled:opacity-50"
             onClick={() => send(legal.actions.includes("BET") ? "BET" : "RAISE", clamped)}
           >
             {legal.actions.includes("BET") ? "Bet" : "Raise to"} ${clamped}
           </button>
         ) : null}
         {legal.actions.includes("ALL_IN") ? (
-          <button className="rounded-full bg-red-700 px-5 py-2 font-semibold" onClick={() => send("ALL_IN")}>
+          <button disabled={pending || disconnected} className="min-h-11 rounded-xl bg-red-700 px-5 py-2 font-semibold transition hover:bg-red-600 disabled:opacity-50" onClick={() => send("ALL_IN")}>
             All-in ${stack}
           </button>
         ) : null}
       </div>
       {legal.actions.includes("BET") || legal.actions.includes("RAISE") ? (
-        <div className="mt-3">
+        <div className="mt-4 border-t border-white/10 pt-3">
+          <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+            <label htmlFor="bet-amount">{legal.actions.includes("BET") ? "Bet amount" : "Raise to"}</label>
+            <input id="bet-amount" type="number" inputMode="numeric" min={min} max={max} value={amount}
+              onChange={(e) => setAmount(Number(e.target.value))}
+              onBlur={() => setAmount(clamped)}
+              className="w-28 rounded-lg border border-white/20 bg-emerald-950/70 px-3 py-1.5 text-right text-white" />
+          </div>
           <input
             type="range"
+            aria-label="Bet amount slider"
             min={min}
             max={max}
             value={clamped}
             onChange={(e) => setAmount(Number(e.target.value))}
-            className="w-full accent-amber-300"
+            className="h-9 w-full accent-amber-300"
           />
           <div className="mt-2 flex flex-wrap gap-2">
             {shortcuts.map((s) => (
               <button
                 key={s.label}
-                className="rounded-full border border-white/15 px-3 py-1 text-xs"
+                type="button"
+                className="min-h-9 rounded-full border border-white/20 px-3 py-1 text-xs transition hover:border-amber-200/70"
                 onClick={() => setAmount(s.value)}
               >
                 {s.label}

@@ -155,7 +155,19 @@ model Hand {
   endedAt    DateTime?
   snapshot   Json?
   fairnessRoot String?
+  /// Legacy (pre-audit-trail) encrypted commitment; null for audited hands.
   fairnessAudit String?
+  /// Compliance audit trail (migration 20260924120000_compliance_audit_trail).
+  /// UUID v4 hand id from the engine; unique across all tables.
+  handUuid       String? @unique @db.Uuid
+  /// SHA-256 commitment to the shuffled deck, made before dealing.
+  deckCommitment String?
+  /// Post-hand verification hash over the whole hash-chained record.
+  finalStateHash String?
+  /// Public hash-chained HandAuditRecord (no hidden cards).
+  auditRecord    Json?
+  /// AES-256-GCM SealedHandAudit (deck order and salts); regulator only.
+  auditSealed    String?
 
   players HandPlayer[]
   actions HandAction[]

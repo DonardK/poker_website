@@ -1,0 +1,65 @@
+/**
+ * Regulator / operator audit access.
+ *
+ * COMPLIANCE NOTES
+ * - Every route requires an authenticated session and role ADMIN, read from
+ *   the database user row on each request (a revoked role takes effect
+ *   immediately; token claims are not trusted for the role).
+ * - The router is rate-limited, and every access (granted or denied) is
+ *   logged with the user id and the requested hand UUID.
+ * - GET /hands/:handUuid/audit returns the full sealed record (deck order and
+ *   salts) together with the independent verification report, including the
+ *   hole cards and burns derived from the committed deck. This data never
+ *   goes to players; see the participant route in tables.ts for that.
+ */
+import { Router, type NextFunction, type Response } from "express";
+import rateLimit from "express-rate-limit";
+import { UUID_V4, verifySealedAudit, type HandAuditRecord, type SealedAuditReport, type SealedHandAudit } from "@poker/shared";
+import { requireAuth, type AuthedRequest } from "../auth/middleware.js";
+import { prisma } from "../db/prisma.js";
+import { rowBindingError, sealedAuditContext } from "../game/audit.js";
+import { decryptState } from "../game/encryption.js";
+import { logger } from "../logger.js";
+
+export const adminRouter = Router();
+
+async function requireAdmin(req: AuthedRequest, res: Response, next: NextFunction): Promise<void> {
+  const user = req.userId ? await prisma.user.findUnique({ where: { id: req.userId }, select: { role: true } }) : null;
+  if (user?.role !== "ADMIN") {
+    logger.warn({ security: "ADMIN_DENIED", userId: req.userId, method: req.method, path: req.originalUrl.slice(0, 200) }, "admin route denied");
+    res.status(403).json({ error: "Forbidden" });
+    return;
+  }
+  next();
+}
+
+adminRouter.use(rateLimit({ windowMs: 60_000, limit: 30, standardHeaders: true, legacyHeaders: false }));
+adminRouter.use(requireAuth, requireAdmin);
+
+adminRouter.get("/hands/:handUuid/audit", async (req: AuthedRequest, res) => {
+  res.set("Cache-Control", "no-store");
+  const handUuid = String(req.params.handUuid).toLowerCase();
+  logger.info({ audit: "REGULATOR_HAND_AUDIT_ACCESS", userId: req.userId, handUuid: handUuid.slice(0, 64) }, "regulator hand audit accessed");
+  if (!UUID_V4.test(handUuid)) { res.status(400).json({ error: "handUuid must be a UUID v4" }); return; }
+  const hand = await prisma.hand.findUnique({
+    where: { handUuid },
+    select: { tableId: true, handNumber: true, handUuid: true, deckCommitment: true, finalStateHash: true, auditRecord: true, auditSealed: true },
+  });
+  if (!hand) { res.status(404).json({ error: "Hand not found" }); return; }
+  if (!hand.auditRecord || !hand.auditSealed) { res.status(409).json({ error: "This hand predates the compliance audit trail" }); return; }
+  const record = hand.auditRecord as unknown as HandAuditRecord;
+  let sealed: SealedHandAudit;
+  try {
+    sealed = decryptState<SealedHandAudit>(hand.auditSealed, sealedAuditContext(hand.tableId, hand.handNumber));
+  } catch (err) {
+    logger.error({ err, security: "AUDIT_INTEGRITY", userId: req.userId, handUuid }, "sealed hand audit failed authenticated decryption");
+    res.status(500).json({ error: "Sealed audit failed authenticated decryption" });
+    return;
+  }
+  // Independent recomputation, then the binding between the record and its indexed row.
+  let verification: SealedAuditReport = await verifySealedAudit(record, sealed);
+  const binding = verification.ok ? rowBindingError(hand, record) : null;
+  if (binding) verification = { ok: false, reason: binding };
+  if (!verification.ok) logger.error({ security: "AUDIT_INTEGRITY", userId: req.userId, handUuid, reason: verification.reason }, "sealed hand audit failed verification");
+  res.json({ record, sealed, verification });
+});

@@ -5,15 +5,27 @@ import cors from "cors";
 import express from "express";
 import rateLimit from "express-rate-limit";
 import helmet from "helmet";
-import { env } from "./config.js";
+import { env, isProd } from "./config.js";
 import { authRouter } from "./auth/routes.js";
+import { adminRouter } from "./routes/admin.js";
 import { healthRouter } from "./routes/health.js";
 import { tablesRouter } from "./routes/tables.js";
+import { isSecureTransport } from "./transport.js";
 
 export function createApp() {
   const app = express();
   app.set("trust proxy", env.TRUST_PROXY_HOPS || false);
+  // helmet's defaults include Strict-Transport-Security (max-age 365 days, includeSubDomains).
   app.use(helmet());
+  // COMPLIANCE (TLS): in production every request except the load-balancer
+  // health probe must arrive over TLS (directly or via a trusted TLS proxy).
+  // Plain HTTP is refused, not redirected, so no API payload is ever served in cleartext.
+  if (isProd) {
+    app.use((req, res, next) => {
+      if ((req.method === "GET" && req.path === "/api/health") || isSecureTransport(req, env.TRUST_PROXY_HOPS)) { next(); return; }
+      res.status(426).set({ Upgrade: "TLS/1.2, HTTP/1.1", Connection: "Upgrade" }).json({ error: "HTTPS is required" });
+    });
+  }
   app.use(
     cors({
       origin: env.CLIENT_ORIGIN,
@@ -34,6 +46,7 @@ export function createApp() {
   app.use("/api", healthRouter);
   app.use("/api/auth", rateLimit({ windowMs: 60_000, limit: 15, standardHeaders: true, legacyHeaders: false }), authRouter);
   app.use("/api/tables", tablesRouter);
+  app.use("/api/admin", adminRouter);
 
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     logger.error({ err }, "request failed");

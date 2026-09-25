@@ -1,31 +1,96 @@
-import { createHash, randomBytes } from "node:crypto";
-import type { Card, CardProof } from "@poker/shared";
+/**
+ * Pre-deal deck commitments.
+ *
+ * COMPLIANCE NOTES
+ * - `commitDeck` runs on the complete shuffled deck before any card leaves
+ *   it (see startHand). It produces two SHA-256 commitments:
+ *     * `deckCommitment` = SHA-256 of the canonical encoding of
+ *       (handId, tableId, handNumber, all 52 cards in order, 256-bit salt).
+ *       This is the audit record's commitment to the initial deck sequence.
+ *     * `root`: a salted Merkle root over the same 52 positions. It lets a
+ *       player verify each card they are shown without learning any other
+ *       card.
+ * - Salts come from the OS CSPRNG. They make both commitments hiding, so a
+ *   published commitment reveals nothing about undealt cards. The deck,
+ *   salts and tree stay in server memory and the regulator's sealed record.
+ *   They are never serialized to a client.
+ */
+import { createHash, randomBytes, randomUUID } from "node:crypto";
+import {
+  deckCommitmentPreimage,
+  MERKLE_LEAVES,
+  merkleContext,
+  merkleLeafPreimage,
+  merkleNodePreimage,
+  UUID_V4,
+  type Card,
+  type CardProof,
+} from "@poker/shared";
+import { fullDeck } from "./cards.js";
 
 export interface DeckCommitment {
+  handId: string;
+  /** Merkle leaf context: ["poker-deck-v2", tableId, handNumber, handId]. */
   context: string;
+  /** Salted Merkle root over the 52 deck positions (64 leaves). */
   root: string;
+  /** Salted flat SHA-256 commitment to the whole deck order. */
+  deckCommitment: string;
+  deckSalt: string;
   deck: Card[];
   salts: string[];
   levels: string[][];
 }
 
-const hash = (value: unknown[]) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+export const sha256Hex = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
+const salt = (): string => randomBytes(32).toString("hex");
 
-/** Salted Merkle commitment: openings reveal only cards a viewer may see. */
-export function commitDeck(deck: Card[], tableId: string, handNumber: number): DeckCommitment {
-  if (deck.length !== 52 || new Set(deck).size !== 52) throw new Error("Invalid committed deck");
-  const context = JSON.stringify(["poker-deck-v1", tableId, handNumber]);
-  const salts = Array.from({ length: 64 }, () => randomBytes(32).toString("hex"));
-  const levels = [salts.map((salt, index) => hash(["leaf-v1", context, index, deck[index] ?? null, salt]))];
+export function newHandId(): string {
+  const id = randomUUID();
+  if (!UUID_V4.test(id)) throw new Error("randomUUID did not return a UUID v4");
+  return id;
+}
+
+export function assertStandardDeck(deck: readonly Card[]): void {
+  const valid = new Set(fullDeck());
+  if (deck.length !== valid.size || new Set(deck).size !== valid.size || deck.some((card) => !valid.has(card))) {
+    throw new Error("Invalid committed deck");
+  }
+}
+
+export function merkleLevels(context: string, deck: readonly Card[], salts: readonly string[]): string[][] {
+  if (salts.length !== MERKLE_LEAVES) throw new Error("Merkle tree needs one salt per leaf");
+  const levels = [salts.map((leafSalt, index) => sha256Hex(merkleLeafPreimage(context, index, deck[index] ?? null, leafSalt)))];
   while (levels.at(-1)!.length > 1) {
     const previous = levels.at(-1)!;
     const next: string[] = [];
-    for (let i = 0; i < previous.length; i += 2) next.push(hash(["node-v1", previous[i], previous[i + 1]]));
+    for (let i = 0; i < previous.length; i += 2) next.push(sha256Hex(merkleNodePreimage(previous[i]!, previous[i + 1]!)));
     levels.push(next);
   }
-  return { context, root: levels.at(-1)![0]!, deck: [...deck], salts, levels };
+  return levels;
 }
 
+/** Commit to a complete deck order. Must be called before any card is dealt. */
+export function commitDeck(deck: readonly Card[], tableId: string, handNumber: number, handId: string): DeckCommitment {
+  assertStandardDeck(deck);
+  if (!UUID_V4.test(handId) || !tableId || !Number.isSafeInteger(handNumber) || handNumber < 1) throw new Error("Invalid hand context");
+  const context = merkleContext(tableId, handNumber, handId);
+  const salts = Array.from({ length: MERKLE_LEAVES }, salt);
+  const deckSalt = salt();
+  const levels = merkleLevels(context, deck, salts);
+  return {
+    handId,
+    context,
+    root: levels.at(-1)![0]!,
+    deckCommitment: sha256Hex(deckCommitmentPreimage(handId, tableId, handNumber, deck, deckSalt)),
+    deckSalt,
+    deck: [...deck],
+    salts,
+    levels,
+  };
+}
+
+/** Merkle opening for one position. Callers must only open positions the recipient may see. */
 export function cardProof(commitment: DeckCommitment, index: number): CardProof {
   if (!Number.isInteger(index) || index < 0 || index >= 52) throw new Error("Invalid card position");
   const siblings: string[] = [];

@@ -46,14 +46,19 @@ export default function LoginPage() {
         ← Lobby
       </Link>
       <h1 className="mt-4 font-[family-name:var(--font-display)] text-4xl">Table access</h1>
+      <p className="mt-2 text-sm text-emerald-100/70">Your seat, bankroll, and hands stay with your account.</p>
       <div className="mt-6 flex gap-3">
         <button
+          type="button"
+          aria-pressed={mode === "login"}
           className={mode === "login" ? "text-amber-200" : "text-emerald-100/50"}
           onClick={() => switchMode("login")}
         >
           Login
         </button>
         <button
+          type="button"
+          aria-pressed={mode === "register"}
           className={mode === "register" ? "text-amber-200" : "text-emerald-100/50"}
           onClick={() => switchMode("register")}
         >
@@ -61,22 +66,35 @@ export default function LoginPage() {
         </button>
       </div>
       <form onSubmit={(e) => void submit(e)} className="mt-6 flex flex-col gap-3">
+        <label htmlFor="username" className="text-sm text-emerald-100/80">Username</label>
         <input
+          id="username"
+          autoComplete="username"
+          required
           className="rounded-xl border border-white/15 bg-black/30 px-4 py-3"
           placeholder="Username"
           value={username}
           onChange={(e) => setUsername(e.target.value)}
         />
         {mode === "register" ? (
-          <input
-            className="rounded-xl border border-white/15 bg-black/30 px-4 py-3"
-            placeholder="Email"
-            type="email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-          />
+          <div className="flex flex-col gap-3">
+            <label htmlFor="email" className="text-sm text-emerald-100/80">Email</label>
+            <input
+              id="email"
+              autoComplete="email"
+              required
+              className="rounded-xl border border-white/15 bg-black/30 px-4 py-3"
+              placeholder="Email"
+              type="email"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+            />
+          </div>
         ) : null}
+        <label htmlFor="password" className="text-sm text-emerald-100/80">Password</label>
         <input
+          id="password"
+          autoComplete={mode === "register" ? "new-password" : "current-password"}
           className="rounded-xl border border-white/15 bg-black/30 px-4 py-3"
           placeholder={mode === "register" ? "Password (12–72 characters)" : "Password"}
           minLength={mode === "register" ? 12 : undefined}

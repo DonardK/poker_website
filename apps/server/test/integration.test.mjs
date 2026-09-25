@@ -9,14 +9,16 @@ import { prisma } from '../dist/db/prisma.js';
 import { TableManager, tableManager } from '../dist/game/manager.js';
 import { decryptState } from '../dist/game/encryption.js';
 import { authenticate } from '../dist/auth/middleware.js';
-import { verifyTableCards } from '@poker/shared';
+import { signAccessToken } from '../dist/auth/jwt.js';
+import { sealedAuditContext } from '../dist/game/audit.js';
+import { UUID_V4, verifyParticipantAudit, verifySealedAudit, verifyTableCards } from '@poker/shared';
 import { completeHand } from '@poker/engine';
 import { io as connectSocket } from 'socket.io-client';
 import { createSocketServer } from '../dist/socket/index.js';
 
 // Explicit opt-in. Use a disposable database and a separate administrator URL for cleanup.
 const enabled = process.env.POKER_INTEGRATION_TESTS === '1';
-test('Supabase: transactions, recovery, encrypted history, HTTP auth, socket validation', { skip: !enabled, timeout: 120_000 }, async () => {
+test('Supabase: transactions, recovery, encrypted history, audit trail routes, HTTP auth, socket validation', { skip: !enabled, timeout: 120_000 }, async () => {
   if (!process.env.DATABASE_TEST_ADMIN_URL && process.env.POKER_KEEP_TEST_FIXTURES !== '1') throw new Error('Set DATABASE_TEST_ADMIN_URL for cleanup, or POKER_KEEP_TEST_FIXTURES=1 for administrator cleanup afterwards.');
   const cleanup = process.env.DATABASE_TEST_ADMIN_URL ? new PrismaClient({ datasourceUrl: process.env.DATABASE_TEST_ADMIN_URL }) : null;
   const prefix = `qa_${randomUUID().slice(0, 8)}`;
@@ -47,9 +49,12 @@ test('Supabase: transactions, recovery, encrypted history, HTTP auth, socket val
     assert.equal((await prisma.user.findUnique({ where: { id: opponent.id } })).bankroll, 0);
     await manager.tryStart(tableId); manager.stop(); tableManager.stop();
     let state = await manager.get(tableId);
-    const root = state.fairness.root; const revision = state.revision;
+    assert.equal(state.phase, 'PREFLOP', 'tryStart deals at once: no player entropy round');
+    const root = state.fairness.root; const handId = state.fairness.handId; const revision = state.revision;
+    assert.match(handId, UUID_V4); assert.equal(state.audit.handId, handId); assert.equal(state.audit.events[0].type, 'HAND_STARTED');
     const snapshot = await manager.snapshot(tableId, session.user.id); manager.stop();
     assert.ok(await verifyTableCards(snapshot)); assert.equal(snapshot.players[1].holeCards, null);
+    assert.equal(snapshot.fairness.handId, handId); assert.equal(snapshot.fairness.deckCommitment, state.fairness.deckCommitment);
     const recovery = new TableManager(); managers.push(recovery);
     assert.deepEqual(await recovery.get(tableId), state);
     const actor = state.players[state.toActSeat];
@@ -69,9 +74,44 @@ test('Supabase: transactions, recovery, encrypted history, HTTP auth, socket val
     const history = await prisma.hand.findUnique({ where: { tableId_handNumber: { tableId, handNumber: 1 } }, include: { actions: true, players: true, pots: true } });
     assert.equal(history.fairnessRoot, root); assert.ok(history.actions.some((a) => a.street === 'RIVER'));
     assert.ok(history.players.every((p) => p.holeCards.length === 0 && p.encryptedHoleCards.startsWith('v1.')));
-    assert.equal(decryptState(history.fairnessAudit, `hand:${tableId}:1`).root, root);
     assert.equal(history.players.reduce((sum, p) => sum + p.net, 0), 0);
+    // Compliance audit columns, written in the settling transaction.
+    assert.equal(history.fairnessAudit, null, 'the legacy commitment column is not written for audited hands');
+    assert.equal(history.handUuid, handId); assert.equal(history.auditRecord.handId, handId);
+    assert.equal(history.deckCommitment, history.auditRecord.deckCommitment); assert.equal(history.finalStateHash, history.auditRecord.finalStateHash);
+    assert.match(history.finalStateHash, /^[a-f0-9]{64}$/); assert.equal(history.auditRecord.previousHandHash, null);
+    const sealed = decryptState(history.auditSealed, sealedAuditContext(tableId, 1));
+    const sealedReport = await verifySealedAudit(history.auditRecord, sealed);
+    assert.equal(sealedReport.ok, true, sealedReport.reason);
+    for (const p of history.players) {
+      assert.deepEqual(decryptState(p.encryptedHoleCards, `hand:${tableId}:1:seat:${p.seatIndex}`), sealedReport.holeCards.find((h) => h.seatIndex === p.seatIndex).cards);
+    }
+    // Participant route: redacted, verifiable, only for players dealt in.
+    const participant = await request(`/tables/${tableId}/hands/1/audit`, undefined, renewed.accessToken);
+    assert.equal(participant.status, 200);
+    const { audit } = await participant.json();
+    assert.equal(audit.viewerSeat, history.players.find((p) => p.userId === session.user.id).seatIndex);
+    assert.equal((await verifyParticipantAudit(audit)).ok, true);
+    const auditBody = JSON.stringify(audit);
+    assert.ok(!auditBody.includes(sealed.deckSalt) && !auditBody.includes('"deck":') && !auditBody.includes('"merkleSalts":'));
+    assert.equal((await request(`/tables/${tableId}/hands/2/audit`, undefined, renewed.accessToken)).status, 404);
+    assert.equal((await request(`/tables/${tableId}/hands/1e0/audit`, undefined, renewed.accessToken)).status, 400);
+    // Regulator route: ADMIN only (checked against the database row), UUID v4 only.
+    assert.equal((await request(`/admin/hands/${handId}/audit`, undefined, renewed.accessToken)).status, 403);
+    const admin = await prisma.user.create({ data: { username: prefix + '_adm', role: 'ADMIN', isGuest: true, bankroll: 0 } }); userIds.push(admin.id);
+    const adminSession = await prisma.session.create({ data: { userId: admin.id, refreshToken: randomUUID(), expiresAt: new Date(Date.now() + 600_000) } });
+    const adminToken = signAccessToken(admin.id, admin.username, adminSession.id);
+    assert.equal((await request('/admin/hands/not-a-uuid/audit', undefined, adminToken)).status, 400);
+    assert.equal((await request(`/admin/hands/${randomUUID()}/audit`, undefined, adminToken)).status, 404);
+    const regulator = await request(`/admin/hands/${handId}/audit`, undefined, adminToken);
+    assert.equal(regulator.status, 200);
+    const regulatorView = await regulator.json();
+    assert.equal(regulatorView.verification.ok, true, regulatorView.verification.reason);
+    assert.deepEqual(regulatorView.sealed, sealed); assert.deepEqual(regulatorView.verification.holeCards, sealedReport.holeCards);
+    assert.equal((await request(`/tables/${tableId}/hands/1/audit`, undefined, adminToken)).status, 404, 'players not dealt in cannot read a hand audit');
+    // Hand rows, including every audit column, are append-only to the runtime role.
     await assert.rejects(prisma.hand.update({ where: { id: history.id }, data: { potTotal: 999 } }));
+    await assert.rejects(prisma.hand.update({ where: { id: history.id }, data: { finalStateHash: '0'.repeat(64) } }));
     await manager.mutate(tableId, (current) => completeHand(current)); manager.stop();
     await manager.standUp(tableId, session.user.id); manager.stop();
     const bankroll = (await prisma.user.findUnique({ where: { id: session.user.id } })).bankroll;
@@ -84,7 +124,7 @@ test('Supabase: transactions, recovery, encrypted history, HTTP auth, socket val
     assert.equal((await request('/auth/logout', {}, null, nextCookie)).status, 204);
     await assert.rejects(authenticate(renewed.accessToken));
     assert.equal((await request('/auth/me', undefined, renewed.accessToken)).status, 401);
-    console.log('Verified concurrency, rollback, full hand, encrypted history, immutable records, restart recovery, socket validation and session revocation.');
+    console.log('Verified concurrency, rollback, full hand, encrypted history, audit trail and routes, immutable records, restart recovery, socket validation and session revocation.');
   } finally {
     client?.disconnect(); for (const manager of managers) manager.stop(); tableManager.stop();
     await new Promise((r) => socketServer.close(r)); server.close();

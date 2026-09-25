@@ -1,7 +1,7 @@
 import type { Card } from "@poker/shared";
 import { fullDeck } from "../cards.js";
 import { evaluate } from "../evaluate.js";
-import { secureRandomInt } from "../rng.js";
+import { shuffle } from "../deck.js";
 
 export function monteCarloEquity(
   hero: [Card, Card],
@@ -18,7 +18,7 @@ export function monteCarloEquity(
   let wins = 0;
   let ties = 0;
   for (let i = 0; i < iterations; i += 1) {
-    const deck = shuffleCopy(live);
+    const deck = shuffle(live);
     let idx = 0;
     const villains: [Card, Card][] = [];
     for (let v = 0; v < opponents; v += 1) {
@@ -40,15 +40,4 @@ export function monteCarloEquity(
     else if (heroRank === bestV) ties += 1 / (vWins + 1);
   }
   return (wins + ties) / iterations;
-}
-
-function shuffleCopy(cards: Card[]): Card[] {
-  const deck = cards.slice();
-  for (let i = deck.length - 1; i > 0; i -= 1) {
-    const j = secureRandomInt(i + 1);
-    const tmp = deck[i]!;
-    deck[i] = deck[j]!;
-    deck[j] = tmp;
-  }
-  return deck;
 }

@@ -1,4 +1,5 @@
-import { applyAction, applyTimeout, completeHand, createTable, leaveSeat, sitDown, sitIn, sitOut, startHand } from "../table.js";
+import { randomUUID } from "node:crypto";
+import { applyAction, completeHand, createTable, leaveSeat, sitDown, sitOut, startHand } from "../table.js";
 import { legalActions } from "../legal.js";
 import { toPublicTableState } from "../public.js";
 import { verifyCardProof, verifyTableCards } from "@poker/shared";
@@ -6,6 +7,7 @@ import { cardProof, commitDeck } from "../fairness.js";
 import { shuffledDeck } from "../deck.js";
 import { secureRandomInt } from "../rng.js";
 import type { EngineTable } from "../types.js";
+import { fullDeck } from "../cards.js";
 
 function table(stacks: number[]) {
   let t = createTable({ tableId: "regression", name: "Regression", maxSeats: 9, smallBlind: 5, bigBlind: 10, timeBankMs: 15_000 });
@@ -121,9 +123,27 @@ describe("poker security regressions", () => {
 });
 
 describe("randomness and private card proofs", () => {
-  it.each([0, -1, NaN, Infinity, 1.5, 2 ** 48])("rejects RNG range %p without hanging", (n) => { expect(() => secureRandomInt(n)).toThrow(); });
+  it.each([0, -1, NaN, Infinity, 1.5, 2 ** 32 + 1, 2 ** 48])("rejects RNG range %p without hanging", (n) => { expect(() => secureRandomInt(n)).toThrow(); });
+  it("does not show a large first-card bias across independent shuffles", () => {
+    const counts = new Map(fullDeck().map((card) => [card, 0]));
+    for (let i = 0; i < 5200; i++) {
+      const first = shuffledDeck()[0]!;
+      counts.set(first, counts.get(first)! + 1);
+    }
+    // Expected count is 100 per card. Wide limits catch severe bias without making the test flaky.
+    for (const count of counts.values()) {
+      expect(count).toBeGreaterThan(40);
+      expect(count).toBeLessThan(160);
+    }
+  });
+  it("refuses a commitment that is not exactly the standard deck", () => {
+    const deck = fullDeck();
+    expect(() => commitDeck([...deck.slice(1), deck[1]!], "bad", 1, randomUUID())).toThrow("Invalid committed deck");
+    expect(() => commitDeck([...deck.slice(1), "1s" as typeof deck[number]], "bad", 1, randomUUID())).toThrow("Invalid committed deck");
+    expect(() => commitDeck(deck, "bad", 1, "not-a-uuid")).toThrow("Invalid hand context");
+  });
   it("verifies every committed card and rejects altered card, salt, position, sibling and context", async () => {
-    const c = commitDeck(shuffledDeck(), "proof", 1);
+    const c = commitDeck(shuffledDeck(), "proof", 1, randomUUID());
     for (let i = 0; i < 52; i++) expect(await verifyCardProof(c.context, c.root, cardProof(c, i))).toBe(true);
     const proof = cardProof(c, 0);
     expect(await verifyCardProof(c.context, c.root, { ...proof, card: c.deck[1]! })).toBe(false);

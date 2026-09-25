@@ -1,9 +1,36 @@
+/**
+ * Hold'em hand state machine.
+ *
+ *   WAITING -> PREFLOP -> FLOP -> TURN -> RIVER -> SHOWDOWN -> (Hand Clean-up) -> WAITING
+ *
+ * Every public function is a pure transition. It clones the input table,
+ * applies one validated command and returns the new state. The input is never
+ * mutated, so a rejected command cannot leave a half-applied state.
+ *
+ * COMPLIANCE NOTES
+ * - Shuffle and commitment (startHand): the deck comes only from
+ *   `shuffledDeck()` (OS CSPRNG, unbiased Fisher-Yates). Its SHA-256
+ *   commitments and the audit record exist before any blind is posted or any
+ *   card leaves the deck. No API accepts a caller-chosen deck or seed.
+ * - Street isolation: board cards are taken from the deck only when their
+ *   betting round begins (or in an all-in runout, when no betting remains).
+ *   Until then they stay in the server-only `deck`.
+ * - Audit: every transition appends a hash-chained event (see audit.ts).
+ * - Settlement: pots are built with side pots for all-in players, 7-card hands
+ *   are compared, ties split with a deterministic odd-chip rule, and the
+ *   engine refuses to settle if chips are not conserved.
+ * - Hand Clean-up (completeHand): purges the deck, burns, hole cards and
+ *   commitments from live state after the sealed record is persisted.
+ */
 import type { Card } from "@poker/shared";
-import { burnAndDealFlop, burnAndDealOne, dealHoleCards, shuffledDeck } from "./deck.js";
+import { boardPositions, holeCardPositions } from "@poker/shared";
+import { burnAndDealFlop, burnAndDealOne, dealHoleCards, dealOrderFromDealer, shuffledDeck } from "./deck.js";
 import { legalActions } from "./legal.js";
-import { awardPots, buildSidePots, returnUncalledBets, type Contribution } from "./pots.js";
+import { awardPots, buildSidePots, mergePotsByEligibility, returnUncalledBets, type Contribution } from "./pots.js";
 import { pushLog } from "./public.js";
-import { commitDeck } from "./fairness.js";
+import { commitDeck, newHandId } from "./fairness.js";
+import { appendAudit, openHandAudit, sealHandAudit } from "./audit.js";
+import { evaluate } from "./evaluate.js";
 import {
   anyoneNeedsAction,
   contenders,
@@ -39,7 +66,7 @@ export function createTable(cfg: CreateTableConfig): EngineTable {
     throw new EngineError("BAD_CONFIG", "Invalid table configuration");
   }
   return {
-    revision: 0, fairness: null, dealtSeats: [], actions: [], awards: [], refunds: [],
+    revision: 0, fairness: null, audit: null, auditChainTip: null, handChipTotal: null, dealtSeats: [], actions: [], awards: [], refunds: [],
     lastActedBet: Array.from({ length: cfg.maxSeats }, () => null),
     startedAt: null, settledAt: null,
     tableId: cfg.tableId,
@@ -110,42 +137,45 @@ export function sitDown(table: EngineTable, seatIndex: number, cfg: SeatPlayerCo
   return next;
 }
 
-export function sitOut(table: EngineTable, userId: string): EngineTable {
+export function sitOut(table: EngineTable, userId: string, now = Date.now()): EngineTable {
   const next = cloneTable(table);
   const player = requirePlayer(next, userId);
   player.sittingOut = true;
   if (next.phase === "WAITING" || next.phase === "COMPLETE") player.status = "SIT_OUT";
   pushLog(next, player.seatIndex, `${player.username} sits out`);
-  if (next.toActSeat === player.seatIndex && player.status === "ACTIVE") return applyTimeout(next);
+  auditStatus(next, player, "SIT_OUT", now);
+  if (next.toActSeat === player.seatIndex && player.status === "ACTIVE") return applyTimeout(next, now);
   return next;
 }
 
-export function sitIn(table: EngineTable, userId: string): EngineTable {
+export function sitIn(table: EngineTable, userId: string, now = Date.now()): EngineTable {
   const next = cloneTable(table);
   const player = requirePlayer(next, userId);
   player.sittingOut = false;
   if (next.phase === "WAITING" || next.phase === "COMPLETE") player.status = "ACTIVE";
   pushLog(next, player.seatIndex, `${player.username} sits in`);
+  auditStatus(next, player, "SIT_IN", now);
   return next;
 }
 
-export function leaveSeat(table: EngineTable, userId: string): EngineTable {
+export function leaveSeat(table: EngineTable, userId: string, now = Date.now()): EngineTable {
   const next = cloneTable(table);
   const player = requirePlayer(next, userId);
-  const inProgress = next.phase !== "WAITING" && next.phase !== "COMPLETE" && next.phase !== "SHOWDOWN";
-  if (inProgress) {
+  if (bettingInProgress(next)) {
     player.sittingOut = true;
     player.pendingLeave = true;
     pushLog(next, player.seatIndex, `${player.username} leaves the table`);
+    auditStatus(next, player, "LEAVE", now);
     next.animToken += 1;
     // All-in hands remain eligible. Other departures check/fold on their turn;
     // out-of-turn folds can strand side pots with no eligible player.
-    if (next.toActSeat === player.seatIndex && player.status === "ACTIVE") return applyTimeout(next);
+    if (next.toActSeat === player.seatIndex && player.status === "ACTIVE") return applyTimeout(next, now);
     return next;
   }
+  // Log first: pushLog labels the entry with the seated player's name.
+  pushLog(next, player.seatIndex, `${player.username} leaves the table`);
   next.cashOuts.push({ userId: player.userId, stack: player.stack });
   next.players[player.seatIndex] = null;
-  pushLog(next, player.seatIndex, `${player.username} leaves the table`);
   next.animToken += 1;
   return next;
 }
@@ -155,6 +185,9 @@ export function startHand(table: EngineTable, now = Date.now()): EngineTable {
   const next = cloneTable(table);
   const live = liveDealSeats(next);
   if (live.length < 2) throw new EngineError("NOT_ENOUGH_PLAYERS", "Need at least two players with chips");
+  // State saved by earlier versions may still hold the retired pre-deal
+  // seed protocol (including a server seed). Drop it.
+  delete (next as EngineTable & { pendingShuffle?: unknown }).pendingShuffle;
 
   for (const p of next.players) {
     if (!p) continue;
@@ -188,10 +221,38 @@ export function startHand(table: EngineTable, now = Date.now()): EngineTable {
   next.pots = [];
   next.potTotal = 0;
   next.lastAggressorSeat = null;
+  next.audit = null;
   assignButtonAndBlinds(next);
-  postBlind(next, next.sbSeat, next.smallBlind, "small blind");
-  postBlind(next, next.bbSeat, next.bigBlind, "big blind");
-  dealHoles(next);
+
+  // Seats dealt in, in deal order: first card to the seat left of the button
+  // (the big blind heads-up).
+  next.dealtSeats = dealOrderFromDealer(next.dealerSeat, next.maxSeats,
+    next.players.map((player, seat) => receivesCards(player) ? seat : -1).filter((seat) => seat >= 0));
+  next.handChipTotal = next.dealtSeats.reduce((sum, seat) => sum + next.players[seat]!.stack, 0);
+
+  // 1. Shuffle with the OS CSPRNG. 2. Commit to the full deck order with
+  // SHA-256. 3. Open the audit record. All three happen before any blind is
+  // posted or any card is dealt.
+  next.fairness = commitDeck(shuffledDeck(), next.tableId, next.handNumber, newHandId());
+  next.deck = [...next.fairness.deck];
+  openHandAudit(next, next.fairness, now, {
+    maxSeats: next.maxSeats,
+    smallBlind: next.smallBlind,
+    bigBlind: next.bigBlind,
+    dealerSeat: next.dealerSeat,
+    sbSeat: next.sbSeat,
+    bbSeat: next.bbSeat,
+    dealtSeats: [...next.dealtSeats],
+    seats: next.dealtSeats.map((seat) => {
+      const p = next.players[seat]!;
+      return { seatIndex: seat, userId: p.userId, username: p.username, kind: p.kind, stack: p.stack };
+    }),
+    chipTotal: next.handChipTotal,
+  });
+
+  postBlind(next, next.sbSeat, next.smallBlind, "small blind", now);
+  postBlind(next, next.bbSeat, next.bigBlind, "big blind", now);
+  dealHoles(next, now);
   beginStreet(next, "PREFLOP", now);
   next.status = "IN_HAND";
   pushLog(next, null, `Hand #${next.handNumber}`);
@@ -244,6 +305,14 @@ export function applyTimeout(table: EngineTable, now = Date.now()): EngineTable 
   return next;
 }
 
+/**
+ * Hand Clean-up: SHOWDOWN -> WAITING.
+ *
+ * COMPLIANCE NOTE: the server persists the sealed audit record in the same
+ * transaction that enters SHOWDOWN. Clean-up then purges the deck, burns,
+ * hole cards, salts and commitments from live state. Between hands the table
+ * holds no card secrets, and the public view shows no cards.
+ */
 export function completeHand(table: EngineTable): EngineTable {
   if (table.phase !== "SHOWDOWN" && table.phase !== "COMPLETE") throw new EngineError("IN_HAND", "Cannot complete an unsettled hand");
   const next = cloneTable(table);
@@ -251,8 +320,29 @@ export function completeHand(table: EngineTable): EngineTable {
   next.status = "WAITING";
   next.toActSeat = null;
   next.turnStartedAt = null;
+  next.deck = [];
+  next.burns = [];
+  next.board = [];
+  next.fairness = null;
+  next.audit = null;
+  next.handChipTotal = null;
+  next.dealtSeats = [];
+  next.pots = [];
+  next.potTotal = 0;
+  next.currentBet = 0;
+  next.winners = [];
+  next.actions = [];
+  next.awards = [];
+  next.refunds = [];
+  // The hand's log (with its board cards) was persisted with the hand history.
+  next.log = [];
   for (const p of next.players) {
     if (!p) continue;
+    p.holeCards = null;
+    p.handResult = null;
+    p.showedCards = false;
+    p.committedThisStreet = 0;
+    p.committedThisHand = 0;
     if (p.pendingLeave) {
       next.cashOuts.push({ userId: p.userId, stack: p.stack });
       next.players[p.seatIndex] = null;
@@ -308,7 +398,7 @@ function assignButtonAndBlinds(table: EngineTable): void {
   }
 }
 
-function postBlind(table: EngineTable, seat: number | null, amount: number, label: string): void {
+function postBlind(table: EngineTable, seat: number | null, amount: number, label: string, now: number): void {
   if (seat == null) return;
   const player = table.players[seat];
   if (!player) return;
@@ -318,25 +408,22 @@ function postBlind(table: EngineTable, seat: number | null, amount: number, labe
   player.committedThisHand += pay;
   if (player.stack === 0) player.status = "ALL_IN";
   pushLog(table, seat, `${player.username} posts ${label} ${pay}`);
-  recordAction(table, player, label === "small blind" ? "POST_SB" : "POST_BB", pay);
+  recordAction(table, player, label === "small blind" ? "POST_SB" : "POST_BB", pay, now);
 }
 
-function dealHoles(table: EngineTable): void {
-  table.deck = shuffledDeck();
-  const order: number[] = [];
-  // First card goes left of the button, including heads-up (the BB).
-  let seat = nextIndex(table.dealerSeat, table.maxSeats);
-  for (let i = 0; i < table.maxSeats; i += 1) {
-    if (receivesCards(table.players[seat])) order.push(seat);
-    seat = nextIndex(seat, table.maxSeats);
-  }
-  table.dealtSeats = order;
-  table.fairness = commitDeck(table.deck, table.tableId, table.handNumber);
+/** Deal two orbits of hole cards to `dealtSeats` from the committed deck. */
+function dealHoles(table: EngineTable, now: number): void {
+  if (table.deck.length !== 52) throw new EngineError("DEAL", "Hole cards must come from a full committed deck");
+  const order = table.dealtSeats;
   const dealt = dealHoleCards(table.deck, order.length);
   table.deck = dealt.deck;
   order.forEach((s, i) => {
     table.players[s]!.holeCards = dealt.holeCards[i]!;
   });
+  // Positions only: hole cards stay private in the audit trail.
+  appendAudit(table, "HOLE_CARDS_DEALT", {
+    deals: order.map((seatIndex, i) => ({ seatIndex, positions: holeCardPositions(i, order.length) })),
+  }, now);
 }
 
 function beginStreet(table: EngineTable, phase: EngineTable["phase"], now: number): void {
@@ -458,15 +545,15 @@ function progressAfterAction(table: EngineTable, now = Date.now()): void {
   refreshPots(table);
   const alive = table.players.filter((p): p is EnginePlayer => p != null && (p.status === "ACTIVE" || p.status === "ALL_IN"));
   if (alive.length <= 1) {
-    settle(table, "fold");
+    settle(table, "fold", now);
     return;
   }
   const canBet = alive.filter((p) => p.status === "ACTIVE" && p.stack > 0);
   const lone = canBet[0];
   const facing = lone ? Math.max(...alive.filter((p) => p !== lone).map((p) => p.committedThisStreet), 0) : 0;
   if (canBet.length === 0 || (canBet.length === 1 && lone!.committedThisStreet >= facing)) {
-    runout(table);
-    settle(table, "showdown");
+    runout(table, now);
+    settle(table, "showdown", now);
     return;
   }
   if (anyoneNeedsAction(table)) {
@@ -481,54 +568,60 @@ function progressAfterAction(table: EngineTable, now = Date.now()): void {
     return;
   }
   if (canBet.length <= 1) {
-    runout(table);
-    settle(table, "showdown");
+    runout(table, now);
+    settle(table, "showdown", now);
     return;
   }
   if (table.phase === "RIVER") {
-    settle(table, "showdown");
+    settle(table, "showdown", now);
     return;
   }
-  dealNextBoard(table);
-  const nextPhase =
-    table.phase === "PREFLOP" ? "FLOP" : table.phase === "FLOP" ? "TURN" : "RIVER";
-  beginStreet(table, nextPhase, now);
+  dealStreet(table, false, now);
+  beginStreet(table, table.phase, now);
   if (!anyoneNeedsAction(table) || (table.toActSeat != null && table.players[table.toActSeat]?.sittingOut)) progressAfterAction(table, now);
 }
 
-function dealNextBoard(table: EngineTable): void {
-  if (table.phase === "PREFLOP") {
+/**
+ * Burn one card, then deal the next street from the top of the deck. This is
+ * the only place board cards leave the deck, and it is called only when that
+ * street begins (or during an all-in runout).
+ */
+function dealStreet(table: EngineTable, runout: boolean, now: number): void {
+  const burnPosition = 52 - table.deck.length;
+  const dealtCount = table.dealtSeats.length;
+  let street: "FLOP" | "TURN" | "RIVER";
+  let cards: Card[];
+  if (table.board.length === 0) {
     const flop = burnAndDealFlop(table.deck);
     table.deck = flop.deck;
     table.burns.push(flop.burn);
-    table.board.push(...flop.flop);
-    pushLog(table, null, `Flop ${flop.flop.join(" ")}`);
-  } else {
+    cards = [...flop.flop];
+    street = "FLOP";
+  } else if (table.board.length === 3 || table.board.length === 4) {
     const one = burnAndDealOne(table.deck);
     table.deck = one.deck;
     table.burns.push(one.burn);
-    table.board.push(one.card);
-    pushLog(table, null, `${table.phase === "FLOP" ? "Turn" : "River"} ${one.card}`);
+    cards = [one.card];
+    street = table.board.length === 3 ? "TURN" : "RIVER";
+  } else {
+    throw new EngineError("DEAL", "Board is already complete");
   }
+  const positions = cards.map((_, i) => burnPosition + 1 + i);
+  const expected = boardPositions(dealtCount).slice(table.board.length, table.board.length + cards.length);
+  if (positions.some((p, i) => p !== expected[i])) throw new EngineError("DEAL", "Deck position out of sequence");
+  table.board.push(...cards);
+  table.phase = street;
+  if (!runout) pushLog(table, null, street === "FLOP" ? `Flop ${cards.join(" ")}` : `${street === "TURN" ? "Turn" : "River"} ${cards[0]}`);
+  appendAudit(table, "STREET_DEALT", { street, burnPosition, positions, cards: [...cards], runout }, now);
 }
 
-function runout(table: EngineTable): void {
-  while (table.board.length < 5) {
-    if (table.board.length === 0) {
-      const flop = burnAndDealFlop(table.deck);
-      table.deck = flop.deck;
-      table.burns.push(flop.burn);
-      table.board.push(...flop.flop);
-    } else {
-      const one = burnAndDealOne(table.deck);
-      table.deck = one.deck;
-      table.burns.push(one.burn);
-      table.board.push(one.card);
-    }
-  }
+/** All-in with no betting left: deal the remaining streets in order. */
+function runout(table: EngineTable, now: number): void {
+  while (table.board.length < 5) dealStreet(table, true, now);
 }
 
-function settle(table: EngineTable, reason: "fold" | "showdown"): void {
+function settle(table: EngineTable, reason: "fold" | "showdown", now: number): void {
+  table.phase = "SHOWDOWN";
   const contribs: Contribution[] = [];
   const holeCards: Record<number, [Card, Card]> = {};
   for (const p of table.players) {
@@ -541,10 +634,22 @@ function settle(table: EngineTable, reason: "fold" | "showdown"): void {
     if (p.holeCards) holeCards[p.seatIndex] = p.holeCards;
   }
 
+  // All live hands are tabled at showdown. Hands that folded or won
+  // uncontested are never shown.
   if (reason === "showdown") {
     for (const p of contenders(table)) {
       p.showedCards = true;
     }
+    appendAudit(table, "SHOWDOWN", {
+      shown: table.dealtSeats.filter((seat) => table.players[seat]?.showedCards).map((seat) => {
+        const p = table.players[seat]!;
+        const hand = evaluate([...p.holeCards!, ...table.board]);
+        return {
+          seatIndex: seat, cards: [...p.holeCards!], positions: holeCardPositions(table.dealtSeats.indexOf(seat), table.dealtSeats.length),
+          category: hand.category, rankValue: hand.rankValue, handName: hand.name, bestFive: [...hand.bestFive],
+        };
+      }),
+    }, now);
   }
 
   const awarded = awardPots({
@@ -557,7 +662,7 @@ function settle(table: EngineTable, reason: "fold" | "showdown"): void {
 
   table.awards = awarded.pots;
   table.refunds = [...awarded.returned].map(([seatIndex, amount]) => ({ seatIndex, amount }));
-  table.settledAt = Date.now();
+  table.settledAt = now;
   table.pots = awarded.pots.map((p) => ({
     potIndex: p.potIndex,
     amount: p.amount,
@@ -581,7 +686,28 @@ function settle(table: EngineTable, reason: "fold" | "showdown"): void {
     const extra = name ? ` with ${name}` : "";
     pushLog(table, seat, `${player.username} wins $${amount}${extra}`);
   }
-  table.phase = "SHOWDOWN";
+  appendAudit(table, "POTS_AWARDED", {
+    pots: awarded.pots.map((p) => ({
+      potIndex: p.potIndex, amount: p.amount, eligibleSeatIndexes: [...p.eligibleSeatIndexes],
+      winnerSeatIndexes: [...p.winnerSeatIndexes], oddChipSeatIndex: p.oddChipSeatIndex,
+    })),
+    refunds: table.refunds.map((r) => ({ seatIndex: r.seatIndex, amount: r.amount })),
+    payouts: [...awarded.payouts].sort(([a], [b]) => a - b).map(([seatIndex, amount]) => ({ seatIndex, amount })),
+  }, now);
+
+  // Invariant: settlement redistributes chips and never creates or destroys them.
+  const chipTotal = table.dealtSeats.reduce((sum, seat) => sum + (table.players[seat]?.stack ?? 0), 0);
+  // `!= null`: tables persisted before this field existed decrypt with it undefined.
+  if (table.handChipTotal != null && chipTotal !== table.handChipTotal) {
+    throw new EngineError("CHIP_INVARIANT", `Chip conservation failed: ${chipTotal} after settlement, ${table.handChipTotal} at hand start`);
+  }
+  appendAudit(table, "HAND_SETTLED", {
+    reason,
+    board: [...table.board],
+    stacks: table.dealtSeats.map((seat) => ({ seatIndex: seat, stack: table.players[seat]!.stack })),
+    chipTotal,
+  }, now);
+  sealHandAudit(table, now);
   table.toActSeat = null;
   table.turnStartedAt = null;
   table.status = "IN_HAND";
@@ -611,10 +737,30 @@ function refreshPots(table: EngineTable): void {
     return;
   }
   const { adjusted } = returnUncalledBets(contribs);
-  table.pots = buildSidePots(adjusted);
+  // Same pot identity as settlement: layers with equal eligible players are one pot.
+  table.pots = mergePotsByEligibility(buildSidePots(adjusted));
 }
 
-function recordAction(table: EngineTable, player: EnginePlayer, action: EngineTable["actions"][number]["action"], amount: number, now = Date.now()): void {
+function recordAction(table: EngineTable, player: EnginePlayer, action: EngineTable["actions"][number]["action"], amount: number, now: number): void {
   table.actions.push({ seq: table.actions.length, seatIndex: player.seatIndex, street: table.phase, action, amount, toAmount: player.committedThisStreet, at: new Date(now).toISOString() });
-  if (action !== "POST_SB" && action !== "POST_BB") table.lastActedBet[player.seatIndex] = table.currentBet;
+  if (action === "POST_SB" || action === "POST_BB") {
+    appendAudit(table, "BLIND_POSTED", { seatIndex: player.seatIndex, blind: action === "POST_SB" ? "SMALL" : "BIG", amount, allIn: player.stack === 0 }, now);
+    return;
+  }
+  table.lastActedBet[player.seatIndex] = table.currentBet;
+  appendAudit(table, "PLAYER_ACTION", {
+    seatIndex: player.seatIndex, action, amount, toAmount: player.committedThisStreet, stackAfter: player.stack,
+    timeout: action === "TIMEOUT_CHECK" || action === "TIMEOUT_FOLD",
+  }, now);
+}
+
+function bettingInProgress(table: EngineTable): boolean {
+  return table.phase === "PREFLOP" || table.phase === "FLOP" || table.phase === "TURN" || table.phase === "RIVER";
+}
+
+/** Record sit-out / sit-in / leave for a player dealt into the running hand. */
+function auditStatus(table: EngineTable, player: EnginePlayer, status: "SIT_OUT" | "SIT_IN" | "LEAVE", now: number): void {
+  if (bettingInProgress(table) && table.dealtSeats.includes(player.seatIndex)) {
+    appendAudit(table, "PLAYER_STATUS", { seatIndex: player.seatIndex, status }, now);
+  }
 }

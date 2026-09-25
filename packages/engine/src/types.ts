@@ -8,7 +8,7 @@ import type {
   PlayerStatus,
   TableStatus,
 } from "@poker/shared";
-import type { EvaluatedHand } from "@poker/shared";
+import type { EvaluatedHand, HandAuditRecord } from "@poker/shared";
 import type { BuiltPot } from "./pots.js";
 import type { DeckCommitment } from "./fairness.js";
 
@@ -41,9 +41,28 @@ export interface EnginePlayer {
   pendingLeave: boolean;
 }
 
+/**
+ * Authoritative server-side table state.
+ *
+ * COMPLIANCE NOTE (state isolation): this object holds secrets: `deck`,
+ * `burns`, `fairness` (deck order and salts) and every player's
+ * `holeCards`. It exists only in server memory. At rest it is encrypted with
+ * AES-256-GCM. It must never be serialized to a client. The only client
+ * projection is `toPublicTableState` / `projectTableState` in public.ts,
+ * which copies an allow-list of fields per viewer and is checked by
+ * `assertViewerStateSafe` before every emission.
+ */
 export interface EngineTable {
   revision: number;
+  /** Pre-deal commitments for the current hand; null between hands. */
   fairness: DeckCommitment | null;
+  /** Hash-chained audit record for the current hand; null between hands. */
+  audit: HandAuditRecord | null;
+  /** finalStateHash of the previous audited hand at this table. */
+  auditChainTip: string | null;
+  /** Sum of dealt players' stacks at hand start (chip-conservation invariant). */
+  handChipTotal: number | null;
+  /** Seats dealt into the current hand, in deal order (first card left of the button). */
   dealtSeats: number[];
   lastActedBet: (number | null)[];
   actions: { seq: number; seatIndex: number; street: HandPhase; action: ActionType | "POST_SB" | "POST_BB" | "TIMEOUT_CHECK" | "TIMEOUT_FOLD"; amount: number; toAmount: number; at: string }[];

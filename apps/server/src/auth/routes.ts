@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomInt } from "node:crypto";
 import bcrypt from "bcryptjs";
 import { Router } from "express";
 import { REFRESH_COOKIE_NAME, type PublicUser } from "@poker/shared";
@@ -99,7 +99,7 @@ authRouter.post("/register", async (req, res) => {
       email,
       passwordHash: await bcrypt.hash(password, 12),
       bankroll: env.DEFAULT_STARTING_BANKROLL,
-      avatarHue: Math.floor(Math.random() * 360),
+      avatarHue: randomInt(360),
     },
   });
   res.status(201).json(await issueSession(user, req, res));
@@ -134,7 +134,7 @@ authRouter.post("/guest", async (req, res) => {
       username: `Guest_${suffix}`,
       isGuest: true,
       bankroll: env.DEFAULT_STARTING_BANKROLL,
-      avatarHue: Math.floor(Math.random() * 360),
+      avatarHue: randomInt(360),
     },
   });
   res.status(201).json(await issueSession(user, req, res));

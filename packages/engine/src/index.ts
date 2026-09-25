@@ -2,6 +2,8 @@ export { ENGINE_ISOLATION_BOUNDARY } from "./isolation.js";
 export * from "./cards.js";
 export * from "./rng.js";
 export * from "./deck.js";
+export * from "./fairness.js";
+export * from "./audit.js";
 export * from "./evaluate.js";
 export * from "./pots.js";
 export * from "./types.js";

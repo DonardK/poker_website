@@ -11,6 +11,8 @@ npm ci
 npm run dev
 ```
 
+On Windows PowerShell, use `npm.cmd run dev` if script execution blocks `npm.ps1`. Run the root `dev` command so the web app and API start together; starting only `dev:web` leaves login and tables unavailable.
+
 Open http://localhost:3000. The API and sockets use port 4000. New tables create their own bots; seeding is optional. For a fresh checkout, copy `.env.example` to `.env`, supply the database URL, generate three independent secrets, and configure only `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SOCKET_URL` in `apps/web/.env.local` if changing the defaults.
 
 ## Database and migrations
@@ -32,10 +34,14 @@ The opt-in integration test creates tagged play-chip fixtures. Use a disposable 
 
 ## Security and fairness
 
-The deck uses an operating-system-backed cryptographic random source and unbiased Fisher-Yates shuffling. Salted SHA-256 Merkle commitments let the browser verify each visible card against the initial deck commitment without exposing hidden cards. A failed proof or changing commitment stops that client from playing. Independent randomness still produces streaks and repeated outcomes.
+See [COMPLIANCE.md](COMPLIANCE.md) for the requirement-by-requirement dossier and measured test results, and [SECURITY-REVIEW.md](SECURITY-REVIEW.md) for the threat model.
 
-Game state, hidden cards, and audit decks are encrypted with AES-256-GCM and record-specific authenticated context. The database connection verifies TLS certificates. Transactions lock each table and atomically update chips, seats, encrypted state, and completed history. Revisions reject replayed or stale actions. Completed history cannot be updated or deleted by the runtime role, including through parent deletion.
+Every hand is shuffled with an unbiased Fisher-Yates (Durstenfeld) shuffle. Each swap index comes from the operating system's CSPRNG (`crypto.randomFillSync`) with explicit rejection sampling, so there is no modulo bias. The code has no `Math.random` and no seeded generator. Before any blind is posted or card dealt, the engine assigns the hand a UUID v4 and computes a salted SHA-256 commitment to the complete deck order plus a salted Merkle root. Both are published in the first snapshot of the hand. Community cards leave the server-only deck only when their betting round starts. Each player receives only their own hole cards and a Merkle proof for every card they can see. A fail-closed guard refuses to send any snapshot that contains more. Every action and state transition is appended to a SHA-256 hash chain. The chain is sealed with a post-hand verification hash and linked to the previous hand at the table.
 
-Back up `GAME_ENCRYPTION_KEY` in a secret manager: losing it makes saved games and private audit records unreadable. Rotation needs a controlled decrypt/re-encrypt migration. Production requires HTTPS for web/API, strict database TLS, separate JWT secrets, and TLS for Redis when enabled. Configure trusted proxy hops only for the actual deployment topology.
+After a hand, a participant can use **Verify hand**. It fetches a redacted audit (the hash chain, plus proofs for their own cards, the board and hands tabled at showdown), recomputes every hash, and compares the result with the commitments and chain head the browser recorded during play. Mucked and undealt cards are never revealed to players. The full sealed record (deck order and salts) is available only to ADMIN users through `/api/admin/hands/:handUuid/audit`.
 
-This is a play-chip application. Commitments detect changes after the initial commitment; they do not prove that an operator did not select a deck beforehand, and the server still knows the deck. Email ownership verification, MFA, anti-collusion operations, independent RNG/security certification, and real-money accounting/compliance are not implemented. See [verification report](SECURITY-REVIEW.md).
+Game state, sealed audits and hole cards are encrypted with AES-256-GCM and record-specific authenticated context. The database connection verifies TLS certificates. Transactions lock each table and atomically update chips, seats, encrypted state, completed history and the audit record. Revisions reject replayed or stale actions. The runtime database role cannot update or delete completed history, including its audit columns.
+
+Back up `GAME_ENCRYPTION_KEY` in a secret manager: losing it makes saved games and sealed audits unreadable. Rotation needs a controlled decrypt/re-encrypt migration. Production refuses to start unless TLS is configured: either `TLS_CERT_FILE`/`TLS_KEY_FILE`, or `TRUST_PROXY_HOPS >= 1` behind a TLS-terminating proxy. It also requires strict database TLS, separate JWT secrets, and TLS for Redis when Redis is enabled. Apply migration `20260924120000_compliance_audit_trail` before deploying this version.
+
+This is a play-chip application. The engine is built toward GLI-19/MGA technical expectations but is **not certified**. Laboratory RNG certification, external anchoring of audit hashes, KYC, responsible-gaming controls, anti-collusion operations and real-money accounting are not in place.
