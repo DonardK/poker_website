@@ -51,6 +51,11 @@ export interface SocketErrorPayload {
   message: string;
 }
 
+export type CommandResult =
+  | { ok: true; pendingLeave?: boolean }
+  | { ok: false; code: string; message: string };
+export type CommandAck = (result: CommandResult) => void;
+
 export interface AuthOkPayload {
   userId: string;
   username: string;
@@ -75,6 +80,10 @@ export interface PublicPlayerView {
   isSb: boolean;
   isBb: boolean;
   sittingOut: boolean;
+  /** The seat will be released and its chips returned after this hand. */
+  pendingLeave: boolean;
+  /** Seated, but dealt in only once the big blind reaches this seat. */
+  waitingForBigBlind: boolean;
   /** Present only for the viewing player, or for hands tabled at showdown. */
   holeCards: [Card, Card] | null;
   timeBankMsRemaining: number | null;
@@ -132,6 +141,7 @@ export interface HandHistoryLogEntry {
 
 export interface UserPatchPayload {
   bankroll: number;
+  cashOutTableId?: string;
 }
 
 export interface ServerToClientEvents {
@@ -148,9 +158,9 @@ export interface ClientToServerEvents {
   [SOCKET_EVENTS.SEAT_CLAIM]: (payload: SeatClaimPayload) => void;
   [SOCKET_EVENTS.SIT_OUT]: (payload: SitTogglePayload) => void;
   [SOCKET_EVENTS.SIT_IN]: (payload: SitTogglePayload) => void;
-  [SOCKET_EVENTS.ACTION_INTENT]: (payload: ActionIntentPayload) => void;
+  [SOCKET_EVENTS.ACTION_INTENT]: (payload: ActionIntentPayload, ack?: CommandAck) => void;
   [SOCKET_EVENTS.REHYDRATE]: (payload: RehydratePayload) => void;
-  [SOCKET_EVENTS.STAND_UP]: (payload: SitTogglePayload) => void;
+  [SOCKET_EVENTS.STAND_UP]: (payload: SitTogglePayload, ack?: CommandAck) => void;
 }
 
 export interface SocketData {

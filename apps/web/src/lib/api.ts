@@ -22,6 +22,7 @@ export async function api<T>(
   try {
     res = await fetch(`${API_URL}${path}`, {
       ...rest,
+      signal: "signal" in rest ? rest.signal : AbortSignal.timeout(12_000),
       credentials: "include",
       headers: {
         "Content-Type": "application/json",
@@ -42,6 +43,8 @@ export async function api<T>(
 
 let pendingRefresh: Promise<import("@poker/shared").AuthResponse> | null = null;
 export function refreshSession() {
-  if (!pendingRefresh) pendingRefresh = api<import("@poker/shared").AuthResponse>("/api/auth/refresh", { method: "POST" }).finally(() => { pendingRefresh = null; });
+  // A refresh may rotate the cookie on the server after a client-side timeout.
+  // Let the transport fail naturally so a retry cannot invalidate that session.
+  if (!pendingRefresh) pendingRefresh = api<import("@poker/shared").AuthResponse>("/api/auth/refresh", { method: "POST", signal: null }).finally(() => { pendingRefresh = null; });
   return pendingRefresh;
 }

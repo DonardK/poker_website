@@ -1,7 +1,7 @@
 import { tableManager } from "./game/manager.js";
 import { createApp } from "./app.js";
 import { env } from "./config.js";
-import { prisma } from "./db/prisma.js";
+import { assertGameSchemaReady, prisma } from "./db/prisma.js";
 import { logger } from "./logger.js";
 import { connectRedis, disconnectRedis } from "./redis/client.js";
 import { createSocketServer } from "./socket/index.js";
@@ -36,11 +36,13 @@ async function listen(httpServer: WebServer, port: number, attempts = 10): Promi
 async function main() {
   await connectRedis();
   await prisma.$connect();
+  await assertGameSchemaReady();
 
   const app = createApp();
   // COMPLIANCE (TLS): node:https when certificate files are configured. In
   // production without them, config.ts requires a trusted TLS proxy, and
-  // app.ts / the Socket.io handshake refuse requests that did not use TLS.
+  // app.ts (HTTP API) and the engine.io transport guard (every Socket.io
+  // request, see socket/index.ts) refuse requests that did not use TLS.
   const { server: httpServer, secure } = createListener(app, { certFile: env.TLS_CERT_FILE, keyFile: env.TLS_KEY_FILE });
   const io = createSocketServer(httpServer);
   await tableManager.recover();

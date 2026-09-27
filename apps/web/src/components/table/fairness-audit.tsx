@@ -3,21 +3,24 @@
 import { useEffect, useState } from "react";
 import { verifyParticipantAudit, type ParticipantHandAudit, type PublicTableState } from "@poker/shared";
 import { api } from "@/lib/api";
-import { liveEvidenceKey, readLiveEvidence } from "@/hooks/use-table-socket";
+import { liveEvidenceKey, readLiveEvidence, type LiveHandEvidence } from "@/hooks/use-table-socket";
+import { useAuthStore } from "@/stores/session";
 
 /**
  * Post-hand verification for a participant. The server returns only the
  * redacted audit: the hash-chained action log plus Merkle openings for this
  * player's own hole cards, the board and hands tabled at showdown. The
- * browser recomputes every hash. It checks the openings against the
- * pre-deal commitment and compares the record with the commitments, chain
- * head and hole cards it saw during live play.
+ * browser recomputes every hash and checks the openings against the record's
+ * Merkle deck root. When this browser recorded the hand live, it also
+ * compares the record with the commitments, audit-chain head and hole-card
+ * digest it saw then.
  */
 export function FairnessAudit({ tableId, accessToken, snapshot }: {
   tableId: string;
   accessToken: string;
   snapshot: PublicTableState;
 }) {
+  const userId = useAuthStore((s) => s.user?.id ?? null);
   const active = ["PREFLOP", "FLOP", "TURN", "RIVER"].includes(snapshot.phase);
   const latestHand = snapshot.handNumber - (active ? 1 : 0);
   const [selectedHand, setSelectedHand] = useState(String(latestHand));
@@ -32,18 +35,24 @@ export function FairnessAudit({ tableId, accessToken, snapshot }: {
       setResult({ hand: 0, valid: false, message: `Choose a hand from 1 to ${latestHand}.` });
       return;
     }
+    if (!userId) {
+      setResult({ hand: 0, valid: false, message: "Sign in to verify a hand." });
+      return;
+    }
     setChecking(true);
     try {
       const { audit } = await api<{ audit: ParticipantHandAudit }>(`/api/tables/${encodeURIComponent(tableId)}/hands/${handNumber}/audit`, { token: accessToken });
-      const observed = readLiveEvidence(liveEvidenceKey(tableId, handNumber));
-      const verdict = await verifyParticipantAudit(audit, observed ?? {});
+      const evidence = readLiveEvidence(liveEvidenceKey(userId, tableId, handNumber));
+      // COMPLIANCE NOTE: the expected table, hand number and player come from
+      // this request and the signed-in session, never from storage or the
+      // server's response. An audit of another table or hand, or of another
+      // player's seat, fails.
+      const verdict = await verifyParticipantAudit(audit, { ...evidence, tableId, handNumber, userId });
       setResult({
         hand: handNumber,
         valid: verdict.ok,
         message: verdict.ok
-          ? observed
-            ? "Deck commitment, your cards, the board and the full action log verified against what you saw live."
-            : "Deck commitment, cards and action log verified. This browser did not record this hand live."
+          ? successMessage(evidence)
           : `Verification failed: ${verdict.reason ?? "unknown reason"}. Stop playing and save this hand number.`,
       });
     } catch (error) {
@@ -69,4 +78,21 @@ export function FairnessAudit({ tableId, accessToken, snapshot }: {
         <span role="status" className={`max-w-64 text-xs ${result.valid ? "text-emerald-200" : "text-red-200"}`}>{result.message}</span> : null}
     </div>
   );
+}
+
+/**
+ * Claim exactly what verifyParticipantAudit proved. A participant never
+ * receives the deck or salts, so the SHA-256 deck commitment can only be
+ * compared with the value seen live, never recomputed.
+ */
+function successMessage(evidence: LiveHandEvidence | null): string {
+  if (!evidence) {
+    return "The record is internally consistent and every card you could see matches its Merkle deck commitment, " +
+      "but this browser has no live record of this hand to compare it against.";
+  }
+  return evidence.holeCardsDigest !== undefined
+    ? "The record matches the pre-deal deck commitment, your hole cards and the audit chain this browser saw live. " +
+      "The board and the hash-chained action log verify."
+    : "The record matches the pre-deal deck commitment and the audit chain this browser saw live. " +
+      "The board and the hash-chained action log verify. This browser did not record your hole cards for this hand.";
 }

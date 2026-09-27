@@ -8,6 +8,7 @@ import helmet from "helmet";
 import { env, isProd } from "./config.js";
 import { authRouter } from "./auth/routes.js";
 import { adminRouter } from "./routes/admin.js";
+import { adminAccessLog } from "./routes/admin-access-log.js";
 import { healthRouter } from "./routes/health.js";
 import { tablesRouter } from "./routes/tables.js";
 import { isSecureTransport } from "./transport.js";
@@ -15,6 +16,9 @@ import { isSecureTransport } from "./transport.js";
 export function createApp() {
   const app = express();
   app.set("trust proxy", env.TRUST_PROXY_HOPS || false);
+  // COMPLIANCE (audit access logging): first, so every /api/admin request is
+  // logged with its outcome, including TLS (426) and rate-limit (429) refusals.
+  app.use("/api/admin", adminAccessLog(logger));
   // helmet's defaults include Strict-Transport-Security (max-age 365 days, includeSubDomains).
   app.use(helmet());
   // COMPLIANCE (TLS): in production every request except the load-balancer

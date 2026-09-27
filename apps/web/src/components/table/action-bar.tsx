@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { SOCKET_EVENTS, type ActionType, type LegalActionSet } from "@poker/shared";
 import { getSocket } from "@/lib/socket";
 import { playSound } from "@/lib/sounds";
+import { useTableStore } from "@/stores/session";
 
 export function ActionBar({
   tableId,
@@ -13,7 +14,6 @@ export function ActionBar({
   stack,
   pot,
   currentBet,
-  error,
   disconnected = false,
 }: {
   tableId: string;
@@ -23,7 +23,6 @@ export function ActionBar({
   stack: number;
   pot: number;
   currentBet: number;
-  error?: string | null;
   disconnected?: boolean;
 }) {
   const max = legal.maxRaiseTo;
@@ -31,7 +30,7 @@ export function ActionBar({
   const [amount, setAmount] = useState(min);
   const [pending, setPending] = useState(false);
   const lastMin = useRef(min);
-  const lastSent = useRef(0);
+  const inFlight = useRef(false);
 
   useEffect(() => {
     if (lastMin.current !== min) {
@@ -39,14 +38,6 @@ export function ActionBar({
       setAmount(min);
     }
   }, [min]);
-
-  useEffect(() => { setPending(false); }, [revision, error]);
-  useEffect(() => {
-    if (!pending) return;
-    const timeout = window.setTimeout(() => setPending(false), 4_000);
-    return () => window.clearTimeout(timeout);
-  }, [pending]);
-
   const clamped = Math.max(min, Math.min(max, amount));
 
   const shortcuts = useMemo(() => {
@@ -60,18 +51,27 @@ export function ActionBar({
     ];
   }, [min, max, pot, currentBet, legal.callAmount]);
 
-  function send(action: ActionType, value?: number) {
-    if (pending || disconnected || Date.now() - lastSent.current < 750) return;
-    lastSent.current = Date.now();
+  async function send(action: ActionType, value?: number) {
+    const socket = getSocket(accessToken);
+    if (inFlight.current || disconnected || !socket.connected) return;
+    inFlight.current = true;
     setPending(true);
+    useTableStore.getState().setTableError(null);
     playSound(action === "FOLD" ? "turn" : "chip");
-    getSocket(accessToken).emit(SOCKET_EVENTS.ACTION_INTENT, {
-      tableId,
-      revision,
-      action,
-      amount: value,
-      clientActionId: crypto.randomUUID(),
-    });
+    try {
+      const reply = await socket.timeout(10_000).emitWithAck(SOCKET_EVENTS.ACTION_INTENT, {
+        tableId, revision, action, amount: value, clientActionId: crypto.randomUUID(),
+      });
+      if (!reply.ok) useTableStore.getState().setTableError(reply.message);
+    } catch {
+      if (useTableStore.getState().snapshot?.tableId === tableId && useTableStore.getState().snapshot?.revision === revision) {
+        useTableStore.getState().setTableError("Action confirmation timed out. Checking the table before you retry.");
+        if (socket.connected) socket.emit(SOCKET_EVENTS.REHYDRATE, { tableId });
+      }
+    } finally {
+      inFlight.current = false;
+      setPending(false);
+    }
   }
 
   const callLabel =

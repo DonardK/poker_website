@@ -8,6 +8,9 @@ interface AuthState {
   accessToken: string | null;
   hydrated: boolean;
   apiOffline: boolean;
+  walletVersion: number;
+  leavingTableId: string | null;
+  setLeavingTableId: (tableId: string | null) => void;
   setSession: (user: PublicUser, accessToken: string) => void;
   clearSession: () => void;
   markHydrated: () => void;
@@ -20,12 +23,16 @@ export const useAuthStore = create<AuthState>((set) => ({
   accessToken: null,
   hydrated: false,
   apiOffline: false,
-  setSession: (user, accessToken) => set({ user, accessToken, hydrated: true, apiOffline: false }),
-  clearSession: () => set({ user: null, accessToken: null, hydrated: true }),
+  walletVersion: 0,
+  leavingTableId: null,
+  setLeavingTableId: (leavingTableId) => set({ leavingTableId }),
+  setSession: (user, accessToken) => set((state) => ({ user, accessToken, hydrated: true, apiOffline: false,
+    walletVersion: state.user?.id === user.id ? state.walletVersion : 0 })),
+  clearSession: () => set({ user: null, accessToken: null, hydrated: true, leavingTableId: null, walletVersion: 0 }),
   markHydrated: () => set({ hydrated: true }),
   setApiOffline: (apiOffline) => set({ apiOffline }),
   patchBankroll: (bankroll) =>
-    set((state) => (state.user ? { user: { ...state.user, bankroll } } : state)),
+    set((state) => (state.user ? { user: { ...state.user, bankroll }, walletVersion: state.walletVersion + 1 } : state)),
 }));
 
 interface TableStore {

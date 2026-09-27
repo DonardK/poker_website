@@ -39,6 +39,14 @@ export interface EnginePlayer {
   handResult: EvaluatedHand | null;
   /** Fold now, cash out remaining stack when the hand ends. */
   pendingLeave: boolean;
+  /**
+   * Seated and ready, but dealt in only when the big blind reaches this seat
+   * (standard rule for newcomers and for players returning after missing
+   * blinds). This prevents joining in position or dodging blinds.
+   */
+  waitingForBigBlind: boolean;
+  /** The blinds passed this seat while it was sitting out; it waits for the big blind on return. */
+  missedBlind: boolean;
 }
 
 /**
@@ -64,6 +72,11 @@ export interface EngineTable {
   handChipTotal: number | null;
   /** Seats dealt into the current hand, in deal order (first card left of the button). */
   dealtSeats: number[];
+  /**
+   * Seat where the small blind was due this hand, even if nobody posted it
+   * (dead small blind). The next hand's button goes here (dead-button rule).
+   */
+  smallBlindPosition: number | null;
   lastActedBet: (number | null)[];
   actions: { seq: number; seatIndex: number; street: HandPhase; action: ActionType | "POST_SB" | "POST_BB" | "TIMEOUT_CHECK" | "TIMEOUT_FOLD"; amount: number; toAmount: number; at: string }[];
   awards: import("@poker/shared").PotShare[];

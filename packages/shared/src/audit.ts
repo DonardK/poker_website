@@ -157,7 +157,12 @@ export interface ObservedHandEvidence {
   deckCommitment?: string;
   auditSeq?: number;
   auditHead?: string;
-  /** holeCardsDigest(handId, ownCards) recorded live, so the browser never stores the cards. */
+  /**
+   * holeCardsDigest(handId, ownCards) recorded live. This is an INTEGRITY
+   * check only. With 2,652 possible ordered pairs and a known handId it can be
+   * reversed by trial, so it does not hide the cards; the client keeps it
+   * per-user, prunes it and clears it at sign-out.
+   */
   holeCardsDigest?: string;
 }
 
@@ -282,7 +287,7 @@ function extraKey(value: Record<string, unknown>, allowed: ReadonlySet<string>):
   return Object.keys(value).find((key) => !allowed.has(key)) ?? null;
 }
 
-/** Digest of a player's own hole cards, recorded by the browser instead of the cards themselves. */
+/** Digest of a player's own hole cards for live-versus-audit comparison (integrity, not secrecy). */
 export function holeCardsDigestPreimage(handId: string, cards: readonly [Card, Card]): string {
   return canonicalJson(["poker-hole-evidence-v1", handId, cards[0], cards[1]]);
 }

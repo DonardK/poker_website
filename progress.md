@@ -16,6 +16,58 @@ Handoff doc. Spec: `plan.md`. Do not restart from Phase 1.
 
 ---
 
+## 2026-09-28 - restore live games and switch new tables to human multiplayer
+
+- **Root cause:** The running server used a Prisma schema with five hand-audit columns that OnlinePoker did not have. At settlement, `Hand.handUuid` caused a `P2022` database error, so turns retried and games looked frozen. Applied the existing additive compliance migration to OnlinePoker, recorded it in both Supabase and Prisma migration histories, and aligned the Supabase migration filename with its recorded version. A previously stalled table then recorded its next two hands and returned to WAITING. Startup now checks the required columns and fails with a migration instruction instead of accepting games that cannot settle.
+- **Human tables:** New standard and custom tables contain only human seats. The server rejects bot creation requests and keeps legacy bot tables visible only to players still seated at them. The lobby explains that two people must sit before a hand starts; the table has a clear waiting message and a copy-link control. Custom tables can be named. Creation returns to the table immediately after the server confirms it, even if the separate bankroll refresh is slow.
+- **Verification:** A live, two-account game on the connected server created a custom two-seat table, appeared in the other player's lobby, dealt private cards correctly, advanced through a complete hand, served a participant audit, and cashed both players out with chip totals conserved. The exact temporary table and accounts were removed afterwards. Server tests passed (35, one existing OpenSSL-dependent skip), all 14 desktop/mobile browser checks passed, typecheck and the full production build passed, and localhost web/API both returned HTTP 200.
+- **Further validation:** Multiplayer under concurrent load, cross-device disconnects, and deployed-domain socket/TLS behavior still need dedicated testing. The live test used localhost and play chips.
+
+---
+
+## 2026-09-28 - localhost startup 500 after a production build
+
+- Reproduced `Internal Server Error` from `http://localhost:3000` while the API health endpoint remained healthy. The running Next.js development server and a later production build had written to the same `.next` directory.
+- Next.js development now writes to `.next-dev`; production builds keep `.next`, and isolated browser tests keep `.next-browser-test`. The new dev output is ignored by Git and included in web typechecking.
+- Verified the running localhost page recovered to HTTP 200 after the config reload and stayed HTTP 200 during a successful production web build. Web typechecking passed.
+
+---
+
+## 2026-09-28 - leave flow, action responsiveness, and regression coverage
+
+- **Leaving:** Both table leave controls now wait for a server acknowledgement and return to the lobby. A separate lobby link always remains available when disconnected and clearly says the seat stays reserved. A player still in a hand sees a clear pending cash-out; a player not dealt into that hand can cash out immediately. Repeated requests cannot pay twice. The lobby keeps a pending notice until settlement and receives the updated bankroll even after leaving the table room. The lobby also includes the player's own seat when its table falls outside the newest 50 public tables.
+- **Actions and recovery:** Actions receive explicit success/error acknowledgements, can be retried after rejection, and cannot silently queue while disconnected. Ordinary API requests have a timeout; session refresh is exempt so a timed-out cookie rotation cannot invalidate the next attempt. Temporary refresh failures no longer clear a valid session. The table timer cannot be overwritten by stale recovery and retries transient recovery-read failures.
+- **Latency:** The server skips seat writes for unchanged seats (one changed seat instead of all six in the call regression), avoids seat/user relation loading for encrypted table states, checks private-table membership only when needed, stops autojoining a table socket from the lobby, and broadcasts viewer-specific snapshots concurrently. Bot think times remain intentionally paced; measure end-to-end latency against the deployment database before claiming a production millisecond improvement.
+- **Verification:** New engine, server, and isolated desktop/mobile browser regressions cover pending leave, immediate un-dealt cash-out, wallet settlement, stale-wallet fetches and refreshes, idempotence, rollback, action retry, disconnect behavior, and timer recovery. Typecheck, production build, and the full test suite (408 engine tests; server tests pass with one existing OpenSSL-dependent skip) passed. All 12 Chrome browser checks passed; the disconnected-lobby scenario also passed again on desktop and mobile after the fallback link was added. The browser suite runs outside the restricted Windows sandbox so it can shut down its test servers cleanly.
+- **Still to validate:** A two-human live play session, production database latency under load, long disconnects and expiry across multiple devices, and a deploy smoke test. No production tables or balances were modified in this pass.
+
+---
+
+## 2026-09-27 - adversarial review round (25 findings fixed)
+
+Four independent reviewers attacked the compliance rebuild and confirmed 25 defects with executed repros: 1 high, 9 medium, 15 low. All are fixed:
+
+- **Legacy state (high):** tables saved by the previous version are upgraded on load by `upgradeTableState`. Leftover cards are purged, settled hands are cleaned up, and hands still in progress are voided with every bet returned. Upgraded state is persisted at startup.
+- **Verifiers:**
+  - Participant audits reject duplicate cards and a folded (mucked) hand presented as tabled. Folds are derived from the chained actions.
+  - They also reject a doctored showdown, fields outside the schema, and an audit for a different table, hand or user.
+  - New `verifyHandOutcome` replays bets, ranks, side pots, odd chips, payouts and stacks. It runs before a hand is recorded and in the regulator report, which also checks the per-table chain link.
+- **Rules:**
+  - Newcomers and players returning after missed blinds wait for the big blind, so blinds cannot be dodged.
+  - The button moves to the previous small-blind position (dead button).
+  - A leaving player's hand is folded on their turn and never tabled, and sitting back in cancels the leave.
+  - Auto-actions record their true reason, and no-op sit toggles change nothing.
+- **Isolation and transport:**
+  - The leak guard enforces an exact client-schema allow-list.
+  - TLS is enforced on every engine.io request, not only the handshake.
+  - Every admin request is logged with its outcome.
+  - The participant redaction guard checks the stored `showedCards`.
+  - Live evidence in the browser is user-scoped, pruned and cleared at sign-out.
+- **Docs** no longer overclaim. They state what the guard, the hash chain (in-hand transitions only) and the hole-card digest actually guarantee.
+- **Tests:** `review-fixes.test.ts` has 94 tests, including 35 re-sealed forgeries that keep every hash valid and are caught by the semantic checks. The server `compliance.test.mjs` has 28 tests.
+
+---
+
 ## 2026-09-24 - compliance rebuild (GLI-19 / MGA technical spec)
 
 1. **RNG:** the seeded HMAC shuffle and the browser-nonce protocol were removed. Every Fisher-Yates swap draws a 32-bit word from `crypto.randomFillSync` and uses explicit rejection sampling. A continuous health test runs on the source, and consumed randomness is zeroed.

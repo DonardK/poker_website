@@ -2,22 +2,33 @@
  * Regulator / operator audit access.
  *
  * COMPLIANCE NOTES
+ * - Access log: app.ts mounts `adminAccessLog` (admin-access-log.ts) on
+ *   /api/admin before any other middleware. Every request to this router,
+ *   and every request to /api/admin refused before it (TLS 426, rate limit
+ *   429), is logged once with method, path, client IP, user id (once
+ *   authenticated) and HTTP status, including 401 (no or bad token), 403,
+ *   429 and errors.
  * - Every route requires an authenticated session and role ADMIN, read from
  *   the database user row on each request (a revoked role takes effect
- *   immediately; token claims are not trusted for the role).
- * - The router is rate-limited, and every access (granted or denied) is
- *   logged with the user id and the requested hand UUID.
+ *   immediately; token claims are not trusted for the role). A refused ADMIN
+ *   check is also logged as a security event (ADMIN_DENIED), and each read of
+ *   a hand audit as REGULATOR_HAND_AUDIT_ACCESS with the requested hand UUID.
+ * - The router is rate-limited: 30 requests per minute per client IPv4
+ *   address or IPv6 /56 (express-rate-limit's default key).
  * - GET /hands/:handUuid/audit returns the full sealed record (deck order and
- *   salts) together with the independent verification report, including the
- *   hole cards and burns derived from the committed deck. This data never
- *   goes to players; see the participant route in tables.ts for that.
+ *   salts) together with the independent verification report
+ *   (`regulatorVerification`): row binding, card integrity with the hole
+ *   cards and burns derived from the committed deck, the outcome replay and
+ *   the per-table chain link. A failed report is logged as AUDIT_INTEGRITY.
+ *   This data never goes to players; see the participant route in tables.ts
+ *   for that.
  */
 import { Router, type NextFunction, type Response } from "express";
 import rateLimit from "express-rate-limit";
-import { UUID_V4, verifySealedAudit, type HandAuditRecord, type SealedAuditReport, type SealedHandAudit } from "@poker/shared";
+import { UUID_V4, type HandAuditRecord, type SealedHandAudit } from "@poker/shared";
 import { requireAuth, type AuthedRequest } from "../auth/middleware.js";
 import { prisma } from "../db/prisma.js";
-import { rowBindingError, sealedAuditContext } from "../game/audit.js";
+import { regulatorVerification, sealedAuditContext } from "../game/audit.js";
 import { decryptState } from "../game/encryption.js";
 import { logger } from "../logger.js";
 
@@ -56,10 +67,19 @@ adminRouter.get("/hands/:handUuid/audit", async (req: AuthedRequest, res) => {
     res.status(500).json({ error: "Sealed audit failed authenticated decryption" });
     return;
   }
-  // Independent recomputation, then the binding between the record and its indexed row.
-  let verification: SealedAuditReport = await verifySealedAudit(record, sealed);
-  const binding = verification.ok ? rowBindingError(hand, record) : null;
-  if (binding) verification = { ok: false, reason: binding };
-  if (!verification.ok) logger.error({ security: "AUDIT_INTEGRITY", userId: req.userId, handUuid, reason: verification.reason }, "sealed hand audit failed verification");
+  // Per-table chain: the most recent EARLIER hand of this table that has a final state hash.
+  const previous = await prisma.hand.findFirst({
+    where: { tableId: hand.tableId, handNumber: { lt: hand.handNumber }, finalStateHash: { not: null } },
+    orderBy: { handNumber: "desc" },
+    select: { handNumber: true, finalStateHash: true },
+  });
+  const verification = await regulatorVerification(hand, record, sealed,
+    previous && previous.finalStateHash !== null ? { handNumber: previous.handNumber, finalStateHash: previous.finalStateHash } : null);
+  if (!verification.ok) {
+    logger.error({
+      security: "AUDIT_INTEGRITY", userId: req.userId, handUuid, reason: verification.reason,
+      outcome: verification.outcome.ok, tableChain: verification.tableChain.ok, previousHandNumber: verification.tableChain.previousHandNumber,
+    }, "stored hand audit failed regulator verification");
+  }
   res.json({ record, sealed, verification });
 });

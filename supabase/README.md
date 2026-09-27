@@ -9,4 +9,6 @@ SSL enforcement is enabled. The application uses the session pooler on port 5432
 
 Prisma migrations under `apps/server/prisma/migrations` are canonical. Supabase MCP applied the initial schema and security patches. The security patch copies in this folder record the submitted DDL; do not run `supabase db reset` expecting a complete initial schema here.
 
+The compliance audit SQL is named `20260927224842_compliance_audit_trail.sql` here to match the migration version Supabase recorded when it was applied on 2026-09-28. The equivalent canonical Prisma migration is `20260924120000_compliance_audit_trail`, also marked applied in Prisma's migration history. Do not apply both copies to the same new database.
+
 The `authenticated-account` directory is a historical snapshot of an unrelated construction project. It does not describe OnlinePoker and was not used or modified for the poker database.

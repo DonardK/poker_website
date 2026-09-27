@@ -13,45 +13,55 @@ import type { PokerServer } from "../socket/types.js";
 import { roomFor } from "../socket/rooms.js";
 import { handAuditColumns, handContext } from "./audit.js";
 import { decryptState, encryptState } from "./encryption.js";
+import { upgradeStoredTableState } from "./legacy.js";
 
 const HAND_BREAK_MS = 3_200;
 type Tx = Prisma.TransactionClient;
+/** A loaded table; `upgraded`: the legacy-state upgrade changed it, so the stored copy is out of date. */
+interface Loaded { table: EngineTable; upgraded: boolean }
 
 export class TableManager {
   io: PokerServer | null = null;
   private armedRevision = new Map<string, number>();
   private timers = new Map<string, NodeJS.Timeout>();
+  private stopped = false;
 
-  attach(io: PokerServer): void { this.io = io; }
+  attach(io: PokerServer): void { this.io = io; this.stopped = false; }
   trackSocket(_userId: string, _socketId: string): void { /* rooms track presence */ }
   onDisconnect(_userId: string, _socketId: string): void {
     // A disconnect never changes hand eligibility. The original turn deadline
     // checks/folds the player, including all-in players who have no turn.
   }
-  stop(): void { for (const timer of this.timers.values()) clearTimeout(timer); this.timers.clear(); }
+  stop(): void { this.stopped = true; for (const timer of this.timers.values()) clearTimeout(timer); this.timers.clear(); }
 
-  private async load(tx: Tx, tableId: string): Promise<EngineTable | null> {
-    const row = await tx.table.findUnique({ where: { id: tableId }, include: { seats: { include: { user: true }, orderBy: { seatIndex: "asc" } } } });
+  /**
+   * COMPLIANCE NOTE (legacy state): every stored state is upgraded on load
+   * (see legacy.ts); a legacy in-flight hand is voided with all bets returned.
+   * Loading never writes and never pays. Read-only callers (snapshots, timers)
+   * see the upgraded state; `mutate` persists it and pays its cash-outs.
+   */
+  private async load(tx: Tx, tableId: string): Promise<Loaded | null> {
+    const row = await tx.table.findUnique({ where: { id: tableId } });
     if (!row || row.status === "CLOSED") return null;
     if (row.stateCiphertext) {
-      const state = decryptState<EngineTable & { pendingShuffle?: unknown }>(row.stateCiphertext, `table:${tableId}`);
-      // Pre-upgrade state may carry the removed player-entropy shuffle round; it is never used again.
-      delete state.pendingShuffle;
-      return state;
+      return upgradeStoredTableState(tableId, decryptState<EngineTable>(row.stateCiphertext, `table:${tableId}`), (voided) => {
+        logger.warn({ audit: "LEGACY_HAND_VOIDED", ...voided }, "legacy in-flight hand voided during upgrade; all bets returned");
+      });
     }
     // Only brand-new tables may be hydrated from seats. Never redeal a lost hand.
     const lastHand = await tx.hand.findFirst({ where: { tableId }, orderBy: { handNumber: "desc" } });
     if (row.status === "IN_HAND" || lastHand) throw new EngineError("RECOVERY_REQUIRED", "Saved game state is missing; table paused for recovery");
     let table = createTable({ tableId: row.id, name: row.name, maxSeats: row.maxSeats, smallBlind: row.smallBlind, bigBlind: row.bigBlind, timeBankMs: row.timeBankMs });
-    for (const seat of row.seats) {
+    const seats = await tx.tableSeat.findMany({ where: { tableId }, include: { user: true }, orderBy: { seatIndex: "asc" } });
+    for (const seat of seats) {
       if (!seat.user || seat.status === "EMPTY" || seat.stack <= 0) continue;
       table = sitDown(table, seat.seatIndex, { userId: seat.user.id, username: seat.user.username, avatarHue: seat.user.avatarHue, kind: seat.playerKind, botProfile: seat.botProfile, buyIn: seat.stack, skipBuyInCheck: true });
       if (seat.sittingOut) table = sitOut(table, seat.user.id);
     }
-    return table;
+    return { table, upgraded: false };
   }
 
-  async get(tableId: string): Promise<EngineTable | null> { return this.load(prisma, tableId); }
+  async get(tableId: string): Promise<EngineTable | null> { return (await this.load(prisma, tableId))?.table ?? null; }
   /** Guarded snapshot for one viewer; null means nothing may be emitted. */
   async snapshot(tableId: string, viewerUserId: string | null): Promise<PublicTableState | null> {
     const table = await this.get(tableId);
@@ -64,27 +74,42 @@ export class TableManager {
   async recover(): Promise<void> {
     const rows = await prisma.table.findMany({ where: { status: { in: ["WAITING", "IN_HAND"] } }, select: { id: true } });
     for (const row of rows) {
-      try { const table = await this.get(row.id); if (table) this.armTimers(table); }
-      catch (err) { logger.error({ err, tableId: row.id }, "table recovery failed; refusing to redeal"); }
+      try {
+        const loaded = await this.load(prisma, row.id);
+        if (!loaded) continue;
+        // Persist a legacy-state upgrade now (a voided hand's seats, stacks and
+        // cash-outs) instead of waiting for the table's next change. mutate arms the timers.
+        if (loaded.upgraded) await this.mutate(row.id, (current) => current);
+        else this.armTimers(loaded.table);
+      } catch (err) { logger.error({ err, tableId: row.id }, "table recovery failed; refusing to redeal"); }
     }
   }
 
   async mutate(tableId: string, fn: (table: EngineTable, tx: Tx) => EngineTable | Promise<EngineTable>, expectedRevision?: number): Promise<EngineTable> {
+    const paidUsers = new Set<string>();
+    let changed = false;
     const next = await prisma.$transaction(async (tx) => {
       // Row lock survives slow requests and is released only at commit/rollback.
       await tx.$queryRaw`SELECT id FROM public."Table" WHERE id = ${tableId} FOR UPDATE`;
-      const current = await this.load(tx, tableId);
-      if (!current) throw new EngineError("TABLE_NOT_FOUND", "Table not found");
+      const loaded = await this.load(tx, tableId);
+      if (!loaded) throw new EngineError("TABLE_NOT_FOUND", "Table not found");
+      const current = loaded.table;
       if (expectedRevision !== undefined && current.revision !== expectedRevision) throw new EngineError("STALE_ACTION", "The table changed; use the latest action buttons");
       const result = await fn(current, tx);
-      if (result === current) return current;
+      // An upgraded legacy state is written even when `fn` changes nothing.
+      if (result === current && !loaded.upgraded) return current;
+      changed = true;
       result.revision = current.revision + 1;
       // Wallet, seats, encrypted state and history either all commit or none do.
+      // COMPLIANCE NOTE (cash-outs): this is the only place cash-outs are paid. They
+      // are paid from the result state, which is then stored with none pending in
+      // the same transaction, so no later load can pay them again.
       for (const cash of result.cashOuts) {
         await tx.user.updateMany({ where: { id: cash.userId, kind: "HUMAN" }, data: { bankroll: { increment: cash.stack } } });
+        paidUsers.add(cash.userId);
       }
       result.cashOuts = [];
-      await this.persistSeats(tx, result);
+      await this.persistSeats(tx, result, loaded.upgraded ? undefined : current);
       // A hand is recorded once, when it settles. The SHOWDOWN timer cleans up one
       // hand and deals the next in a single step, and that hand can settle at once
       // (all-in on the blinds), so compare hand numbers as well as phases.
@@ -94,7 +119,12 @@ export class TableManager {
     }, { maxWait: 10_000, timeout: 20_000 });
     this.armTimers(next);
     // Network delivery is after commit and cannot roll back a successful payment.
-    try { await this.broadcast(next); } catch (err) { logger.warn({ err }, "broadcast failed; reconnect restores committed state"); }
+    const deliveries = await Promise.allSettled([
+      ...(changed ? [this.broadcast(next)] : []),
+      // Cash-outs must reach the wallet even after the player returns to the lobby.
+      ...[...paidUsers].map((userId) => this.patchBankroll(userId, tableId)),
+    ]);
+    for (const delivery of deliveries) if (delivery.status === "rejected") logger.warn({ err: delivery.reason }, "broadcast failed; reconnect restores committed state");
     return next;
   }
 
@@ -128,13 +158,13 @@ export class TableManager {
   async sitToggle(tableId: string, userId: string, out: boolean): Promise<void> {
     await this.mutate(tableId, (table) => out ? sitOut(table, userId) : sitIn(table, userId));
   }
-  async standUp(tableId: string, userId: string): Promise<void> {
-    await this.mutate(tableId, (table) => leaveSeat(table, userId));
-    await this.patchBankroll(userId);
+  async standUp(tableId: string, userId: string): Promise<boolean> {
+    const next = await this.mutate(tableId, (table) => table.players.some((p) => p?.userId === userId) ? leaveSeat(table, userId) : table);
+    return next.players.some((p) => p?.userId === userId && p.pendingLeave);
   }
-  private async patchBankroll(userId: string): Promise<void> {
+  private async patchBankroll(userId: string, cashOutTableId?: string): Promise<void> {
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { bankroll: true } });
-    if (user) this.io?.to(`user:${userId}`).emit(SOCKET_EVENTS.USER_PATCH, user);
+    if (user) this.io?.to(`user:${userId}`).emit(SOCKET_EVENTS.USER_PATCH, { ...user, ...(cashOutTableId ? { cashOutTableId } : {}) });
   }
   /**
    * COMPLIANCE (state isolation): each socket receives its own projection for
@@ -148,18 +178,18 @@ export class TableManager {
   }
   private async broadcast(table: EngineTable): Promise<void> {
     if (!this.io) return;
-    for (const socket of await this.io.in(roomFor(table.tableId)).fetchSockets()) {
-      try { await authenticate(socket.data.token); } catch { socket.disconnect(true); continue; }
+    await Promise.all((await this.io.in(roomFor(table.tableId)).fetchSockets()).map(async (socket) => {
+      try { await authenticate(socket.data.token); } catch { socket.disconnect(true); return; }
       try {
         const state = this.project(table, socket.data.userId);
         if (state) socket.emit(SOCKET_EVENTS.STATE_SNAPSHOT, state);
       } catch (err) {
         logger.error({ err, tableId: table.tableId, revision: table.revision, viewerUserId: socket.data.userId }, "table state projection failed; nothing was sent to this viewer");
       }
-      await this.patchBankroll(socket.data.userId);
-    }
+    }));
   }
   private armTimers(table: EngineTable): void {
+    if (this.stopped) return;
     const armed = this.armedRevision.get(table.tableId);
     if (armed !== undefined && (armed > table.revision || (armed === table.revision && this.timers.has(table.tableId)))) return;
     this.armedRevision.set(table.tableId, table.revision);
@@ -193,19 +223,34 @@ export class TableManager {
         run = () => this.mutate(table.tableId, (current) => applyTimeout(current), table.revision);
       }
     }
-    const timer = setTimeout(() => { this.timers.delete(table.tableId); void run().catch(async (err) => {
+    const timer = setTimeout(() => {
+      if (this.timers.get(table.tableId) !== timer) return;
+      this.timers.delete(table.tableId);
+      void run().catch((err) => {
       if (!(err instanceof EngineError && err.code === "STALE_ACTION")) logger.error({ err, tableId: table.tableId }, "table timer failed");
-      const retry = setTimeout(() => { this.timers.delete(table.tableId); void this.get(table.tableId).then((fresh) => { if (fresh) this.armTimers(fresh); }).catch((e) => logger.error(e, "recovery retry failed")); }, 1_000);
-      retry.unref(); this.timers.set(table.tableId, retry);
+      this.retryTimer(table.tableId, table.revision);
     }); }, delay);
     timer.unref(); this.timers.set(table.tableId, timer);
   }
-  private async persistSeats(tx: Tx, table: EngineTable): Promise<void> {
+  private retryTimer(tableId: string, revision: number): void {
+    // A stale callback must never overwrite a newer turn's timer.
+    if (this.stopped || this.timers.has(tableId) || (this.armedRevision.get(tableId) ?? revision) > revision) return;
+    const retry = setTimeout(() => {
+      if (this.timers.get(tableId) !== retry) return;
+      this.timers.delete(tableId);
+      void this.get(tableId).then((fresh) => { if (fresh) this.armTimers(fresh); }).catch((err) => {
+        logger.error({ err, tableId }, "recovery retry failed");
+        this.retryTimer(tableId, revision);
+      });
+    }, 1_000);
+    retry.unref(); this.timers.set(tableId, retry);
+  }
+  private async persistSeats(tx: Tx, table: EngineTable, previous?: EngineTable): Promise<void> {
     for (let seatIndex = 0; seatIndex < table.maxSeats; seatIndex++) {
       const p = table.players[seatIndex];
-      await tx.tableSeat.update({ where: { tableId_seatIndex: { tableId: table.tableId, seatIndex } }, data: p ? {
-        userId: p.userId, status: p.sittingOut ? "SIT_OUT" : "OCCUPIED", playerKind: p.kind, botProfile: p.botProfile, stack: p.stack, sittingOut: p.sittingOut,
-      } : { userId: null, status: "EMPTY", playerKind: "HUMAN", botProfile: null, stack: 0, sittingOut: false } });
+      const data = seatData(p);
+      if (previous && JSON.stringify(data) === JSON.stringify(seatData(previous.players[seatIndex]))) continue;
+      await tx.tableSeat.update({ where: { tableId_seatIndex: { tableId: table.tableId, seatIndex } }, data });
     }
   }
   /**
@@ -217,24 +262,15 @@ export class TableManager {
   private async persistHand(tx: Tx, table: EngineTable): Promise<void> {
     const dealt = table.players.filter((p) => p?.holeCards);
     const context = handContext(table.tableId, table.handNumber);
-    // Throws AUDIT_INVALID (rolling everything back) if the sealed record does not verify.
+    // Throws AUDIT_INVALID (rolling everything back) unless the audit record, the
+    // committed cards and the replayed outcome all verify (see audit.ts).
     const audit = await handAuditColumns(table);
-    if (!audit) {
-      const detail = { tableId: table.tableId, handNumber: table.handNumber, hasAudit: Boolean(table.audit), hasFairness: Boolean(table.fairness) };
-      if (table.audit) logger.error(detail, "hand has an audit record but no deck commitment; persisting without audit columns");
-      else logger.warn(detail, "legacy in-flight hand predates the compliance audit trail; persisting without audit columns");
-    }
     await tx.hand.create({ data: {
       tableId: table.tableId, handNumber: table.handNumber, phase: "COMPLETE", dealerSeat: table.dealerSeat, sbSeat: table.sbSeat, bbSeat: table.bbSeat,
       board: table.board, potTotal: table.potTotal, startedAt: new Date(table.startedAt!), endedAt: new Date(table.settledAt!),
-      ...(audit ? {
-        fairnessRoot: audit.auditRecord.merkleRoot,
-        handUuid: audit.handUuid, deckCommitment: audit.deckCommitment, finalStateHash: audit.finalStateHash,
-        auditRecord: audit.auditRecord as unknown as Prisma.InputJsonValue, auditSealed: audit.auditSealed,
-      } : {
-        // Legacy hand: keep its pre-upgrade commitment evidence exactly as before.
-        fairnessRoot: table.fairness?.root ?? null, fairnessAudit: table.fairness ? encryptState(table.fairness, context) : null,
-      }),
+      fairnessRoot: audit.auditRecord.merkleRoot,
+      handUuid: audit.handUuid, deckCommitment: audit.deckCommitment, finalStateHash: audit.finalStateHash,
+      auditRecord: audit.auditRecord as unknown as Prisma.InputJsonValue, auditSealed: audit.auditSealed,
       snapshot: JSON.parse(JSON.stringify({ winners: table.winners, refunds: table.refunds, log: table.log })) as Prisma.InputJsonValue,
       players: { create: dealt.map((p) => {
         const win = table.winners.find((w) => w.seatIndex === p!.seatIndex)?.amount ?? 0;
@@ -256,6 +292,13 @@ export class TableManager {
   }
 }
 export const tableManager = new TableManager();
+
+function seatData(p: EngineTable["players"][number] | undefined) {
+  return p ? {
+    userId: p.userId, status: p.sittingOut ? "SIT_OUT" as const : "OCCUPIED" as const,
+    playerKind: p.kind, botProfile: p.botProfile, stack: p.stack, sittingOut: p.sittingOut,
+  } : { userId: null, status: "EMPTY" as const, playerKind: "HUMAN" as const, botProfile: null, stack: 0, sittingOut: false };
+}
 
 function readyToDeal(table: EngineTable): boolean {
   const live = table.players.filter((p) => p && !p.sittingOut && p.stack > 0);

@@ -16,6 +16,7 @@ import {
   finalStatePreimage,
   genesisPreimage,
   holeCardPositions,
+  holeCardsDigest,
   merkleContext,
   merkleRootAsync,
   RNG_DESCRIPTOR,
@@ -24,6 +25,7 @@ import {
   verifyAuditRecord,
   verifyParticipantAudit,
   verifySealedAudit,
+  type Card,
   type HandAuditRecord,
   type ObservedHandEvidence,
 } from "@poker/shared";
@@ -224,15 +226,18 @@ describe("hand audit record", () => {
       let t = startHand(seated([1000, 1000, 1000, 1000]), T0);
       // Capture live evidence exactly as a browser would from its last snapshot.
       const live = new Map<string, ObservedHandEvidence>();
+      const liveCards = new Map<string, [Card, Card]>();
       const capture = (table: EngineTable) => {
         for (const p of table.players) {
           if (!p) continue;
           const view = projectTableState(table, p.userId);
           const hero = view.players.find((x) => x.userId === p.userId)!;
           if (!view.fairness) continue;
+          if (hero.holeCards) liveCards.set(p.userId, hero.holeCards);
           live.set(p.userId, {
+            tableId: table.tableId, handNumber: table.handNumber, userId: p.userId,
             handId: view.fairness.handId, merkleRoot: view.fairness.root, deckCommitment: view.fairness.deckCommitment,
-            auditSeq: view.fairness.auditSeq, auditHead: view.fairness.auditHead, holeCards: hero.holeCards ?? undefined,
+            auditSeq: view.fairness.auditSeq, auditHead: view.fairness.auditHead,
           });
         }
       };
@@ -247,7 +252,9 @@ describe("hand audit record", () => {
       for (const seat of t.dealtSeats) {
         const player = t.players[seat]!;
         const audit = participantAudit(t.audit!, sealed, seat);
-        expect(await verifyParticipantAudit(audit, live.get(player.userId))).toEqual({ ok: true });
+        // The browser stores only a digest of its own hole cards.
+        const evidence: ObservedHandEvidence = { ...live.get(player.userId)!, holeCardsDigest: await holeCardsDigest(t.audit!.handId, liveCards.get(player.userId)!) };
+        expect(await verifyParticipantAudit(audit, evidence)).toEqual({ ok: true });
         // Opened cards are exactly: own hole cards, the dealt board, tabled hands.
         const opened = new Set(audit.proofs.map((p) => p.card));
         const entitled = new Set([...player.holeCards!, ...t.board,
@@ -258,10 +265,15 @@ describe("hand audit record", () => {
         for (const card of sealed.deck) if (!entitled.has(card)) expect(tokens.has(card)).toBe(false);
 
         // Live evidence that disagrees with the record is rejected.
-        const other = live.get(player.userId)!;
+        const other = evidence;
         expect((await verifyParticipantAudit(audit, { ...other, merkleRoot: "0".repeat(64) })).ok).toBe(false);
         expect((await verifyParticipantAudit(audit, { ...other, auditHead: "0".repeat(64) })).ok).toBe(false);
-        expect((await verifyParticipantAudit(audit, { ...other, holeCards: [t.board[0] ?? sealed.deck[51]!, player.holeCards![1]] })).ok).toBe(false);
+        const wrongCards: [Card, Card] = [t.board[0] ?? sealed.deck[51]!, player.holeCards![1]];
+        expect((await verifyParticipantAudit(audit, { ...other, holeCardsDigest: await holeCardsDigest(t.audit!.handId, wrongCards) })).ok).toBe(false);
+        // The audit must be the hand, table and seat the user asked about.
+        expect((await verifyParticipantAudit(audit, { ...other, handNumber: t.handNumber + 1 })).ok).toBe(false);
+        expect((await verifyParticipantAudit(audit, { ...other, tableId: "another-table" })).ok).toBe(false);
+        expect((await verifyParticipantAudit(audit, { ...other, userId: "someone-else" })).ok).toBe(false);
       }
     }
   });

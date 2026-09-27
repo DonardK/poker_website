@@ -3,14 +3,14 @@
 ## Current model (2026-09-24 compliance rebuild)
 
 - **Shuffle:** OS CSPRNG only (`crypto.randomFillSync`), an explicit rejection-sampled Durstenfeld shuffle, and a continuous health test. The earlier browser-nonce / seeded-HMAC "provably fair" shuffle was removed on purpose. Its post-hand seed reveal exposed mucked and undealt cards to every participant.
-- **Commitments and audit:** each hand has a UUID v4. A salted SHA-256 deck commitment and a Merkle root are computed before blinds or dealing. Every transition is appended to a SHA-256 hash chain, which links to the previous hand's `finalStateHash` and is sealed with a post-hand verification hash.
+- **Commitments and audit:** each hand has a UUID v4. A salted SHA-256 deck commitment and a Merkle root are computed before blinds or dealing. Every in-hand transition is appended to a SHA-256 hash chain, which links to the previous hand's `finalStateHash` and is sealed with a post-hand verification hash. Regulators get an outcome replay (`verifyHandOutcome`) and a table-chain check.
 - **Isolation:** every emitted snapshot goes through `projectTableState`, the allow-list projection plus the fail-closed leak guard. Hand Clean-up purges all card secrets. TLS is enforced in production.
 - **Audit access:** players get a redacted, verified audit of hands they were dealt into, through the **Verify hand** control. Regulators use the ADMIN-only `/api/admin/hands/:handUuid/audit`.
 - **Details and evidence:** `COMPLIANCE.md` (requirement matrix, measured χ² results) and `SECURITY-REVIEW.md`.
 
 ## Before running against a real database
 
-Apply `apps/server/prisma/migrations/20260924120000_compliance_audit_trail` with an administrator connection **before** starting this server version. The Supabase copy is in `supabase/migrations/`. Deploy while tables are idle.
+Apply `apps/server/prisma/migrations/20260924120000_compliance_audit_trail` with an administrator connection **before** starting this server version. The Supabase copy is in `supabase/migrations/`. Deploy while tables are idle: a hand in progress under the old version is voided on load and all bets are returned.
 
 ## Suggested next tests
 

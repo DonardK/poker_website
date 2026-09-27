@@ -91,7 +91,9 @@ test('Supabase: transactions, recovery, encrypted history, audit trail routes, H
     assert.equal(participant.status, 200);
     const { audit } = await participant.json();
     assert.equal(audit.viewerSeat, history.players.find((p) => p.userId === session.user.id).seatIndex);
-    assert.equal((await verifyParticipantAudit(audit)).ok, true);
+    // Bound to the request: this table, hand #1, this user, and the hand id seen live.
+    const participantCheck = await verifyParticipantAudit(audit, { tableId, handNumber: 1, userId: session.user.id, handId });
+    assert.equal(participantCheck.ok, true, participantCheck.reason);
     const auditBody = JSON.stringify(audit);
     assert.ok(!auditBody.includes(sealed.deckSalt) && !auditBody.includes('"deck":') && !auditBody.includes('"merkleSalts":'));
     assert.equal((await request(`/tables/${tableId}/hands/2/audit`, undefined, renewed.accessToken)).status, 404);
@@ -108,6 +110,10 @@ test('Supabase: transactions, recovery, encrypted history, audit trail routes, H
     const regulatorView = await regulator.json();
     assert.equal(regulatorView.verification.ok, true, regulatorView.verification.reason);
     assert.deepEqual(regulatorView.sealed, sealed); assert.deepEqual(regulatorView.verification.holeCards, sealedReport.holeCards);
+    assert.deepEqual(regulatorView.verification.burns, sealedReport.burns);
+    // Outcome replay and the per-table chain link (hand #1 is the table's first audited hand).
+    assert.deepEqual(regulatorView.verification.outcome, { ok: true });
+    assert.deepEqual(regulatorView.verification.tableChain, { ok: true, previousHandNumber: null });
     assert.equal((await request(`/tables/${tableId}/hands/1/audit`, undefined, adminToken)).status, 404, 'players not dealt in cannot read a hand audit');
     // Hand rows, including every audit column, are append-only to the runtime role.
     await assert.rejects(prisma.hand.update({ where: { id: history.id }, data: { potTotal: 999 } }));
@@ -124,7 +130,7 @@ test('Supabase: transactions, recovery, encrypted history, audit trail routes, H
     assert.equal((await request('/auth/logout', {}, null, nextCookie)).status, 204);
     await assert.rejects(authenticate(renewed.accessToken));
     assert.equal((await request('/auth/me', undefined, renewed.accessToken)).status, 401);
-    console.log('Verified concurrency, rollback, full hand, encrypted history, audit trail and routes, immutable records, restart recovery, socket validation and session revocation.');
+    console.log('Verified concurrency, rollback, full hand, encrypted history, audit trail and routes (outcome replay, table chain, request-bound participant audit), immutable records, restart recovery, socket validation and session revocation.');
   } finally {
     client?.disconnect(); for (const manager of managers) manager.stop(); tableManager.stop();
     await new Promise((r) => socketServer.close(r)); server.close();

@@ -126,6 +126,8 @@ function playerView(
       isSb: table.sbSeat === seatIndex,
       isBb: table.bbSeat === seatIndex,
       sittingOut: false,
+      pendingLeave: false,
+      waitingForBigBlind: false,
       holeCards: null,
       timeBankMsRemaining: null,
       empty: true,
@@ -153,6 +155,8 @@ function playerView(
     isSb: table.sbSeat === seatIndex,
     isBb: table.bbSeat === seatIndex,
     sittingOut: player.sittingOut,
+    pendingLeave: player.pendingLeave,
+    waitingForBigBlind: player.waitingForBigBlind === true,
     holeCards: showHoles ? [player.holeCards![0], player.holeCards![1]] : null,
     timeBankMsRemaining,
     empty: false,
@@ -175,18 +179,44 @@ export function authorizedCards(table: EngineTable, viewerUserId: string | null)
 }
 
 const CARD_TOKEN = /^[2-9TJQKA][cdhs]$/;
-/** Names of server-only fields. Any occurrence as a payload key is a leak. */
-const FORBIDDEN_KEYS = new Set(["deck", "burns", "salts", "deckSalt", "levels", "merkleSalts", "sealed", "seed", "serverSeed", "shuffleSeed", "handChipTotal", "audit"]);
 
 /**
- * Fail-closed leak guard. It throws LEAK_BLOCKED if `state` shows the viewer
- * any card they may not see, a board larger than the current street allows,
- * or a server-only field.
+ * Exact client schema. The payload may contain these keys and nothing else,
+ * at every level. A field added to the projection by mistake (a deck, a
+ * salt, an opponent's cards under a new name) is refused, not sent.
+ */
+const SCHEMA: Record<string, ReadonlySet<string>> = {
+  state: new Set(["revision", "fairness", "tableId", "name", "status", "handNumber", "phase", "smallBlind", "bigBlind", "board", "pots", "potTotal",
+    "toActSeat", "actorLegal", "players", "logTail", "winners", "animToken", "timeBankMs", "turnEndsAt", "minBuyIn", "maxBuyIn"]),
+  fairness: new Set(["version", "handId", "context", "root", "deckCommitment", "auditSeq", "auditHead", "dealtSeats", "proofs"]),
+  proof: new Set(["index", "card", "salt", "siblings"]),
+  player: new Set(["seatIndex", "userId", "username", "kind", "botProfile", "stack", "committedThisStreet", "status", "isDealer", "isSb", "isBb",
+    "sittingOut", "pendingLeave", "waitingForBigBlind", "holeCards", "timeBankMsRemaining", "empty", "avatarHue"]),
+  pot: new Set(["index", "amount"]),
+  legal: new Set(["actions", "callAmount", "minBet", "minRaiseTo", "maxRaiseTo"]),
+  log: new Set(["seq", "seatIndex", "username", "text", "at"]),
+  winner: new Set(["seatIndex", "amount", "handName"]),
+};
+/** Where each nested object sits, keyed by its parent field. */
+const CHILD_SCHEMA: Record<string, string> = {
+  fairness: "fairness", proofs: "proof", players: "player", pots: "pot", actorLegal: "legal", logTail: "log", winners: "winner",
+};
+
+/**
+ * Fail-closed leak guard. It throws LEAK_BLOCKED if `state`:
+ * - has a key outside the exact client schema, at any level;
+ * - has a board that differs from the dealt board or is too large for the
+ *   street;
+ * - shows hole cards the viewer may not see;
+ * - opens a Merkle proof for an unauthorized position;
+ * - contains a card code, as a whole token in any string outside
+ *   user-chosen names, that is not authorized for the viewer.
  *
- * It is structural rather than a raw substring search. It compares the card
- * fields with the engine, then checks every string token in the payload
- * against the authorized set. User-chosen names are excluded, so a player
- * named "As" cannot trigger a false alarm.
+ * It re-derives the authorized cards from the engine state independently of
+ * the projection. Two limits: a card code glued to other letters (e.g.
+ * "AhKd"), or a card encoded as a number in an allowed numeric field, would
+ * not be recognized as a card. The allow-list projection and schema above
+ * leave no such field.
  */
 export function assertViewerStateSafe(state: PublicTableState, table: EngineTable, viewerUserId: string | null): void {
   const block = (reason: string): never => {
@@ -211,8 +241,7 @@ export function assertViewerStateSafe(state: PublicTableState, table: EngineTabl
     if (!allowed.has(proof.card) || table.fairness?.deck[proof.index] !== proof.card) block(`proof opens an unauthorized position ${proof.index}`);
   }
 
-  const scan = (value: unknown, key: string, path: string): void => {
-    if (FORBIDDEN_KEYS.has(key)) block(`server-only field at ${path}`);
+  const scan = (value: unknown, key: string, path: string, schema: string | null): void => {
     if (typeof value === "string") {
       // User-controlled display names cannot carry engine cards; skip them.
       if (key === "username" || path === "name") return;
@@ -222,19 +251,25 @@ export function assertViewerStateSafe(state: PublicTableState, table: EngineTabl
       return;
     }
     if (Array.isArray(value)) {
-      value.forEach((item, i) => scan(item, key, `${path}[${i}]`));
+      value.forEach((item, i) => scan(item, key, `${path}[${i}]`, schema));
       return;
     }
     if (value !== null && typeof value === "object") {
-      for (const [childKey, child] of Object.entries(value)) scan(child, childKey, path ? `${path}.${childKey}` : childKey);
+      if (schema === null) block(`unexpected object at ${path}`);
+      const allowed = SCHEMA[schema!]!;
+      for (const [childKey, child] of Object.entries(value)) {
+        if (!allowed.has(childKey)) block(`field outside the client schema at ${path ? `${path}.` : ""}${childKey}`);
+        scan(child, childKey, path ? `${path}.${childKey}` : childKey, CHILD_SCHEMA[childKey] ?? null);
+      }
     }
   };
   // Player log lines begin with the player's name; strip it before scanning the rest.
   const { logTail, ...rest } = state;
-  scan(rest, "", "");
+  scan(rest, "", "", "state");
+  if (!Array.isArray(logTail)) block("logTail is not a list");
   logTail.forEach((entry, i) => {
-    const text = entry.seatIndex !== null && entry.text.startsWith(entry.username) ? entry.text.slice(entry.username.length) : entry.text;
-    scan({ ...entry, text }, "", `logTail[${i}]`);
+    const text = entry.seatIndex !== null && typeof entry.text === "string" && entry.text.startsWith(entry.username) ? entry.text.slice(entry.username.length) : entry.text;
+    scan({ ...entry, text }, "", `logTail[${i}]`, "log");
   });
 }
 

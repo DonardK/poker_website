@@ -4,8 +4,14 @@ export function isOccupied(p: EnginePlayer | null | undefined): p is EnginePlaye
   return p != null && p.status !== "ELIMINATED";
 }
 
-export function isLiveForDeal(p: EnginePlayer | null | undefined): p is EnginePlayer {
+/** Seated with chips and not sitting out: will play, now or once the big blind reaches them. */
+export function isBlindCandidate(p: EnginePlayer | null | undefined): p is EnginePlayer {
   return isOccupied(p) && !p.sittingOut && p.stack > 0;
+}
+
+/** Dealt into the next hand: a blind candidate that is not waiting for the big blind. */
+export function isLiveForDeal(p: EnginePlayer | null | undefined): p is EnginePlayer {
+  return isBlindCandidate(p) && p.waitingForBigBlind !== true;
 }
 
 export function receivesCards(p: EnginePlayer | null | undefined): p is EnginePlayer {

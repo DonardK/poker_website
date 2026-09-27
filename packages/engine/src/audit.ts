@@ -17,10 +17,13 @@
  * - Events hold only information that was public when the event occurred.
  *   Hidden cards are recorded only as deck positions. Players can therefore
  *   receive the redacted record without seeing mucked or undealt cards.
- *   Regulators get `SealedHandAudit` (deck and salts) to recompute
- *   everything.
+ * - Regulators get `SealedHandAudit` (deck and salts). `verifySealedAudit`
+ *   (in @poker/shared) recomputes card integrity: the commitments and every
+ *   dealt card. `verifyHandOutcome` (here) replays the hand's result: bets,
+ *   folds, showdown ranks, side pots, odd chips, payouts and final stacks.
  */
 import {
+  canonicalJson,
   eventPreimage,
   finalStatePreimage,
   genesisPreimage,
@@ -29,14 +32,19 @@ import {
   merkleContext,
   RNG_DESCRIPTOR,
   SEALED_AUDIT_VERSION,
+  type AuditCheck,
+  type AuditEvent,
   type AuditEventType,
   type CanonicalObject,
+  type Card,
   type CardProof,
   type HandAuditRecord,
   type ParticipantHandAudit,
   type SealedHandAudit,
 } from "@poker/shared";
+import { evaluate } from "./evaluate.js";
 import { cardProof, merkleLevels, sha256Hex, type DeckCommitment } from "./fairness.js";
+import { awardPots } from "./pots.js";
 import type { EngineTable } from "./types.js";
 
 /** Date#toISOString always renders UTC with a "Z" suffix and millisecond precision. */
@@ -127,4 +135,135 @@ export function participantAudit(record: HandAuditRecord, sealed: SealedHandAudi
   };
   const proofs: CardProof[] = participantPositions(record, viewerSeat).map((index) => cardProof(commitment, index));
   return { record: structuredClone(record), viewerSeat, proofs };
+}
+
+const FOLDS: ReadonlySet<unknown> = new Set(["FOLD", "TIMEOUT_FOLD"]);
+
+/**
+ * Regulator outcome replay. It recomputes a settled hand's result from its
+ * hash-chained events and the sealed deck, independently of the stored
+ * outcome:
+ * - chip movements: every blind and action amount against a running stack,
+ *   with the recorded `stackAfter` and all-in flags checked;
+ * - who folded, derived only from the recorded fold actions;
+ * - the showdown: every remaining hand tabled from its committed deck
+ *   position, and ranked with the evaluator;
+ * - pots, side pots, uncalled-bet refunds, winners, odd chips and payouts,
+ *   rebuilt with the settlement algorithm;
+ * - final stacks and chip conservation.
+ *
+ * The recorded SHOWDOWN, POTS_AWARDED and HAND_SETTLED data must equal the
+ * replay exactly (canonical JSON). Run `verifySealedAudit` first. It proves
+ * the chain, the commitments and that the sealed deck is the committed one.
+ * The replay does not re-judge betting legality (minimum raises, turn
+ * order); the engine enforces that when each action is accepted.
+ */
+export function verifyHandOutcome(record: HandAuditRecord, sealed: SealedHandAudit): AuditCheck {
+  const fail = (reason: string): AuditCheck => ({ ok: false, reason });
+  try {
+    const events = record.events;
+    const started = events[0];
+    if (!started || started.type !== "HAND_STARTED") return fail("Missing HAND_STARTED");
+    if (sealed.handId !== record.handId || sealed.deck.length !== 52) return fail("Sealed record does not belong to this hand");
+    const dealtSeats = started.data.dealtSeats as number[];
+    const seatRows = started.data.seats as { seatIndex: number; stack: number }[];
+    const n = dealtSeats.length;
+    const stack = new Map<number, number>();
+    const committed = new Map<number, number>();
+    for (const row of seatRows) {
+      if (!Number.isSafeInteger(row.stack) || row.stack <= 0) return fail(`Invalid starting stack for seat ${row.seatIndex}`);
+      stack.set(row.seatIndex, row.stack);
+      committed.set(row.seatIndex, 0);
+    }
+    if (stack.size !== n || dealtSeats.some((seat) => !stack.has(seat))) return fail("Starting seats differ from the dealt seats");
+    const chipTotal = [...stack.values()].reduce((sum, chips) => sum + chips, 0);
+    if (started.data.chipTotal !== chipTotal) return fail("HAND_STARTED chip total differs from the starting stacks");
+
+    const folded = new Set<number>();
+    const board: Card[] = [];
+    let showdown: AuditEvent | null = null;
+    let awards: AuditEvent | null = null;
+    for (const event of events) {
+      if (event.type === "BLIND_POSTED" || event.type === "PLAYER_ACTION") {
+        if (awards) return fail("Chips moved after the pots were awarded");
+        const seat = event.data.seatIndex as number;
+        const amount = event.data.amount;
+        const before = stack.get(seat);
+        if (before === undefined) return fail(`${event.type} for a seat that was not dealt in`);
+        if (folded.has(seat)) return fail(`Seat ${seat} acted after folding`);
+        if (typeof amount !== "number" || !Number.isSafeInteger(amount) || amount < 0 || amount > before) return fail(`Invalid amount for seat ${seat} at event ${event.seq}`);
+        const after = before - amount;
+        stack.set(seat, after);
+        committed.set(seat, committed.get(seat)! + amount);
+        if (event.type === "BLIND_POSTED" && event.data.allIn !== (after === 0)) return fail(`Blind all-in flag is wrong at event ${event.seq}`);
+        if (event.type === "PLAYER_ACTION") {
+          if (event.data.stackAfter !== after) return fail(`Recorded stack differs from the replay at event ${event.seq}`);
+          if (FOLDS.has(event.data.action)) folded.add(seat);
+        }
+      } else if (event.type === "STREET_DEALT") {
+        board.push(...(event.data.cards as Card[]));
+      } else if (event.type === "SHOWDOWN") {
+        if (showdown) return fail("More than one SHOWDOWN event");
+        showdown = event;
+      } else if (event.type === "POTS_AWARDED") {
+        if (awards) return fail("More than one POTS_AWARDED event");
+        awards = event;
+      }
+    }
+    const settled = events.at(-1)!;
+    if (settled.type !== "HAND_SETTLED" || !awards || events.at(-2) !== awards) return fail("A settled hand ends with POTS_AWARDED then HAND_SETTLED");
+
+    const contenders = dealtSeats.filter((seat) => !folded.has(seat));
+    const reason = contenders.length <= 1 ? "fold" : "showdown";
+    const holeCards: Record<number, [Card, Card]> = {};
+    dealtSeats.forEach((seat, i) => {
+      const [a, b] = holeCardPositions(i, n);
+      holeCards[seat] = [sealed.deck[a]!, sealed.deck[b]!];
+    });
+
+    if (reason === "showdown") {
+      if (board.length !== 5) return fail("Showdown without a complete board");
+      if (!showdown || events.indexOf(showdown) !== events.length - 3) return fail("SHOWDOWN must directly precede POTS_AWARDED");
+      const expectedShowdown = {
+        shown: contenders.map((seat) => {
+          const hand = evaluate([...holeCards[seat]!, ...board]);
+          return {
+            seatIndex: seat, cards: [...holeCards[seat]!], positions: holeCardPositions(dealtSeats.indexOf(seat), n),
+            category: hand.category, rankValue: hand.rankValue, handName: hand.name, bestFive: [...hand.bestFive],
+          };
+        }),
+      };
+      if (canonicalJson(expectedShowdown) !== canonicalJson(showdown.data)) return fail("Showdown hands or rankings differ from the committed cards");
+    } else if (showdown) {
+      return fail("A hand won by folds cannot have a showdown");
+    }
+
+    // Settlement lists contributions in seat order, as the engine does.
+    const bySeat = [...dealtSeats].sort((a, b) => a - b);
+    const awarded = awardPots({
+      contribs: bySeat.filter((seat) => committed.get(seat)! > 0).map((seat) => ({ seatIndex: seat, committed: committed.get(seat)!, folded: folded.has(seat) })),
+      holeCards,
+      board,
+      dealerSeat: started.data.dealerSeat as number,
+      maxSeats: started.data.maxSeats as number,
+    });
+    const expectedAwards = {
+      pots: awarded.pots.map((p) => ({
+        potIndex: p.potIndex, amount: p.amount, eligibleSeatIndexes: [...p.eligibleSeatIndexes],
+        winnerSeatIndexes: [...p.winnerSeatIndexes], oddChipSeatIndex: p.oddChipSeatIndex,
+      })),
+      refunds: [...awarded.returned].map(([seatIndex, amount]) => ({ seatIndex, amount })),
+      payouts: [...awarded.payouts].sort(([a], [b]) => a - b).map(([seatIndex, amount]) => ({ seatIndex, amount })),
+    };
+    if (canonicalJson(expectedAwards) !== canonicalJson(awards.data)) return fail("Pot awards differ from a replay of the hand");
+
+    const stacks = dealtSeats.map((seat) => ({ seatIndex: seat, stack: stack.get(seat)! + (awarded.payouts.get(seat) ?? 0) }));
+    const finalTotal = stacks.reduce((sum, row) => sum + row.stack, 0);
+    if (finalTotal !== chipTotal) return fail("Chips were not conserved");
+    const expectedSettled = { reason, board, stacks, chipTotal };
+    if (canonicalJson(expectedSettled) !== canonicalJson(settled.data)) return fail("Settlement differs from a replay of the hand");
+    return { ok: true };
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : "Malformed hand record");
+  }
 }

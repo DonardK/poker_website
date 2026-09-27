@@ -23,8 +23,8 @@ export interface CreateTableRequest {
   smallBlind: number;
   bigBlind: number;
   buyIn: number;
-  botCount: number;
-  botProfiles?: BotProfile[];
+  /** Legacy clients may send zero. New tables never create bots. */
+  botCount?: 0;
 }
 
 export interface TableListItem {

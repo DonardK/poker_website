@@ -4,28 +4,37 @@ import { useCallback, useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { AuthResponse, CreateTableRequest, PublicUser, TableListItem } from "@poker/shared";
+import { clearLiveEvidence } from "@/hooks/use-table-socket";
 import { api, API_UNAVAILABLE_MESSAGE } from "@/lib/api";
 import { disconnectSocket } from "@/lib/socket";
 import { useAuthStore } from "@/stores/session";
 
 export default function LobbyPage() {
   const router = useRouter();
-  const { user, accessToken, hydrated, apiOffline, setSession, clearSession } = useAuthStore();
+  const { user, accessToken, hydrated, apiOffline, leavingTableId, setSession, clearSession } = useAuthStore();
   const [tables, setTables] = useState<TableListItem[]>([]);
   const [tablesLoaded, setTablesLoaded] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showSetup, setShowSetup] = useState(false);
+  const [tableName, setTableName] = useState("");
   const [seats, setSeats] = useState(6);
-  const [bots, setBots] = useState(5);
   const [bigBlind, setBigBlind] = useState(10);
   const [buyIn, setBuyIn] = useState(1000);
 
   const loadTables = useCallback(async () => {
     if (!accessToken) return;
     const data = await api<{ tables: TableListItem[] }>("/api/tables", { token: accessToken });
+    if (useAuthStore.getState().accessToken !== accessToken) return;
     setTables(data.tables);
     setTablesLoaded(true);
+    const state = useAuthStore.getState();
+    if (state.leavingTableId && !data.tables.some((table) => table.id === state.leavingTableId && table.isSeated)) {
+      state.setLeavingTableId(null);
+      void api<{ user: PublicUser }>("/api/auth/me", { token: accessToken }).then(({ user }) => {
+        if (useAuthStore.getState().accessToken === accessToken) useAuthStore.getState().patchBankroll(user.bankroll);
+      }).catch(() => undefined);
+    }
   }, [accessToken]);
 
   useEffect(() => {
@@ -65,6 +74,7 @@ export default function LobbyPage() {
       await api("/api/auth/logout", { method: "POST", token: accessToken });
       disconnectSocket();
       clearSession();
+      clearLiveEvidence();
       setTables([]);
       setTablesLoaded(false);
     } catch (err) {
@@ -82,8 +92,9 @@ export default function LobbyPage() {
       smallBlind: custom ? Math.floor(bigBlind / 2) : 5,
       bigBlind: custom ? bigBlind : 10,
       buyIn: custom ? buyIn : 1000,
-      botCount: custom ? bots : 5,
+      botCount: 0,
       maxSeats: custom ? seats : 6,
+      ...(custom && tableName.trim() ? { name: tableName.trim() } : {}),
     };
     try {
       const data = await api<{ tableId: string }>("/api/tables", {
@@ -91,9 +102,12 @@ export default function LobbyPage() {
         token: accessToken,
         body: JSON.stringify(body),
       });
-      const me = await api<{ user: PublicUser }>("/api/auth/me", { token: accessToken });
-      setSession(me.user, accessToken);
       router.push(`/table/${data.tableId}`);
+      const walletVersion = useAuthStore.getState().walletVersion;
+      void api<{ user: PublicUser }>("/api/auth/me", { token: accessToken }).then(({ user: latest }) => {
+        const state = useAuthStore.getState();
+        if (state.accessToken === accessToken && state.walletVersion === walletVersion) state.patchBankroll(latest.bankroll);
+      }).catch(() => undefined);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not open a table");
     } finally {
@@ -110,7 +124,7 @@ export default function LobbyPage() {
             Hold&apos;em Live
           </h1>
           <p className="mt-3 max-w-xl text-emerald-100/80">
-            Play a live hand in seconds. Take a seat with friends or challenge a table of distinct poker bots.
+            Create a table for friends or join an open one. A hand starts when at least two people are seated.
           </p>
         </div>
         {user ? (
@@ -139,6 +153,11 @@ export default function LobbyPage() {
         )}
       </header>
 
+      {leavingTableId ? (
+        <p role="status" className="rounded-xl border border-amber-300/40 bg-amber-950/40 px-4 py-3 text-amber-100">
+          You have left the table. The current hand is finishing; your remaining chips will return automatically. You can join another table once it settles.
+        </p>
+      ) : null}
       {error ? (
         <p className="rounded-xl border border-red-400/40 bg-red-950/40 px-4 py-3 text-red-100">{error}</p>
       ) : null}
@@ -171,7 +190,7 @@ export default function LobbyPage() {
             onClick={() => activeTable ? router.push(`/table/${activeTable.id}`) : void createTable()}
             className="min-h-12 rounded-full bg-amber-300 px-6 py-3 font-semibold text-emerald-950 transition hover:bg-amber-200 disabled:opacity-50"
           >
-            {activeTable ? "Return to your table" : "Open 6-max vs 5 bots"}
+            {activeTable ? "Return to your table" : "Open 6-seat table"}
           </button>
           <button type="button" onClick={() => setShowSetup((open) => !open)}
             className="min-h-12 rounded-full border border-amber-200/40 px-6 py-3 font-semibold text-amber-100 transition hover:bg-white/10"
@@ -189,18 +208,16 @@ export default function LobbyPage() {
           className="grid gap-4 rounded-2xl border border-amber-200/20 bg-black/30 p-4 sm:grid-cols-2 lg:grid-cols-4">
           <div className="sm:col-span-2 lg:col-span-4">
             <h2 className="font-[family-name:var(--font-display)] text-2xl">Set up a table</h2>
-            <p className="text-sm text-emerald-100/70">{activeTable ? "Leave your current seat before opening another table." : "Choose 2–9 seats and fill the rest with players or bots."}</p>
+            <p className="text-sm text-emerald-100/70">{activeTable ? "Leave your current seat before opening another table." : "Choose the seats and buy-in. Other people can join from the lobby."}</p>
           </div>
+          <label className="flex flex-col gap-2 text-sm sm:col-span-2 lg:col-span-4">Table name
+            <input type="text" maxLength={40} value={tableName} onChange={(e) => setTableName(e.target.value)} placeholder="My poker table"
+              className="min-h-11 rounded-xl border border-white/20 bg-emerald-950 px-3" />
+          </label>
           <label className="flex flex-col gap-2 text-sm">Seats
-            <select value={seats} onChange={(e) => { const next = Number(e.target.value); setSeats(next); setBots((count) => Math.min(count, next - 1)); }}
+            <select value={seats} onChange={(e) => setSeats(Number(e.target.value))}
               className="min-h-11 rounded-xl border border-white/20 bg-emerald-950 px-3">
               {Array.from({ length: 8 }, (_, i) => i + 2).map((count) => <option key={count} value={count}>{count} seats</option>)}
-            </select>
-          </label>
-          <label className="flex flex-col gap-2 text-sm">Bots
-            <select value={bots} onChange={(e) => setBots(Number(e.target.value))}
-              className="min-h-11 rounded-xl border border-white/20 bg-emerald-950 px-3">
-              {Array.from({ length: seats }, (_, i) => i).map((count) => <option key={count} value={count}>{count} {count === 1 ? "bot" : "bots"}</option>)}
             </select>
           </label>
           <label className="flex flex-col gap-2 text-sm">Blinds
@@ -215,11 +232,11 @@ export default function LobbyPage() {
               className="min-h-11 rounded-xl border border-white/20 bg-emerald-950 px-3" />
           </label>
           <div className="flex flex-wrap items-center gap-3 sm:col-span-2 lg:col-span-4">
-            <button disabled={busy || Boolean(activeTable) || !tablesLoaded || user.bankroll < bigBlind * 20 || buyIn > user.bankroll || bots >= seats}
+            <button disabled={busy || Boolean(activeTable) || !tablesLoaded || user.bankroll < bigBlind * 20 || buyIn > user.bankroll}
               className="min-h-11 rounded-full bg-amber-300 px-6 font-semibold text-emerald-950 disabled:opacity-50">
               Open table
             </button>
-            <p className="text-sm text-emerald-100/60">{seats - bots} human {seats - bots === 1 ? "seat" : "seats"} · {bots} {bots === 1 ? "bot" : "bots"}</p>
+            <p className="text-sm text-emerald-100/60">{seats} human seats · waits for a second player</p>
           </div>
         </form>
       ) : null}
@@ -245,8 +262,8 @@ export default function LobbyPage() {
                 <div>
                   <p className="font-semibold">{table.name}</p>
                   <p className="text-sm text-emerald-100/70">
-                    {table.smallBlind}/{table.bigBlind} · {table.occupiedSeats}/{table.maxSeats} seated · {table.botCount}{" "}
-                    bots · buy-in {table.minBuyIn}–{table.maxBuyIn}
+                    {table.smallBlind}/{table.bigBlind} · {table.occupiedSeats}/{table.maxSeats} seated
+                    {table.botCount ? ` · ${table.botCount} legacy bots` : ""} · buy-in {table.minBuyIn}–{table.maxBuyIn}
                   </p>
                 </div>
                 <span className="shrink-0 text-xs uppercase tracking-widest text-amber-200/80">{table.isSeated ? "Your seat" : table.status}</span>

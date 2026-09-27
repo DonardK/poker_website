@@ -3,9 +3,11 @@ import type { PublicTableState } from "./events.js";
 import { boardPositions, HEX_64, merkleContext, UUID_V4, verifyCardProof, type CardProof } from "./audit.js";
 
 /**
- * Live, per-viewer fairness data. Published from the first snapshot of a
- * hand, and therefore before any card is dealt. It contains commitments and
- * Merkle openings only for cards that this viewer is entitled to see.
+ * Live, per-viewer fairness data. The commitments are COMPUTED before any
+ * card is dealt, and the audit record's event order proves it. They are
+ * first PUBLISHED in the hand's first snapshot, together with the viewer's
+ * hole cards and before any community card. The Merkle openings cover only
+ * cards this viewer is entitled to see.
  */
 export interface PublicFairness {
   version: "merkle-sha256-v2";

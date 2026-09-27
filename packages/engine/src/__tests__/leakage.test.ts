@@ -39,7 +39,7 @@
  * below 0.1^20 = 1e-20, far below the file budget of 1e-3.
  */
 import type { Card, HandAuditRecord, ObservedHandEvidence, PublicTableState } from "@poker/shared";
-import { boardPositions, burnPositions, holeCardPositions, verifyParticipantAudit, verifyTableCards } from "@poker/shared";
+import { boardPositions, burnPositions, holeCardPositions, holeCardsDigest, verifyParticipantAudit, verifyTableCards } from "@poker/shared";
 import { participantAudit, sealedAudit } from "../audit.js";
 import { botInformationView, decideBotAction } from "../bots/decide.js";
 import { shuffle } from "../deck.js";
@@ -395,7 +395,8 @@ class LeakChecker {
         const own = state.players.find((p) => p.userId === viewer)?.holeCards ?? undefined;
         const list = evidence.get(viewer) ?? [];
         list.push({ handId: state.fairness.handId, merkleRoot: state.fairness.root, deckCommitment: state.fairness.deckCommitment,
-          auditSeq: state.fairness.auditSeq, auditHead: state.fairness.auditHead, ...(own ? { holeCards: own } : {}) });
+          auditSeq: state.fairness.auditSeq, auditHead: state.fairness.auditHead,
+          ...(own ? { holeCardsDigest: await holeCardsDigest(state.fairness.handId, own) } : {}) });
         evidence.set(viewer, list);
       }
       if (this.verifySampler.take()) {
@@ -1079,12 +1080,12 @@ describe("bot isolation", () => {
 });
 
 describe("participant audit edge cases", () => {
-  function settledHand(): { table: EngineTable; evidence: ObservedHandEvidence; record: HandAuditRecord } {
+  async function settledHand(): Promise<{ table: EngineTable; evidence: ObservedHandEvidence; record: HandAuditRecord }> {
     let t = tableAt("PREFLOP");
     const live = JSON.parse(JSON.stringify(projectTableState(t, HERO))) as PublicTableState;
     const f = live.fairness!;
     const evidence: ObservedHandEvidence = { handId: f.handId, merkleRoot: f.root, deckCommitment: f.deckCommitment, auditSeq: f.auditSeq, auditHead: f.auditHead,
-      holeCards: live.players.find((p) => p.userId === HERO)!.holeCards! };
+      holeCardsDigest: await holeCardsDigest(f.handId, live.players.find((p) => p.userId === HERO)!.holeCards!) };
     expect(() => participantAudit(t.audit!, sealedAudit(t.fairness!), 0)).toThrow(/not settled/);
     while (t.phase !== "SHOWDOWN") {
       const legal = legalActions(t, t.toActSeat!)!;
@@ -1094,7 +1095,7 @@ describe("participant audit edge cases", () => {
   }
 
   it("refuses an undealt seat, refuses an unsettled hand, and rejects evidence from a different live chain", async () => {
-    const { table, evidence, record } = settledHand();
+    const { table, evidence, record } = await settledHand();
     const sealed = sealedAudit(table.fairness!);
     expect(() => participantAudit(record, sealed, 4)).toThrow(/not dealt/);
     expect(() => participantAudit(record, sealed, 5)).toThrow(/not dealt/);
@@ -1104,7 +1105,7 @@ describe("participant audit edge cases", () => {
     // Evidence the player saw live must match: a different head, root or own cards is rejected.
     expect((await verifyParticipantAudit(audit, { ...evidence, auditHead: record.events[0]!.hash })).ok).toBe(false);
     expect((await verifyParticipantAudit(audit, { ...evidence, merkleRoot: "0".repeat(64) })).ok).toBe(false);
-    expect((await verifyParticipantAudit(audit, { ...evidence, holeCards: [table.deck[0]!, table.deck[1]!] })).ok).toBe(false);
+    expect((await verifyParticipantAudit(audit, { ...evidence, holeCardsDigest: await holeCardsDigest(record.handId, [table.deck[0]!, table.deck[1]!]) })).ok).toBe(false);
     // A tampered proof set (an extra opening of an undealt position) is rejected.
     const extra = { ...audit, proofs: [...audit.proofs, cardProof(table.fairness!, 51)] };
     expect((await verifyParticipantAudit(extra, evidence)).ok).toBe(false);

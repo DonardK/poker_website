@@ -34,11 +34,12 @@ import { evaluate } from "./evaluate.js";
 import {
   anyoneNeedsAction,
   contenders,
+  isBlindCandidate,
   isLiveForDeal,
   liveDealSeats,
   needsAction,
-  nextIndex,
   nextLiveSeat,
+  nextMatching,
   nextToActSeat,
   receivesCards,
 } from "./seats.js";
@@ -66,7 +67,7 @@ export function createTable(cfg: CreateTableConfig): EngineTable {
     throw new EngineError("BAD_CONFIG", "Invalid table configuration");
   }
   return {
-    revision: 0, fairness: null, audit: null, auditChainTip: null, handChipTotal: null, dealtSeats: [], actions: [], awards: [], refunds: [],
+    revision: 0, fairness: null, audit: null, auditChainTip: null, handChipTotal: null, dealtSeats: [], smallBlindPosition: null, actions: [], awards: [], refunds: [],
     lastActedBet: Array.from({ length: cfg.maxSeats }, () => null),
     startedAt: null, settledAt: null,
     tableId: cfg.tableId,
@@ -115,6 +116,10 @@ export function sitDown(table: EngineTable, seatIndex: number, cfg: SeatPlayerCo
     throw new EngineError("BUYIN", `Buy-in must be between ${min} and ${max}`);
   }
   const inProgress = next.phase !== "WAITING" && next.phase !== "COMPLETE";
+  // Standard entry rule: once a game is running (a hand has been played and
+  // two others can play on), a newcomer waits for the big blind. They cannot
+  // be dealt in on the button or between the button and the blinds for free.
+  const waitingForBigBlind = next.handNumber > 0 && liveDealSeats(next).length >= 2;
   next.players[seatIndex] = {
     seatIndex,
     userId: cfg.userId,
@@ -131,6 +136,8 @@ export function sitDown(table: EngineTable, seatIndex: number, cfg: SeatPlayerCo
     showedCards: false,
     handResult: null,
     pendingLeave: false,
+    waitingForBigBlind,
+    missedBlind: false,
   };
   pushLog(next, seatIndex, `${cfg.username} sits with $${cfg.buyIn}`);
   next.animToken += 1;
@@ -138,20 +145,31 @@ export function sitDown(table: EngineTable, seatIndex: number, cfg: SeatPlayerCo
 }
 
 export function sitOut(table: EngineTable, userId: string, now = Date.now()): EngineTable {
+  // A repeated toggle changes nothing: no audit event, no new revision.
+  if (requirePlayer(table, userId).sittingOut) return table;
   const next = cloneTable(table);
   const player = requirePlayer(next, userId);
   player.sittingOut = true;
   if (next.phase === "WAITING" || next.phase === "COMPLETE") player.status = "SIT_OUT";
   pushLog(next, player.seatIndex, `${player.username} sits out`);
   auditStatus(next, player, "SIT_OUT", now);
-  if (next.toActSeat === player.seatIndex && player.status === "ACTIVE") return applyTimeout(next, now);
+  if (next.toActSeat === player.seatIndex && player.status === "ACTIVE") return autoAct(next, now, "SIT_OUT");
   return next;
 }
 
 export function sitIn(table: EngineTable, userId: string, now = Date.now()): EngineTable {
+  if (!requirePlayer(table, userId).sittingOut) return table;
   const next = cloneTable(table);
   const player = requirePlayer(next, userId);
   player.sittingOut = false;
+  // Sitting back in cancels a pending leave. The player stays seated and acts
+  // for themselves again (a hand already folded for them stays folded).
+  player.pendingLeave = false;
+  // Blinds passed while away: play resumes when the big blind comes round.
+  if (player.missedBlind === true) {
+    player.missedBlind = false;
+    player.waitingForBigBlind = true;
+  }
   if (next.phase === "WAITING" || next.phase === "COMPLETE") player.status = "ACTIVE";
   pushLog(next, player.seatIndex, `${player.username} sits in`);
   auditStatus(next, player, "SIT_IN", now);
@@ -159,17 +177,19 @@ export function sitIn(table: EngineTable, userId: string, now = Date.now()): Eng
 }
 
 export function leaveSeat(table: EngineTable, userId: string, now = Date.now()): EngineTable {
+  if (requirePlayer(table, userId).pendingLeave) return table;
   const next = cloneTable(table);
   const player = requirePlayer(next, userId);
-  if (bettingInProgress(next)) {
+  if (bettingInProgress(next) && player.holeCards !== null) {
     player.sittingOut = true;
     player.pendingLeave = true;
     pushLog(next, player.seatIndex, `${player.username} leaves the table`);
     auditStatus(next, player, "LEAVE", now);
     next.animToken += 1;
-    // All-in hands remain eligible. Other departures check/fold on their turn;
-    // out-of-turn folds can strand side pots with no eligible player.
-    if (next.toActSeat === player.seatIndex && player.status === "ACTIVE") return applyTimeout(next, now);
+    // All-in hands remain eligible. Other leavers fold on their own turn
+    // (see autoAct). Folding out of turn could strand a side pot with no
+    // eligible player.
+    if (next.toActSeat === player.seatIndex && player.status === "ACTIVE") return autoAct(next, now, "LEAVE");
     return next;
   }
   // Log first: pushLog labels the entry with the seated player's name.
@@ -182,12 +202,12 @@ export function leaveSeat(table: EngineTable, userId: string, now = Date.now()):
 
 export function startHand(table: EngineTable, now = Date.now()): EngineTable {
   if (table.phase !== "WAITING" && table.phase !== "COMPLETE") throw new EngineError("IN_HAND", "Hand already in progress");
-  const next = cloneTable(table);
-  const live = liveDealSeats(next);
-  if (live.length < 2) throw new EngineError("NOT_ENOUGH_PLAYERS", "Need at least two players with chips");
-  // State saved by earlier versions may still hold the retired pre-deal
-  // seed protocol (including a server seed). Drop it.
-  delete (next as EngineTable & { pendingShuffle?: unknown }).pendingShuffle;
+  const next = upgradeTableState(cloneTable(table)).table;
+  if (next.players.filter((p) => isBlindCandidate(p)).length < 2) throw new EngineError("NOT_ENOUGH_PLAYERS", "Need at least two players with chips");
+  // Waiting for the big blind only matters while a game can run without you.
+  if (liveDealSeats(next).length < 2) {
+    for (const p of next.players) if (isBlindCandidate(p)) p.waitingForBigBlind = false;
+  }
 
   for (const p of next.players) {
     if (!p) continue;
@@ -200,7 +220,7 @@ export function startHand(table: EngineTable, now = Date.now()): EngineTable {
       p.status = "ELIMINATED";
       continue;
     }
-    if (p.sittingOut) {
+    if (p.sittingOut || p.waitingForBigBlind) {
       p.status = "SIT_OUT";
       continue;
     }
@@ -281,28 +301,61 @@ export function applyAction(table: EngineTable, userId: string, intent: EngineIn
   return next;
 }
 
+/** The acting player's time bank expired: check if free, otherwise fold. */
 export function applyTimeout(table: EngineTable, now = Date.now()): EngineTable {
+  return autoAct(table, now, "TIMEOUT");
+}
+
+type AutoReason = "TIMEOUT" | "SIT_OUT" | "LEAVE";
+const AUTO_SUFFIX: Record<AutoReason, string> = { TIMEOUT: " (time)", SIT_OUT: " (sitting out)", LEAVE: " (leaving)" };
+
+/**
+ * Act for a player who cannot act themselves. The audit records the true
+ * reason: TIMEOUT_CHECK / TIMEOUT_FOLD only when the time bank expired.
+ * Otherwise it records CHECK / FOLD with `auto: "SIT_OUT" | "LEAVE"`.
+ *
+ * A player who asked to leave FOLDS on their turn, even when a check is free,
+ * so a hand they abandoned is never carried to showdown and tabled. The one
+ * exception is when folding would leave a pot they contributed to with no
+ * eligible player; then they check.
+ */
+function autoAct(table: EngineTable, now: number, reason: AutoReason): EngineTable {
   const next = cloneTable(table);
   if (next.toActSeat == null) return next;
   const player = next.players[next.toActSeat];
   if (!player) return next;
   const legal = legalActions(next, player.seatIndex);
   const before = player.committedThisStreet;
-  if (legal?.actions.includes("CHECK")) {
+  const leaverFolds = reason === "LEAVE" && foldKeepsEveryPotContested(next, player);
+  let folded = false;
+  if (!leaverFolds && legal?.actions.includes("CHECK")) {
     executeIntent(next, player, { action: "CHECK" }, legal);
   } else if (legal?.actions.includes("FOLD")) {
     executeIntent(next, player, { action: "FOLD" }, legal);
+    folded = true;
   } else {
     player.status = "FOLDED";
     next.actedThisStreet[player.seatIndex] = true;
-    pushLog(next, player.seatIndex, `${player.username} folds (time)`);
+    pushLog(next, player.seatIndex, `${player.username} folds`);
+    folded = true;
   }
   const last = next.log[next.log.length - 1];
-  recordAction(next, player, player.status === "FOLDED" ? "TIMEOUT_FOLD" : "TIMEOUT_CHECK", player.committedThisStreet - before, now);
-  if (last && !last.text.endsWith("(time)")) last.text = `${last.text} (time)`;
+  if (last && !last.text.endsWith(AUTO_SUFFIX[reason])) last.text = `${last.text}${AUTO_SUFFIX[reason]}`;
+  const action = reason === "TIMEOUT" ? (folded ? "TIMEOUT_FOLD" : "TIMEOUT_CHECK") : (folded ? "FOLD" : "CHECK");
+  recordAction(next, player, action, player.committedThisStreet - before, now, reason === "TIMEOUT" ? null : reason);
   next.animToken += 1;
   progressAfterAction(next, now);
   return next;
+}
+
+/**
+ * Folding `player` keeps every pot contested if another live player has
+ * committed at least as much. Every pot level `player` is eligible for then
+ * keeps an eligible player.
+ */
+function foldKeepsEveryPotContested(table: EngineTable, player: EnginePlayer): boolean {
+  return table.players.some((p) => p !== null && p !== player && (p.status === "ACTIVE" || p.status === "ALL_IN") &&
+    p.committedThisHand >= player.committedThisHand);
 }
 
 /**
@@ -316,33 +369,9 @@ export function applyTimeout(table: EngineTable, now = Date.now()): EngineTable 
 export function completeHand(table: EngineTable): EngineTable {
   if (table.phase !== "SHOWDOWN" && table.phase !== "COMPLETE") throw new EngineError("IN_HAND", "Cannot complete an unsettled hand");
   const next = cloneTable(table);
-  next.phase = "WAITING";
-  next.status = "WAITING";
-  next.toActSeat = null;
-  next.turnStartedAt = null;
-  next.deck = [];
-  next.burns = [];
-  next.board = [];
-  next.fairness = null;
-  next.audit = null;
-  next.handChipTotal = null;
-  next.dealtSeats = [];
-  next.pots = [];
-  next.potTotal = 0;
-  next.currentBet = 0;
-  next.winners = [];
-  next.actions = [];
-  next.awards = [];
-  next.refunds = [];
-  // The hand's log (with its board cards) was persisted with the hand history.
-  next.log = [];
+  purgeHandState(next);
   for (const p of next.players) {
     if (!p) continue;
-    p.holeCards = null;
-    p.handResult = null;
-    p.showedCards = false;
-    p.committedThisStreet = 0;
-    p.committedThisHand = 0;
     if (p.pendingLeave) {
       next.cashOuts.push({ userId: p.userId, stack: p.stack });
       next.players[p.seatIndex] = null;
@@ -356,46 +385,155 @@ export function completeHand(table: EngineTable): EngineTable {
   return next;
 }
 
+/** Remove every trace of the finished hand from live state (Hand Clean-up). */
+function purgeHandState(table: EngineTable): void {
+  table.phase = "WAITING";
+  table.status = "WAITING";
+  table.toActSeat = null;
+  table.turnStartedAt = null;
+  table.deck = [];
+  table.burns = [];
+  table.board = [];
+  table.fairness = null;
+  table.audit = null;
+  table.handChipTotal = null;
+  table.dealtSeats = [];
+  table.pots = [];
+  table.potTotal = 0;
+  table.currentBet = 0;
+  table.winners = [];
+  table.actions = [];
+  table.awards = [];
+  table.refunds = [];
+  // The hand's log (with its board cards) was persisted with the hand history.
+  table.log = [];
+  for (const p of table.players) {
+    if (!p) continue;
+    p.holeCards = null;
+    p.handResult = null;
+    p.showedCards = false;
+    p.committedThisStreet = 0;
+    p.committedThisHand = 0;
+  }
+}
+
+/**
+ * Bring table state saved by an earlier engine version up to this model.
+ * The upgrade is deterministic and idempotent. The server applies it on
+ * every load; on current state it changes nothing.
+ * - Missing fields get their defaults. The retired pre-deal seed protocol,
+ *   including its server seed, is dropped.
+ * - WAITING state that still holds the previous hand's cards, log or
+ *   commitments is purged (old versions did not purge at clean-up).
+ * - A legacy hand already settled (SHOWDOWN) was recorded by the old server,
+ *   so it simply runs Hand Clean-up.
+ * - A legacy hand still in progress has no pre-deal commitment or audit
+ *   trail, so it can never be verified. It is VOIDED: every bet is returned,
+ *   the standard rule for a hand interrupted by a system change. Players who
+ *   were leaving are cashed out. `voidedHand` reports its number so the
+ *   server can log it.
+ */
+export function upgradeTableState(table: EngineTable): { table: EngineTable; voidedHand: number | null } {
+  const t = table as EngineTable & { pendingShuffle?: unknown };
+  delete t.pendingShuffle;
+  t.audit ??= null;
+  t.auditChainTip ??= null;
+  t.handChipTotal ??= null;
+  t.smallBlindPosition ??= null;
+  t.dealtSeats ??= [];
+  for (const p of t.players) {
+    if (!p) continue;
+    p.waitingForBigBlind ??= false;
+    p.missedBlind ??= false;
+  }
+  if (t.audit !== null) return { table: t, voidedHand: null };
+  if (bettingInProgress(t)) {
+    const handNumber = t.handNumber;
+    for (const p of t.players) if (p) p.stack += p.committedThisHand;
+    t.phase = "SHOWDOWN";
+    const voided = completeHand(t);
+    pushLog(voided, null, `Hand #${handNumber} was voided during a system upgrade; all bets were returned`);
+    return { table: voided, voidedHand: handNumber };
+  }
+  if (t.phase === "SHOWDOWN") return { table: completeHand(t), voidedHand: null };
+  const leftovers = t.fairness !== null || t.board.length > 0 || t.deck.length > 0 || t.burns.length > 0 || t.players.some((p) => p?.holeCards);
+  if (leftovers) purgeHandState(t);
+  return { table: t, voidedHand: null };
+}
+
 function requirePlayer(table: EngineTable, userId: string): EnginePlayer {
   const player = table.players.find((p) => p?.userId === userId);
   if (!player) throw new EngineError("NOT_SEATED", "You are not seated");
   return player;
 }
 
+/**
+ * Button and blinds for the next hand (forward-moving big blind, dead button,
+ * dead small blind).
+ * - The big blind moves to the next player in line. If that player is
+ *   waiting for the big blind, they are dealt in now and post it.
+ * - The small blind is the previous big blind, or dead if that player is
+ *   gone or sitting out.
+ * - The button goes to the seat where the previous small blind was due. If
+ *   that seat has emptied, the button is dead.
+ * - Heads-up, the button posts the small blind and the other player the big
+ *   blind.
+ * - Sitting-out players whose blinds are skipped are marked as owing them
+ *   (missedBlind).
+ */
 function assignButtonAndBlinds(table: EngineTable): void {
-  const live = liveDealSeats(table);
-  if (table.handNumber <= 1) {
-    table.dealerSeat = live[0]!;
-  } else if (live.length === 2) {
-    table.dealerSeat = nextLiveSeat(table, table.dealerSeat) ?? live[0]!;
-    } else {
-    table.dealerSeat = nextIndex(table.dealerSeat, table.maxSeats);
+  const previousBB = table.bbSeat;
+  const previousSBPosition = table.smallBlindPosition ?? null;
+  const continuing = table.handNumber > 1 && previousBB != null;
+  let nextBB: number | null = null;
+  if (continuing) {
+    nextBB = nextMatching(table, previousBB, (p) => isBlindCandidate(p));
+    const incoming = nextBB == null ? null : table.players[nextBB];
+    if (incoming?.waitingForBigBlind) {
+      incoming.waitingForBigBlind = false;
+      incoming.status = "ACTIVE";
+    }
+    markMissedBlinds(table, previousBB, nextBB);
   }
+  const live = liveDealSeats(table);
 
   if (live.length === 2) {
-    if (table.handNumber > 1 && table.bbSeat != null) {
-      const nextBB = nextLiveSeat(table, table.bbSeat);
-      table.dealerSeat = live.find((seat) => seat !== nextBB)!;
-    }
-    if (!isLiveForDeal(table.players[table.dealerSeat])) {
-      table.dealerSeat = live[0]!;
-    }
+    table.bbSeat = continuing ? nextLiveSeat(table, previousBB!) : nextLiveSeat(table, live[0]!);
+    table.dealerSeat = live.find((seat) => seat !== table.bbSeat)!;
     table.sbSeat = table.dealerSeat;
-    table.bbSeat = nextLiveSeat(table, table.dealerSeat);
+    table.smallBlindPosition = table.dealerSeat;
+  } else if (continuing) {
+    table.bbSeat = nextBB;
+    table.sbSeat = isLiveForDeal(table.players[previousBB!]) ? previousBB : null;
+    table.smallBlindPosition = previousBB;
+    const fallback = (previousBB! - 1 + table.maxSeats) % table.maxSeats;
+    table.dealerSeat = previousSBPosition !== null && previousSBPosition !== table.bbSeat && previousSBPosition !== previousBB
+      ? previousSBPosition
+      : fallback;
   } else {
-    if (table.handNumber > 1 && table.bbSeat != null) {
-      const previousBB = table.bbSeat;
-      table.bbSeat = nextLiveSeat(table, previousBB);
-      table.sbSeat = isLiveForDeal(table.players[previousBB]) ? previousBB : null;
-      table.dealerSeat = (previousBB - 1 + table.maxSeats) % table.maxSeats;
-    } else {
-      table.sbSeat = nextLiveSeat(table, table.dealerSeat);
-      table.bbSeat = table.sbSeat != null ? nextLiveSeat(table, table.sbSeat) : null;
-    }
+    table.dealerSeat = live[0]!;
+    table.sbSeat = nextLiveSeat(table, table.dealerSeat);
+    table.bbSeat = table.sbSeat != null ? nextLiveSeat(table, table.sbSeat) : null;
+    table.smallBlindPosition = table.sbSeat;
   }
-  if (table.bbSeat == null) {
+  if (table.bbSeat == null || !isLiveForDeal(table.players[table.bbSeat])) {
     throw new EngineError("BLINDS", "Could not place blinds");
   }
+}
+
+/**
+ * Sitting-out players whose blinds this hand skips owe them. That is the
+ * previous big blind, whose small blind is now dead, and every seat the big
+ * blind passes. They wait for the big blind when they return.
+ */
+function markMissedBlinds(table: EngineTable, previousBB: number, nextBB: number | null): void {
+  const owes = (seat: number): void => {
+    const p = table.players[seat];
+    if (p && p.sittingOut && p.stack > 0) p.missedBlind = true;
+  };
+  owes(previousBB);
+  if (nextBB == null) return;
+  for (let seat = (previousBB + 1) % table.maxSeats; seat !== nextBB; seat = (seat + 1) % table.maxSeats) owes(seat);
 }
 
 function postBlind(table: EngineTable, seat: number | null, amount: number, label: string, now: number): void {
@@ -562,8 +700,9 @@ function progressAfterAction(table: EngineTable, now = Date.now()): void {
       table.toActSeat = nextToActSeat(table, table.toActSeat ?? table.dealerSeat);
     }
     table.turnStartedAt = table.toActSeat == null ? null : now;
-    if (table.toActSeat != null && table.players[table.toActSeat]?.sittingOut) {
-      Object.assign(table, applyTimeout(table, now));
+    const actor = table.toActSeat != null ? table.players[table.toActSeat] : null;
+    if (actor?.sittingOut) {
+      Object.assign(table, autoAct(table, now, actor.pendingLeave ? "LEAVE" : "SIT_OUT"));
     }
     return;
   }
@@ -741,7 +880,8 @@ function refreshPots(table: EngineTable): void {
   table.pots = mergePotsByEligibility(buildSidePots(adjusted));
 }
 
-function recordAction(table: EngineTable, player: EnginePlayer, action: EngineTable["actions"][number]["action"], amount: number, now: number): void {
+function recordAction(table: EngineTable, player: EnginePlayer, action: EngineTable["actions"][number]["action"], amount: number, now: number,
+  auto: "SIT_OUT" | "LEAVE" | null = null): void {
   table.actions.push({ seq: table.actions.length, seatIndex: player.seatIndex, street: table.phase, action, amount, toAmount: player.committedThisStreet, at: new Date(now).toISOString() });
   if (action === "POST_SB" || action === "POST_BB") {
     appendAudit(table, "BLIND_POSTED", { seatIndex: player.seatIndex, blind: action === "POST_SB" ? "SMALL" : "BIG", amount, allIn: player.stack === 0 }, now);
@@ -750,7 +890,7 @@ function recordAction(table: EngineTable, player: EnginePlayer, action: EngineTa
   table.lastActedBet[player.seatIndex] = table.currentBet;
   appendAudit(table, "PLAYER_ACTION", {
     seatIndex: player.seatIndex, action, amount, toAmount: player.committedThisStreet, stackAfter: player.stack,
-    timeout: action === "TIMEOUT_CHECK" || action === "TIMEOUT_FOLD",
+    timeout: action === "TIMEOUT_CHECK" || action === "TIMEOUT_FOLD", auto,
   }, now);
 }
 

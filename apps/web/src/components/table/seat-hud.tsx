@@ -83,6 +83,12 @@ export function SeatHud({
         {player.status === "ALL_IN" ? <span>All-in</span> : null}
         {player.status === "ELIMINATED" ? <span>Busted</span> : null}
         {player.sittingOut ? <span>Out</span> : null}
+        {player.waitingForBigBlind && !player.sittingOut ? (
+          <span className="rounded bg-white/10 px-1" title="Dealt in when the big blind reaches this seat">
+            <span aria-hidden="true">Waiting for BB</span>
+            <span className="sr-only">Waiting for the big blind</span>
+          </span>
+        ) : null}
         {player.botProfile ? <span>{player.botProfile.replace("_", " ")}</span> : null}
       </div>
       {isToAct && remainingMs != null ? (
