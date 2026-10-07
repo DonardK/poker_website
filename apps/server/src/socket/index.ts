@@ -3,7 +3,10 @@ import { createAdapter } from "@socket.io/redis-adapter";
 import cors from "cors";
 import { Server } from "socket.io";
 import { z } from "zod";
-import { SOCKET_EVENTS, type CommandAck } from "@poker/shared";
+import {
+  SOCKET_EVENTS, type ActionIntentPayload, type CommandAck, type RehydratePayload, type SeatClaimPayload, type SessionRenewPayload,
+  type SitTogglePayload, type TableJoinPayload,
+} from "@poker/shared";
 import { EngineError } from "@poker/engine";
 import { env, isProd, redisEnabled } from "../config.js";
 import { logger } from "../logger.js";
@@ -22,6 +25,14 @@ export type { PokerServer } from "./types.js";
 
 const id = z.string().min(1).max(128);
 const tablePayload = z.object({ tableId: id }).strict();
+/**
+ * Optional client command id (UUID) on seat, sit and stand-up commands
+ * (SeatClaimPayload.commandId). Accepted so the web client's commands are not
+ * refused by the strict schemas; outcomes are not yet stored for replay (F21).
+ */
+const commandIdField = { commandId: z.string().uuid().optional() };
+/** PublicTableState.turnId: "<handNumber>:<turnSeq>" (engine turnIdOf). */
+const turnIdSchema = z.string().regex(/^\d{1,12}:\d{1,12}$/);
 
 /**
  * The table a refused request named, if it named a well-formed id (even in an
@@ -35,7 +46,29 @@ function namedTable(raw: unknown): { tableId?: string } {
 }
 /** Every socket of a session joins this room; revocation disconnects it (user:<id> carries private per-user events). */
 const sessionRoom = (sessionId: string) => `session:${sessionId}`;
-const actionPayload =tablePayload.extend({ revision: z.number().int().nonnegative(), action: z.enum(["FOLD", "CHECK", "CALL", "BET", "RAISE", "ALL_IN"]), amount: z.number().int().positive().max(2_000_000_000).optional(), clientActionId: z.string().uuid() });
+const actionPayload =tablePayload.extend({ revision: z.number().int().nonnegative(), action: z.enum(["FOLD", "CHECK", "CALL", "BET", "RAISE", "ALL_IN"]), amount: z.number().int().positive().max(2_000_000_000).optional(), clientActionId: z.string().uuid(), turnId: turnIdSchema.optional() });
+const seatClaimPayload = tablePayload.extend({ seatIndex: z.number().int().min(0).max(8), buyIn: z.number().int().positive().max(40_000_000), ...commandIdField });
+const sitTogglePayload = tablePayload.extend(commandIdField);
+const rehydratePayload = z.object({ tableId: id.optional() });
+const sessionRenewPayload = z.object({ token: z.string().min(1).max(4096) }).strict();
+
+/**
+ * Compile-time contract check: each socket schema accepts exactly the payload
+ * type the web client is typed against (packages/shared/src/events.ts). A field
+ * added on one side only, as turnId and commandId were (NEW-1), fails the
+ * typecheck. Keys are compared as well, so a one-sided optional field counts.
+ */
+type SameKeys<A, B> = [Exclude<keyof A, keyof B> | Exclude<keyof B, keyof A>] extends [never] ? true : false;
+type Same<A, B> = SameKeys<A, B> extends true ? ([A] extends [B] ? ([B] extends [A] ? true : false) : false) : false;
+const socketContract: {
+  tableJoin: Same<z.infer<typeof tablePayload>, TableJoinPayload>;
+  seatClaim: Same<z.infer<typeof seatClaimPayload>, SeatClaimPayload>;
+  sitToggle: Same<z.infer<typeof sitTogglePayload>, SitTogglePayload>;
+  actionIntent: Same<z.infer<typeof actionPayload>, ActionIntentPayload>;
+  rehydrate: Same<z.infer<typeof rehydratePayload>, RehydratePayload>;
+  sessionRenew: Same<z.infer<typeof sessionRenewPayload>, SessionRenewPayload>;
+} = { tableJoin: true, seatClaim: true, sitToggle: true, actionIntent: true, rehydrate: true, sessionRenew: true };
+void socketContract;
 
 export function createSocketServer(httpServer: WebServer): PokerServer {
   const io: PokerServer = new Server(httpServer, {
@@ -145,7 +178,7 @@ export function createSocketServer(httpServer: WebServer): PokerServer {
      * later revocation of either session reaches the right sockets.
      */
     socket.on(SOCKET_EVENTS.SESSION_RENEW, (raw, ack) => { void (async () => {
-      const { token } = z.object({ token: z.string().min(1).max(4096) }).strict().parse(raw);
+      const { token } = sessionRenewPayload.parse(raw);
       const answer = (result: Parameters<CommandAck>[0]) => { if (typeof ack === "function") ack(result); };
       let renewed: Awaited<ReturnType<typeof authenticate>>;
       try {
@@ -210,17 +243,20 @@ export function createSocketServer(httpServer: WebServer): PokerServer {
     socket.on(SOCKET_EVENTS.TABLE_JOIN, (raw) => { void (async () => { await join(tablePayload.parse(raw).tableId); })().catch((err) => failure(err, undefined, raw)); });
     socket.on(SOCKET_EVENTS.TABLE_LEAVE, (raw) => { void (async () => { await socket.leave(roomFor(tablePayload.parse(raw).tableId)); })().catch((err) => failure(err, undefined, raw)); });
     socket.on(SOCKET_EVENTS.REHYDRATE, (raw) => { void (async () => {
-      const p = z.object({ tableId: id.optional() }).parse(raw);
+      const p = rehydratePayload.parse(raw);
       const target = p.tableId ?? await getActiveTableForUser(userId); if (target) await join(target);
     })().catch((err) => failure(err, undefined, raw)); });
-    socket.on(SOCKET_EVENTS.SEAT_CLAIM, (raw) => { void (async () => {
-      const p = tablePayload.extend({ seatIndex: z.number().int().min(0).max(8), buyIn: z.number().int().positive().max(40_000_000) }).parse(raw);
+    socket.on(SOCKET_EVENTS.SEAT_CLAIM, (raw, ack) => { void (async () => {
+      const p = seatClaimPayload.parse(raw);
       await checkTable(p.tableId);
       await tableManager.seatClaim(p.tableId, userId, p.seatIndex, p.buyIn);
-      await tableManager.tryStart(p.tableId);
-    })().catch((err) => failure(err, undefined, raw)); });
+      // The claim is committed: acknowledge it before trying to deal, so a
+      // failure to start a hand is never reported as a failed claim (CR-017).
+      if (typeof ack === "function") ack({ ok: true });
+      await tableManager.tryStart(p.tableId).catch((err) => logger.warn({ err, tableId: p.tableId }, "could not start a hand after a seat claim"));
+    })().catch((err) => failure(err, ack, raw)); });
     socket.on(SOCKET_EVENTS.STAND_UP, (raw, ack) => { void (async () => {
-      const p = tablePayload.parse(raw); await checkTable(p.tableId);
+      const p = sitTogglePayload.parse(raw); await checkTable(p.tableId);
       const pendingLeave = await tableManager.standUp(p.tableId, userId);
       if (typeof ack === "function") ack({ ok: true, pendingLeave });
     })().catch((err) => failure(err, ack, raw)); });
@@ -230,16 +266,17 @@ export function createSocketServer(httpServer: WebServer): PokerServer {
       if (typeof ack === "function") ack({ ok: true });
     })().catch((err) => failure(err, ack, raw)); });
     for (const event of [SOCKET_EVENTS.SIT_OUT, SOCKET_EVENTS.SIT_IN] as const) {
-      socket.on(event, (raw) => { void (async () => {
-        const p = tablePayload.parse(raw); await checkTable(p.tableId);
+      socket.on(event, (raw, ack) => { void (async () => {
+        const p = sitTogglePayload.parse(raw); await checkTable(p.tableId);
         await tableManager.sitToggle(p.tableId, userId, event === SOCKET_EVENTS.SIT_OUT);
-        if (event === SOCKET_EVENTS.SIT_IN) await tableManager.tryStart(p.tableId);
-      })().catch((err) => failure(err, undefined, raw)); });
+        if (typeof ack === "function") ack({ ok: true });
+        if (event === SOCKET_EVENTS.SIT_IN) await tableManager.tryStart(p.tableId).catch((err) => logger.warn({ err, tableId: p.tableId }, "could not start a hand after sit-in"));
+      })().catch((err) => failure(err, ack, raw)); });
     }
     socket.on(SOCKET_EVENTS.ACTION_INTENT, (raw, ack) => { void (async () => {
       const p = actionPayload.parse(raw);
       await checkTable(p.tableId);
-      await tableManager.intent(p.tableId, userId, { action: p.action, amount: p.amount }, p.revision);
+      await tableManager.intent(p.tableId, userId, { action: p.action, amount: p.amount }, p.revision, p.turnId);
       if (typeof ack === "function") ack({ ok: true });
     })().catch(async (err) => {
       failure(err, ack, raw);

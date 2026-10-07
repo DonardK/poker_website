@@ -2,8 +2,10 @@ import type { AuthResponse, PublicUser } from "@poker/shared";
 
 const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000").replace(/\/+$/, "");
 
+// In development the usual cause is a game server that stopped while the web
+// app kept running (npm run dev shows both); the reason is in its own output.
 export const API_UNAVAILABLE_MESSAGE = process.env.NODE_ENV === "development"
-  ? "Game server unavailable. Start both services with npm run dev, then retry."
+  ? `Game server unavailable: nothing answers at ${API_URL}. If npm run dev is already running, its game server has stopped; the reason is in that terminal's [server] lines. Fix it, then restart npm run dev.`
   : "Game server unavailable. Check your connection and try again shortly.";
 
 export class ApiError extends Error {

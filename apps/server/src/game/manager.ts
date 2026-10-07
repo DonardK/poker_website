@@ -1,9 +1,10 @@
 import { admitSocket, notifyUser } from "../socket/notify.js";
 import {
   applyAction, applyTimeout, beginIdleWarning, clearIdleWarning, closeIfEmpty, closeTable, completeHand, createTable, decideBotAction, EngineError,
-  idleSince, keepTableOpen, leaveSeat, recordActivity, sitDown, sitIn, sitOut, startHand,
+  idleSince, keepTableOpen, leaveSeat, rebaseTurnClock, recordActivity, sitDown, sitIn, sitOut, startHand, turnDeadline, turnIdOf,
   type EngineIntent, type EngineTable,
 } from "@poker/engine";
+import { gameConfig } from "../config.js";
 import {
   SOCKET_EVENTS, TABLE_IDLE_TIMEOUT_MS, TABLE_IDLE_WARNING_MS,
   type PublicTableState, type TableCloseReason, type TableIdleNoticePayload,
@@ -78,7 +79,10 @@ export class TableManager {
     // Creation is activity: the idle clock of a table nobody has opened runs
     // from its creation, and so do the clocks of the players seated with it.
     const createdAt = epochMs(row.createdAt);
-    let table = createTable({ tableId: row.id, name: row.name, maxSeats: row.maxSeats, smallBlind: row.smallBlind, bigBlind: row.bigBlind, timeBankMs: row.timeBankMs, createdAt });
+    // A new table gets the personal time bank configured now (TIME_BANK_* in
+    // config.ts, published in the House Rules); it is stored in the table's
+    // state, so a later configuration change never alters a running table.
+    let table = createTable({ tableId: row.id, name: row.name, maxSeats: row.maxSeats, smallBlind: row.smallBlind, bigBlind: row.bigBlind, timeBankMs: row.timeBankMs, createdAt, extraTimeBank: gameConfig.extraTimeBank });
     const seats = await tx.tableSeat.findMany({ where: { tableId }, include: { user: true }, orderBy: { seatIndex: "asc" } });
     for (const seat of seats) {
       if (!seat.user || seat.status === "EMPTY" || seat.stack <= 0) continue;
@@ -119,8 +123,13 @@ export class TableManager {
         // table that was left empty (mutate applies the empty-table rule), and
         // drop a warning that was counting down when the server stopped, so
         // dealing resumes and the table is timed afresh. mutate arms the timers.
-        if (loaded.upgraded || this.staleWarning(loaded.table) || closeIfEmpty(loaded.table) !== loaded.table) {
-          await this.mutate(row.id, (current) => this.staleWarning(current) ? clearIdleWarning(current) : current);
+        // The player to act could not act while the server was down: their turn
+        // restarts with a fresh base clock and no time bank charged (F10; the
+        // House Rules promise it). rebaseTurnClock changes nothing when no
+        // betting round is waiting on anyone.
+        const resumed = rebaseTurnClock(loaded.table, Date.now(), "SERVER_RESUME") !== loaded.table;
+        if (loaded.upgraded || resumed || this.staleWarning(loaded.table) || closeIfEmpty(loaded.table) !== loaded.table) {
+          await this.mutate(row.id, (current) => rebaseTurnClock(this.staleWarning(current) ? clearIdleWarning(current) : current, Date.now(), "SERVER_RESUME"));
         } else this.armTimers(loaded.table);
       } catch (err) { logger.error({ err, tableId: row.id }, "table recovery failed; refusing to redeal"); }
     }
@@ -162,14 +171,20 @@ export class TableManager {
       // are paid from the result state, which is then stored with none pending in
       // the same transaction, so no later load can pay them again.
       for (const cash of result.cashOuts) {
-        await tx.user.updateMany({ where: { id: cash.userId, kind: "HUMAN" }, data: { bankroll: { increment: cash.stack } } });
+        const paid = await tx.user.updateMany({ where: { id: cash.userId, kind: "HUMAN" }, data: { bankroll: { increment: cash.stack } } });
+        // A human's credit must land exactly once, or the whole commit is undone
+        // and the seat keeps its chips (F09). Only a bot's cash-out credits
+        // nothing, by design.
+        if (paid.count !== 1) {
+          const owner = await tx.user.findUnique({ where: { id: cash.userId }, select: { kind: true } });
+          if (!owner || owner.kind === "HUMAN") throw new EngineError("CASHOUT_FAILED", "A cash-out could not be credited; nothing was changed");
+        }
         paidUsers.add(cash.userId);
       }
       result.cashOuts = [];
       await this.persistSeats(tx, result, loaded.upgraded ? undefined : current);
-      // A hand is recorded once, when it settles. The SHOWDOWN timer cleans up one
-      // hand and deals the next in a single step, and that hand can settle at once
-      // (all-in on the blinds), so compare hand numbers as well as phases.
+      // A hand is recorded once, when it settles. A deal (tryStart) can settle at
+      // once (all-in on the blinds), so compare hand numbers as well as phases.
       if (result.phase === "SHOWDOWN" && (current.phase !== "SHOWDOWN" || current.handNumber !== result.handNumber)) await this.persistHand(tx, result);
       await tx.table.update({ where: { id: tableId }, data: {
         status: result.status, stateCiphertext: encryptState(result, `table:${tableId}`),
@@ -201,12 +216,21 @@ export class TableManager {
       return startHand(table);
     });
   }
-  async intent(tableId: string, userId: string, intent: EngineIntent, revision: number): Promise<void> {
+  /**
+   * Apply a player's action. With `turnId` (the PublicTableState.turnId the
+   * client chose it for), the action is stale only when that turn is over:
+   * unrelated changes (someone sitting out, joining or leaving) bump the
+   * revision but are not a new decision for the actor (CR-008). Without it,
+   * any change since `revision` makes the action stale, as before.
+   */
+  async intent(tableId: string, userId: string, intent: EngineIntent, revision: number, turnId?: string): Promise<void> {
     await this.mutate(tableId, (table) => {
-      if (table.turnStartedAt != null && Date.now() >= table.turnStartedAt + table.timeBankMs) throw new EngineError("TURN_EXPIRED", "Your turn has expired");
+      if (turnId !== undefined && turnIdOf(table) !== turnId) throw new EngineError("STALE_ACTION", "The table changed; use the latest action buttons");
+      const deadline = turnDeadline(table);
+      if (deadline != null && Date.now() >= deadline) throw new EngineError("TURN_EXPIRED", "Your turn has expired");
       // A player's own action is activity; time-outs and bot actions (armTimers) are not.
       return recordActivity(applyAction(table, userId, intent), Date.now(), userId);
-    }, revision);
+    }, turnId === undefined ? revision : undefined);
   }
   async seatClaim(tableId: string, userId: string, seatIndex: number, buyIn: number): Promise<void> {
     await this.mutate(tableId, async (table, tx) => {
@@ -222,7 +246,9 @@ export class TableManager {
       if (occupied) throw new EngineError("ALREADY_SEATED", "Leave your current table before joining another");
       return next;
     });
-    await this.patchBankroll(userId);
+    // The seat and the debit are committed: a failed balance notification must
+    // not turn the claim into a reported failure (CR-017).
+    await this.patchBankroll(userId).catch((err) => logger.warn({ err, userId, tableId }, "bankroll update not delivered after a seat claim"));
   }
   async sitToggle(tableId: string, userId: string, out: boolean): Promise<void> {
     await this.mutate(tableId, (table) => {
@@ -345,12 +371,14 @@ export class TableManager {
     let run: () => Promise<unknown>;
     if (table.phase === "SHOWDOWN") {
       delay = Math.max(0, (table.settledAt ?? Date.now()) + HAND_BREAK_MS - Date.now());
-      run = () => this.mutate(table.tableId, (current) => {
-        // Hand Clean-up purges the settled hand's secrets before the next shuffle.
-        let next = completeHand(current);
-        if (readyToDeal(next)) next = startHand(next);
-        return next;
-      }, table.revision);
+      // Hand Clean-up commits on its own: it purges the settled hand's secrets
+      // and pays leavers' cash-outs. The next deal follows at once as a separate
+      // command (tryStart), so a deal that fails, for example on an RNG health
+      // check, can never undo the clean-up or its payouts (CR-033); it is retried.
+      run = async () => {
+        await this.mutate(table.tableId, (current) => completeHand(current), table.revision);
+        await this.tryStart(table.tableId);
+      };
     } else if (table.phase === "WAITING" || table.phase === "COMPLETE") {
       if (!readyToDeal(table)) return;
       delay = 100;
@@ -358,11 +386,14 @@ export class TableManager {
     } else {
       if (table.toActSeat == null) return;
       const actor = table.players[table.toActSeat]!;
-      const remaining = Math.max(0, (table.turnStartedAt ?? Date.now()) + table.timeBankMs - Date.now());
-      if (actor.kind === "BOT" && remaining > 0) {
+      // The deadline includes the actor's personal time bank when the table has one.
+      const remaining = Math.max(0, (turnDeadline(table) ?? Date.now()) - Date.now());
+      // Legacy bots play only when ENABLE_LEGACY_BOTS is on (D11); otherwise a
+      // bot's turn is treated like an absent player's and times out.
+      if (actor.kind === "BOT" && gameConfig.enableLegacyBots && remaining > 0) {
         const decision = decideBotAction(table);
         delay = Math.max(0, Math.min(remaining, table.turnStartedAt! + decision.delayMs - Date.now()));
-        run = () => this.mutate(table.tableId, (current) => Date.now() >= current.turnStartedAt! + current.timeBankMs ? applyTimeout(current) : applyAction(current, actor.userId, decision.intent), table.revision);
+        run = () => this.mutate(table.tableId, (current) => Date.now() >= (turnDeadline(current) ?? 0) ? applyTimeout(current) : applyAction(current, actor.userId, decision.intent), table.revision);
       } else {
         delay = remaining;
         run = () => this.mutate(table.tableId, (current) => applyTimeout(current), table.revision);
@@ -532,7 +563,7 @@ function seatData(p: EngineTable["players"][number] | undefined) {
 
 function readyToDeal(table: EngineTable): boolean {
   // No hand is dealt during the idle warning or once closure has begun (startHand
-  // refuses too, and would roll back the SHOWDOWN timer's Hand Clean-up with it).
+  // refuses too).
   if (table.closingAt != null || table.closeReason != null) return false;
   const live = table.players.filter((p) => p && !p.sittingOut && p.stack > 0);
   return live.length >= 2 && live.some((p) => p!.kind === "HUMAN");

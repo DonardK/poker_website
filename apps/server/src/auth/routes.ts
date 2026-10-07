@@ -12,6 +12,7 @@ import { AuthError, isAuthError, uniqueViolation } from "./errors.js";
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from "./jwt.js";
 import { requireAuth, serviceUnavailable, type AuthedRequest } from "./middleware.js";
 import { newSessionLifetime, REFRESH_GRACE_MS, revokeSession, revokeUserSessions, sessionExpiry } from "./sessions.js";
+import { clearFamiliarFailures, familiarLockedUntil, isFamiliarAddress, recordFamiliarFailure } from "./smart-lockout.js";
 import { canonicalUsername, checkChosenUsername } from "./usernames.js";
 
 export const authRouter = Router();
@@ -33,6 +34,10 @@ const DUMMY_PASSWORD_HASH = "$2b$12$9dPEBGq4jOLGMdzdoLFWnuXMLJCYIKMfYQaluwVLqzSo
  * answer is the ordinary 401 "Invalid credentials" (same status, body and
  * bcrypt work), so the lock is neither a password oracle nor a signal an
  * attacker can probe; attempts during the lock do not extend it.
+ * Smart lockout (auth/smart-lockout.ts): this account lock applies to
+ * addresses the account has never signed in from. From a familiar address the
+ * owner is not locked out by others' guesses; failures there are counted per
+ * account and address instead, with the same schedule.
  */
 export const LOGIN_LOCK_AFTER = 5;
 const LOCK_BASE_MS = 30_000;
@@ -214,14 +219,28 @@ authRouter.post("/login", route(async (req, res) => {
   const now = Date.now();
   const user = await prisma.user.findUnique({ where: { usernameCanonical: canonicalUsername(parsed.data.username) } });
   const usable = user && user.kind === "HUMAN" && user.passwordHash ? user : null;
-  const locked = usable?.lockedUntil != null && usable.lockedUntil.getTime() > now;
+  // Asked on every path, for a missing account too, so the work done does not reveal which case applied.
+  const familiar = await isFamiliarAddress(prisma, usable?.id ?? null, req.ip, now);
+  const locked = usable != null && (familiar
+    ? familiarLockedUntil(usable.id, req.ip) > now
+    : usable.lockedUntil != null && usable.lockedUntil.getTime() > now);
   // Exactly one bcrypt comparison on every path (see DUMMY_PASSWORD_HASH).
   const matches = await bcrypt.compare(parsed.data.password, usable && !locked ? usable.passwordHash! : DUMMY_PASSWORD_HASH);
   if (!usable || locked || !matches) {
-    if (usable && !locked) await recordFailedLogin(usable.id, now);
+    if (usable && !locked) {
+      if (!familiar) await recordFailedLogin(usable.id, now);
+      else {
+        const lockMs = recordFamiliarFailure(usable.id, req.ip, now, loginLockMs);
+        if (lockMs) logger.warn({ security: "LOGIN_LOCKOUT", userId: usable.id, scope: "familiar-address", lockMs }, "account locked for one familiar address after repeated failed logins");
+      }
+    }
     res.status(401).json({ error: INVALID_CREDENTIALS });
     return;
   }
+  if (familiar && usable.lockedUntil != null && usable.lockedUntil.getTime() > now) {
+    logger.info({ security: "LOGIN_FROM_FAMILIAR_ADDRESS_DURING_LOCK", userId: usable.id }, "signed in from a familiar address while the account was locked for other addresses");
+  }
+  clearFamiliarFailures(usable.id, req.ip);
   const fresh = await prisma.user.update({ where: { id: usable.id }, data: { lastSeenAt: new Date(now), failedLoginCount: 0, lockedUntil: null } });
   sendSession(res, 200, fresh, await createSession(prisma, fresh, req, now));
 }));

@@ -14,7 +14,7 @@
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:reset": "prisma migrate reset --force",
     "prisma:seed": "tsx prisma/seed.ts",
-    "test": "npm run build && node test/support/run-tests.mjs test/security.test.mjs test/compliance.test.mjs test/game-flow.test.mjs test/human-tables.test.mjs test/table-lifecycle.test.mjs test/auth-http.test.mjs test/auth-socket.test.mjs test/platform-config.test.mjs test/platform-crypto.test.mjs test/platform-http.test.mjs",
+    "test": "npm run build && node test/support/run-tests.mjs test/security.test.mjs test/compliance.test.mjs test/game-flow.test.mjs test/human-tables.test.mjs test/table-lifecycle.test.mjs test/auth-http.test.mjs test/auth-socket.test.mjs test/platform-config.test.mjs test/platform-crypto.test.mjs test/platform-http.test.mjs test/socket-contract.test.mjs test/startup.test.mjs test/hand-cleanup.test.mjs",
     "test:db": "npm run build && node test/support/pg.mjs --exec \"node test/db/run-all.mjs\"",
     "test:integration": "npm run build && node --test test/integration.test.mjs"
   },

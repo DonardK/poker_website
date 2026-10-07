@@ -296,6 +296,28 @@ test('login: 5 failures lock the account (per account, any IP); while locked eve
   assert.equal(db.user(user.id).lockedUntil, null);
 });
 
+test('login, smart lockout: others\' guesses cannot lock the owner out of an address they signed in from; failures there lock only that address (NEW-4)', async (t) => {
+  const db = fakeAuthDb(t);
+  const user = db.addUser({ username: 'Owner', password: PASSWORD });
+  const request = await api(t);
+  // The owner signs in once from this address; their session records it, so it is now familiar.
+  assert.equal((await request('/auth/login', { body: { username: 'owner', password: PASSWORD } })).status, 200);
+  // Guesses from other addresses locked the account (for every address it has never signed in from).
+  db.user(user.id).failedLoginCount = 5;
+  db.user(user.id).lockedUntil = new Date(Date.now() + 30_000);
+  const owner = await request('/auth/login', { body: { username: 'owner', password: PASSWORD } });
+  assert.equal(owner.status, 200, 'the owner still signs in from a familiar address');
+  assert.equal(db.user(user.id).lockedUntil, null, 'and a successful sign-in clears the lock, as before');
+  // Wrong passwords from the familiar address lock that address, on the same schedule, with the identical answer.
+  for (let i = 1; i <= 5; i++) {
+    const r = await request('/auth/login', { body: { username: 'owner', password: `wrong guess ${i}!` } });
+    assert.deepEqual([r.status, r.body], [401, { error: 'Invalid credentials' }]);
+  }
+  const right = await request('/auth/login', { body: { username: 'owner', password: PASSWORD } });
+  assert.deepEqual([right.status, right.body, right.setCookie], [401, { error: 'Invalid credentials' }, null], 'locked for this address');
+  assert.equal(db.user(user.id).failedLoginCount, 0, 'familiar-address failures do not feed the account-wide lock');
+});
+
 // ---------------------------------------------------------------------------
 // Items 6-9: registration conflicts, usernames, P2002 races, terms/age
 // ---------------------------------------------------------------------------

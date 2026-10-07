@@ -1,6 +1,7 @@
 import { tableManager } from "./game/manager.js";
 import { createApp } from "./app.js";
 import { env, proxyTrust } from "./config.js";
+import { connectDatabase, databaseHost } from "./db/connect.js";
 import { assertGameSchemaReady, prisma } from "./db/prisma.js";
 import { logger } from "./logger.js";
 import { connectRedis, disconnectRedis } from "./redis/client.js";
@@ -52,7 +53,20 @@ async function listen(httpServer: WebServer, port: number, host: string, attempt
 
 async function main() {
   await connectRedis();
-  await prisma.$connect();
+  await connectDatabase(prisma, {
+    url: env.DATABASE_URL,
+    // tsx watch does not restart a crashed server, so in development wait for the database instead of exiting.
+    retry: env.NODE_ENV === "development",
+    onRetry: (failure, attempt, delayMs) => logger.warn({ code: failure.code, host: failure.host, attempt, retryInMs: delayMs },
+      `database unavailable: ${failure.hint} Retrying in ${Math.round(delayMs / 1000)} s.`),
+  });
+  // A developer's machine running against a shared database runs table
+  // recovery on that database's live tables at every start; npm run dev:local
+  // gives development a database of its own.
+  const dbHost = databaseHost(env.DATABASE_URL);
+  if (env.NODE_ENV === "development" && dbHost && !/^(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i.test(dbHost)) {
+    logger.warn({ host: dbHost }, "development is using a remote database: every start runs table recovery on its tables. Use npm run dev:local for a local one.");
+  }
   await assertGameSchemaReady();
   readiness.markSchemaReady();
 

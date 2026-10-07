@@ -803,13 +803,17 @@ describe("3. verifyHandOutcome: regulator replay of the hand result", () => {
       }
     });
 
-    type Forgery = [name: string, hand: () => Hand, mutate: (r: HandAuditRecord) => void, reason: RegExp, cardIntegrityPasses: boolean];
+    // What the shared card-integrity check (verifySealedAudit) does with the forgery. It also replays
+    // the money flow (settlementMoneyProblem), so money forgeries fail there too; forgeries of who won
+    // or of hand ranks still pass it, and only the engine replay (verifyHandOutcome) can see them.
+    type SealedCheck = "passes" | "rejects" | "unchecked";
+    type Forgery = [name: string, hand: () => Hand, mutate: (r: HandAuditRecord) => void, reason: RegExp, sealedCheck: SealedCheck];
     const forgeries: Forgery[] = [
       ["a showdown pot reassigned to a losing hand (payouts and stacks moved to match)", () => showdown!, (r) => {
         const pot = awards(r).pots[loser.pot]!;
         pot.winnerSeatIndexes = [loser.loser];
         moveChips(r, loser.winner, loser.loser, pot.amount);
-      }, /Pot awards differ/, true],
+      }, /Pot awards differ/, "passes"],
       ["a fold win reassigned to a player who folded", () => foldWin, (r) => {
         const pot = awards(r).pots[0]!;
         const winner = pot.winnerSeatIndexes[0]!;
@@ -817,10 +821,10 @@ describe("3. verifyHandOutcome: regulator replay of the hand result", () => {
         pot.eligibleSeatIndexes = [folder];
         pot.winnerSeatIndexes = [folder];
         moveChips(r, winner, folder, pot.amount);
-      }, /Pot awards differ/, true],
+      }, /Pot awards differ/, "passes"],
       ["one chip of payout moved between players (stacks moved to match)", () => showdown!, (r) => {
         moveChips(r, loser.winner, loser.loser, 1);
-      }, /Pot awards differ/, true],
+      }, /Pot awards differ/, "rejects"],
       ["a side pot paid to a player not eligible for it", () => sidePots, (r) => {
         const top = awards(r).pots.at(-1)!;
         const outsider = started(r).dealtSeats.find((s) => !top.eligibleSeatIndexes.includes(s))!;
@@ -831,40 +835,40 @@ describe("3. verifyHandOutcome: regulator replay of the hand result", () => {
         }
         top.winnerSeatIndexes = [outsider];
         top.oddChipSeatIndex = null;
-      }, /Pot awards differ/, true],
+      }, /Pot awards differ/, "rejects"],
       ["the odd chip moved to the other winner", () => oddChip!, (r) => {
         const pot = awards(r).pots.find((p) => p.oddChipSeatIndex !== null)!;
         const from = pot.oddChipSeatIndex!;
         const to = pot.winnerSeatIndexes.find((s) => s !== from)!;
         pot.oddChipSeatIndex = to;
         moveChips(r, from, to, 1);
-      }, /Pot awards differ/, true],
+      }, /Pot awards differ/, "rejects"],
       ["an uncalled-bet refund reduced by one chip, added to the pot", () => foldWin, (r) => {
         awards(r).refunds[0]!.amount -= 1;
         awards(r).pots[0]!.amount += 1;
-      }, /Pot awards differ/, true],
+      }, /Pot awards differ/, "rejects"],
       ["an uncalled-bet refund removed, added to the pot", () => foldWin, (r) => {
         const refund = awards(r).refunds[0]!.amount;
         awards(r).refunds = [];
         awards(r).pots[0]!.amount += refund;
-      }, /Pot awards differ/, true],
+      }, /Pot awards differ/, "rejects"],
       ["final stacks changed (total kept)", () => showdown!, (r) => {
         const stacks = settled(r).stacks;
         stacks[0]!.stack += 7;
         stacks[1]!.stack -= 7;
-      }, /Settlement differs/, true],
-      ["HAND_SETTLED chipTotal changed", () => showdown!, (r) => { settled(r).chipTotal += 1; }, /Settlement differs/, true],
-      ["HAND_STARTED chipTotal changed", () => showdown!, (r) => { started(r).chipTotal += 1; }, /HAND_STARTED chip total/, true],
-      ["both chipTotals changed together", () => showdown!, (r) => { started(r).chipTotal += 100; settled(r).chipTotal += 100; }, /HAND_STARTED chip total/, true],
+      }, /Settlement differs/, "rejects"],
+      ["HAND_SETTLED chipTotal changed", () => showdown!, (r) => { settled(r).chipTotal += 1; }, /Settlement differs/, "rejects"],
+      ["HAND_STARTED chipTotal changed", () => showdown!, (r) => { started(r).chipTotal += 1; }, /HAND_STARTED chip total/, "rejects"],
+      ["both chipTotals changed together", () => showdown!, (r) => { started(r).chipTotal += 100; settled(r).chipTotal += 100; }, /HAND_STARTED chip total/, "rejects"],
       ["a big blind amount changed", () => showdown!, (r) => {
         (eventsOf(r, "BLIND_POSTED").find((e) => (e.data as unknown as BlindData).blind === "BIG")!.data as unknown as BlindData).amount -= 1;
-      }, /differs|Invalid amount/, true],
+      }, /differs|Invalid amount/, "rejects"],
       ["a call amount changed", () => showdown!, (r) => {
         (eventsOf(r, "PLAYER_ACTION").find((e) => (e.data as unknown as ActionData).action === "CALL")!.data as unknown as ActionData).amount -= 1;
-      }, /Recorded stack differs/, true],
+      }, /Recorded stack differs/, "rejects"],
       ["a stackAfter changed", () => showdown!, (r) => {
         (eventsOf(r, "PLAYER_ACTION")[0]!.data as unknown as ActionData).stackAfter += 1;
-      }, /Recorded stack differs/, true],
+      }, /Recorded stack differs/, "passes"],
       ["a call amount and every later stackAfter of that seat changed consistently", () => showdown!, (r) => {
         const call = eventsOf(r, "PLAYER_ACTION").find((e) => (e.data as unknown as ActionData).action === "CALL")!;
         const seat = (call.data as unknown as ActionData).seatIndex;
@@ -872,71 +876,72 @@ describe("3. verifyHandOutcome: regulator replay of the hand result", () => {
         for (const e of eventsOf(r, "PLAYER_ACTION").filter((x) => x.seq >= call.seq && (x.data as unknown as ActionData).seatIndex === seat)) {
           (e.data as unknown as ActionData).stackAfter += 1;
         }
-      }, /Pot awards differ/, true],
-      ["a wrong handName in SHOWDOWN", () => showdown!, (r) => { showdownOf(r).shown[0]!.handName = "Royal Flush"; }, /Showdown hands or rankings differ/, true],
-      ["a wrong rankValue in SHOWDOWN", () => showdown!, (r) => { showdownOf(r).shown[0]!.rankValue += 1; }, /Showdown hands or rankings differ/, true],
+      }, /Pot awards differ/, "rejects"],
+      ["a wrong handName in SHOWDOWN", () => showdown!, (r) => { showdownOf(r).shown[0]!.handName = "Royal Flush"; }, /Showdown hands or rankings differ/, "passes"],
+      ["a wrong rankValue in SHOWDOWN", () => showdown!, (r) => { showdownOf(r).shown[0]!.rankValue += 1; }, /Showdown hands or rankings differ/, "passes"],
       ["a wrong category in SHOWDOWN", () => showdown!, (r) => {
         const row = showdownOf(r).shown[0]!;
         row.category = row.category === "STRAIGHT_FLUSH" ? "HIGH_CARD" : "STRAIGHT_FLUSH";
-      }, /Showdown hands or rankings differ/, true],
-      ["a wrong bestFive in SHOWDOWN", () => showdown!, (r) => { showdownOf(r).shown[0]!.bestFive.reverse(); }, /Showdown hands or rankings differ/, true],
-      ["a SHOWDOWN that omits a live hand", () => showdown!, (r) => { showdownOf(r).shown.pop(); }, /Showdown hands or rankings differ/, false],
+      }, /Showdown hands or rankings differ/, "passes"],
+      ["a wrong bestFive in SHOWDOWN", () => showdown!, (r) => { showdownOf(r).shown[0]!.bestFive.reverse(); }, /Showdown hands or rankings differ/, "passes"],
+      ["a SHOWDOWN that omits a live hand", () => showdown!, (r) => { showdownOf(r).shown.pop(); }, /Showdown hands or rankings differ/, "unchecked"],
       ["a fold win with a SHOWDOWN of the winner", () => foldWin, (r) => {
         insertShowdown(r, foldWin, [awards(r).pots[0]!.winnerSeatIndexes[0]!]);
-      }, /A hand won by folds cannot have a showdown/, false],
-      ["a fold win with an empty SHOWDOWN", () => foldWin, (r) => insertShowdown(r, foldWin, []), /A hand won by folds cannot have a showdown/, false],
+      }, /A hand won by folds cannot have a showdown/, "unchecked"],
+      ["a fold win with an empty SHOWDOWN", () => foldWin, (r) => insertShowdown(r, foldWin, []), /A hand won by folds cannot have a showdown/, "unchecked"],
       ["a second SHOWDOWN event", () => showdown!, (r) => {
         const at = r.events.findIndex((e) => e.type === "SHOWDOWN");
         r.events.splice(at, 0, clone(r.events[at]!));
-      }, /More than one SHOWDOWN event/, false],
+      }, /More than one SHOWDOWN event/, "unchecked"],
       ["SHOWDOWN moved before the river betting", () => showdown!, (r) => {
         const [shown] = r.events.splice(r.events.findIndex((e) => e.type === "SHOWDOWN"), 1);
         r.events.splice(r.events.indexOf(streetEvent(r, "RIVER")) + 1, 0, shown!);
-      }, /SHOWDOWN must directly precede POTS_AWARDED/, true],
+      }, /SHOWDOWN must directly precede POTS_AWARDED/, "passes"],
       ["the river removed from a showdown", () => showdown!, (r) => { r.events.splice(r.events.indexOf(streetEvent(r, "RIVER")), 1); },
-        /Showdown without a complete board/, false],
+        /Showdown without a complete board/, "unchecked"],
       ["a blind's all-in flag flipped", () => showdown!, (r) => {
         (eventsOf(r, "BLIND_POSTED")[1]!.data as unknown as BlindData).allIn = true;
-      }, /Blind all-in flag is wrong/, true],
+      }, /Blind all-in flag is wrong/, "passes"],
       ["an action by a seat that already folded", () => foldWin, (r) => {
         const fold = eventsOf(r, "PLAYER_ACTION").find((e) => (e.data as unknown as ActionData).action === "FOLD")!;
         const again = clone(fold);
         (again.data as unknown as ActionData).action = "CHECK";
         r.events.splice(r.events.findIndex((e) => e.type === "POTS_AWARDED"), 0, again);
-      }, /acted after folding/, true],
+      }, /acted after folding/, "passes"],
       ["an action amount larger than the player's stack", () => showdown!, (r) => {
         const call = eventsOf(r, "PLAYER_ACTION").find((e) => (e.data as unknown as ActionData).action === "CALL")!.data as unknown as ActionData;
         call.amount = 1_000_000;
         call.stackAfter -= 1_000_000;
-      }, /Invalid amount/, true],
-      ["a seat row removed from HAND_STARTED", () => showdown!, (r) => { started(r).seats.pop(); }, /Starting seats differ from the dealt seats/, false],
+      }, /Invalid amount/, "rejects"],
+      ["a seat row removed from HAND_STARTED", () => showdown!, (r) => { started(r).seats.pop(); }, /Starting seats differ from the dealt seats/, "unchecked"],
       ["a starting stack raised with chipTotal (settled stacks unchanged)", () => showdown!, (r) => {
         started(r).seats[0]!.stack += 50;
         started(r).chipTotal += 50;
-      }, /Recorded stack differs|Chips were not conserved|Settlement differs/, true],
-      ["POTS_AWARDED missing", () => showdown!, (r) => { r.events.splice(r.events.findIndex((e) => e.type === "POTS_AWARDED"), 1); }, /ends with POTS_AWARDED then HAND_SETTLED/, true],
-      ["POTS_AWARDED missing from a fold win", () => foldWin, (r) => { r.events.splice(r.events.findIndex((e) => e.type === "POTS_AWARDED"), 1); }, /ends with POTS_AWARDED then HAND_SETTLED/, true],
+      }, /Recorded stack differs|Chips were not conserved|Settlement differs/, "rejects"],
+      ["POTS_AWARDED missing", () => showdown!, (r) => { r.events.splice(r.events.findIndex((e) => e.type === "POTS_AWARDED"), 1); }, /ends with POTS_AWARDED then HAND_SETTLED/, "rejects"],
+      ["POTS_AWARDED missing from a fold win", () => foldWin, (r) => { r.events.splice(r.events.findIndex((e) => e.type === "POTS_AWARDED"), 1); }, /ends with POTS_AWARDED then HAND_SETTLED/, "rejects"],
       ["POTS_AWARDED moved before SHOWDOWN", () => showdown!, (r) => {
         const at = r.events.findIndex((e) => e.type === "POTS_AWARDED");
         [r.events[at - 1], r.events[at]] = [r.events[at]!, r.events[at - 1]!];
-      }, /ends with POTS_AWARDED then HAND_SETTLED/, true],
+      }, /ends with POTS_AWARDED then HAND_SETTLED/, "rejects"],
       ["POTS_AWARDED moved before the river is dealt", () => showdown!, (r) => {
         const [awarded] = r.events.splice(r.events.findIndex((e) => e.type === "POTS_AWARDED"), 1);
         r.events.splice(r.events.indexOf(streetEvent(r, "RIVER")), 0, awarded!);
-      }, /Chips moved after the pots were awarded/, true],
+      }, /Chips moved after the pots were awarded/, "rejects"],
       ["POTS_AWARDED duplicated", () => showdown!, (r) => {
         const at = r.events.findIndex((e) => e.type === "POTS_AWARDED");
         r.events.splice(at, 0, clone(r.events[at]!));
-      }, /More than one POTS_AWARDED/, true],
+      }, /More than one POTS_AWARDED/, "rejects"],
     ];
 
-    it.each(forgeries)("rejects %s", async (_name, handOf, mutate, reason, cardIntegrityPasses) => {
+    it.each(forgeries)("rejects %s", async (_name, handOf, mutate, reason, sealedCheck) => {
       const hand = handOf();
       const forged = forge(hand.record, mutate);
       expect(forged.finalStateHash).not.toBe(hand.record.finalStateHash);
       await expectChainIntact(forged);
-      // Card integrity alone cannot see a pure outcome forgery; the replay must.
-      if (cardIntegrityPasses) expect((await verifySealedAudit(forged, hand.sealed)).ok).toBe(true);
+      const sealedOk = (await verifySealedAudit(forged, hand.sealed)).ok;
+      if (sealedCheck === "passes") expect(sealedOk).toBe(true);
+      if (sealedCheck === "rejects") expect(sealedOk).toBe(false);
       expectRejected(verifyHandOutcome(forged, hand.sealed), reason);
     });
 

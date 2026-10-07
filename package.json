@@ -11,6 +11,7 @@
   "scripts": {
     "postinstall": "npm run prisma:generate -w @poker/server",
     "dev": "concurrently -n server,web -c cyan,magenta \"npm run dev -w @poker/server\" \"npm run dev -w @poker/web\"",
+    "dev:local": "node scripts/dev-local.mjs",
     "dev:server": "npm run dev -w @poker/server",
     "dev:web": "npm run dev -w @poker/web",
     "build": "npm run build -w @poker/shared && npm run build -w @poker/engine && npm run build -w @poker/server && npm run build -w @poker/web",

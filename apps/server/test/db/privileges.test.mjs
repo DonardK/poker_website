@@ -47,7 +47,14 @@ const EXPECTED = {
   LedgerAccount: ["SELECT"],
   LedgerTransaction: ["SELECT"],
   LedgerEntry: ["SELECT"],
+  // Incidents are recorded, never rewritten or deleted; only their resolution
+  // columns may be updated (EXPECTED_COLUMNS).
+  TableIncident: ["SELECT", "INSERT"],
   _prisma_migrations: [],
+};
+/** Column-level grants beyond the table matrix, exactly: table -> privilege -> columns. */
+const EXPECTED_COLUMNS = {
+  TableIncident: { UPDATE: ["resolvedAt", "resolvedBy"] },
 };
 
 let admin;
@@ -131,8 +138,25 @@ test("poker_server's table privileges are exactly the expected matrix (catalog c
   assert.deepEqual(actual, EXPECTED);
   const { rows: columns } = await admin.query(`SELECT table_name, column_name, privilege_type FROM information_schema.column_privileges
     WHERE grantee = $1 AND table_schema = 'public' AND privilege_type <> 'SELECT'`, [RUNTIME_ROLE]);
-  const extra = columns.filter((c) => !(EXPECTED[c.table_name] ?? []).includes(c.privilege_type));
-  assert.deepEqual(extra, [], "no column-level grant goes beyond the table matrix");
+  const columnGrant = (c) => (EXPECTED_COLUMNS[c.table_name]?.[c.privilege_type] ?? []).includes(c.column_name);
+  const extra = columns.filter((c) => !(EXPECTED[c.table_name] ?? []).includes(c.privilege_type) && !columnGrant(c));
+  assert.deepEqual(extra, [], "no column-level grant goes beyond the table matrix and EXPECTED_COLUMNS");
+  for (const [table, byPrivilege] of Object.entries(EXPECTED_COLUMNS)) {
+    for (const [privilege, expected] of Object.entries(byPrivilege)) {
+      const granted = columns.filter((c) => c.table_name === table && c.privilege_type === privilege).map((c) => c.column_name).sort();
+      assert.deepEqual(granted, [...expected].sort(), `${privilege} columns of ${table}`);
+    }
+  }
+});
+
+test("poker_server can resolve a TableIncident but never rewrite or delete one", async () => {
+  // Privileges are checked when the statement is planned, so WHERE false needs no fixture rows.
+  assert.equal(await asRuntime(`UPDATE public."TableIncident" SET "resolvedAt" = now(), "resolvedBy" = 'operator' WHERE false`), null);
+  for (const column of ["kind", "reason", "createdAt", "tableId", "id"]) {
+    await refusedAsRuntime(`UPDATE public."TableIncident" SET "${column}" = "${column}" WHERE false`);
+  }
+  await refusedAsRuntime(`DELETE FROM public."TableIncident" WHERE false`);
+  await refusedAsRuntime(`TRUNCATE public."TableIncident"`);
 });
 
 test("poker_server cannot UPDATE or DELETE hand history (Hand, HandPlayer, HandAction, HandPot)", async () => {

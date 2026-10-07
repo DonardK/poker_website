@@ -511,7 +511,7 @@ test('static scan: cash-outs are paid only inside TableManager.mutate, and store
   assert.equal([...manager.matchAll(/\bcashOuts\b/g)].length, 2, 'one payment loop and one reset');
   const mutate = manager.slice(manager.indexOf('async mutate('), manager.indexOf('async tryStart('));
   // Pay from the result, clear, then write the state, all inside the one transaction callback.
-  assert.match(mutate, /prisma\.\$transaction\(async \(tx\) => \{[\s\S]*for \(const cash of result\.cashOuts\) \{\s*await tx\.user\.updateMany\([\s\S]*?\}\s*result\.cashOuts = \[\];[\s\S]*stateCiphertext: encryptState\(result,[\s\S]*\}, \{ maxWait/);
+  assert.match(mutate, /prisma\.\$transaction\(async \(tx\) => \{[\s\S]*for \(const cash of result\.cashOuts\) \{\s*(?:const paid = )?await tx\.user\.updateMany\([\s\S]*?\}\s*result\.cashOuts = \[\];[\s\S]*stateCiphertext: encryptState\(result,[\s\S]*\}, \{ maxWait/);
   // Loading never pays: the load path does not touch the wallet.
   const load = manager.slice(manager.indexOf('private async load('), manager.indexOf('async get('));
   assert.doesNotMatch(load, /bankroll|updateMany|\.update\(/);

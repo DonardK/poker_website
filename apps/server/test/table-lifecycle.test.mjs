@@ -29,7 +29,14 @@ import { upgradeStoredTableState } from '../dist/game/legacy.js';
 import { regulatorVerification, sealedAuditContext } from '../dist/game/audit.js';
 import { signAccessToken } from '../dist/auth/jwt.js';
 import { createSocketServer } from '../dist/socket/index.js';
-import { env } from '../dist/config.js';
+import { env, gameConfig } from '../dist/config.js';
+
+/** Legacy bots play only with ENABLE_LEGACY_BOTS on (off by default, D11); a test about their play turns them on. */
+function legacyBotsOn(t) {
+  const before = gameConfig.enableLegacyBots;
+  gameConfig.enableLegacyBots = true;
+  t.after(() => { gameConfig.enableLegacyBots = before; });
+}
 
 const T = 'lifecycle-test';
 const ROOM = `table:${T}`;
@@ -896,6 +903,7 @@ test('sockets: a closed table refuses joins and commands with TABLE_CLOSED (priv
 
 test('idle: an AFK human and a bot on a legacy table: the bot\'s actions are not activity; the human is sat out by the time-out, warned at 5 minutes, closed, the human paid exactly once', async (t) => {
   mockClock(t);
+  legacyBotsOn(t);
   const HOUR = 3_600_000;
   // The bot holds the button (seat 0), so heads-up it acts first preflop: it
   // acts before the human's first time-out sits the human out and dealing stops.
@@ -1025,7 +1033,12 @@ test('restart after a long outage: every table gets a full 5 minutes from the re
   const viewers = room(); viewers.watch('player-0');
   const { manager, advance } = managerFor(t, viewers.io);
   await manager.recover();
-  assert.equal(db.log.tableUpdates.length, 0, 'current state: nothing to write at boot');
+  // F10: the player to act could not act while the server was down, so their
+  // turn restarts with a fresh base clock (one write, a TURN_CLOCK_RESET audit
+  // event; the recorded hand is verified below).
+  assert.equal(db.log.tableUpdates.length, 1, 'one write at boot: the fresh turn clock');
+  assert.equal(db.state().turnStartedAt, NOW, 'the turn restarts at the restart, not an hour ago');
+  assert.equal(db.state().toActSeat, hand.toActSeat, 'for the same player');
   assert.equal(manager.idleArmed.get(T).deadline, NOW + IDLE, 'timed from the restart, not from the hour-old activity');
 
   await advance(IDLE - 1);
@@ -1253,4 +1266,36 @@ test('sockets: SERVER_ERROR names the table the refused request named (acks unch
     client.emit(SOCKET_EVENTS.SEAT_CLAIM, payload);
     assert.deepEqual(await refused, { ...invalid, ...scoped }, JSON.stringify(payload).slice(0, 60));
   }
+});
+
+test('a table created with the configured personal time bank is timed by it: no time-out at the base time, only when the bank is used up (NEW-2)', async (t) => {
+  mockClock(t);
+  const bank = gameConfig.extraTimeBank;
+  assert.ok(bank && bank.initialMs > 0, 'the House Rules time bank is configured by default');
+  const hand = startHand(seatPlayers(createTable(config({ createdAt: NOW, extraTimeBank: bank })), 2));
+  const db = database(t, { state: hand });
+  const { manager, advance } = managerFor(t);
+  await manager.recover(); // fresh clock from now (F10)
+  const actor = db.state().toActSeat;
+  assert.equal(db.state().players[actor].extraTimeMs, bank.initialMs);
+  await advance(15_000 + 1);
+  assert.equal(db.state().toActSeat, actor, 'the base time is over but the personal time bank is not');
+  await advance(bank.initialMs);
+  assert.notEqual(db.state().toActSeat, actor, 'timed out once the time bank is used up');
+});
+
+test('legacy bots do not play unless ENABLE_LEGACY_BOTS is on: a bot\'s turn times out like an absent player\'s (NEW-5)', async (t) => {
+  mockClock(t);
+  assert.equal(gameConfig.enableLegacyBots, false, 'off by default');
+  const human = { userId: 'player-0', username: 'Player-0', kind: 'HUMAN', botProfile: null, buyIn: 1000, avatarHue: 0 };
+  const created = createTable(config({ createdAt: NOW }));
+  const db = database(t, { state: legacyOf(sitDown(seatBot(created, 0), 1, human, created.lastActivityAt)) });
+  const { manager, advance } = managerFor(t);
+  await manager.recover();
+  await advance(200);
+  assert.equal(db.state().toActSeat, 0, 'the bot (on the button, heads-up) is first to act');
+  await advance(10_000);
+  assert.equal(db.state().toActSeat, 0, 'it has not acted: bots are off');
+  await advance(5_001);
+  assert.notEqual(db.state().toActSeat, 0, 'its turn timed out');
 });

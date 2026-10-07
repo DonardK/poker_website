@@ -158,7 +158,11 @@ test.describe("legal pages", () => {
 });
 
 test.describe("age and terms gate", () => {
-  test("a guest account needs 18+ and terms, sends the acceptance as JSON, and is told it cannot be recovered", async ({ page }) => {
+  test("a guest account needs 18+ and terms, sends the acceptance as JSON, and is told it cannot be recovered", async ({ page, request }) => {
+    // A brand-new guest holds no seat and the full starting bankroll. Without this reset the fixture's
+    // hero is still seated from its default state (9,000 chips), and the lobby's first wallet refresh
+    // replaced the 10,000 shown at sign-up before the check below could see it (flaky on desktop).
+    await request.post(`${fixture}/__test/reset`, { data: { mode: "unseated" } });
     await signedOut(page);
     let sent: { body: unknown; contentType: string | undefined } | null = null;
     await page.route(`${fixture}/api/auth/guest`, async (route) => {

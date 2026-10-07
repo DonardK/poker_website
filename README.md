@@ -11,7 +11,17 @@ npm ci
 npm run dev
 ```
 
+For development and testing on your own machine, prefer `npm run dev:local`: it runs the same web app and game server against a PostgreSQL database of its own in `.local-db/` (git-ignored, every migration applied), so changes under development never touch the shared database or real players' data. `npm run dev:local -- --db` starts only that database and prints its URLs; `-- --reset` deletes the local data. `npm run dev` uses the database configured in `.env`, and the game server warns at start-up when that database is not local.
+
 On Windows PowerShell, use `npm.cmd run dev` if script execution blocks `npm.ps1`. Run the root `dev` command so the web app and API start together; starting only `dev:web` leaves login and tables unavailable.
+
+If the lobby says **Game server unavailable**, the web app is running but nothing answers on port 4000: the game server has stopped or is still waiting for its database. `npm run dev` keeps showing both programs after the server exits, and `tsx watch` restarts it only when a server file changes. The reason is in the `[server]` lines of that terminal:
+
+- "database unavailable: Cannot reach the database at …": check the connection, VPN or firewall, and `DATABASE_URL`. In development the server keeps retrying. Supabase's direct host (`db.<project-ref>.supabase.co`) has only an IPv6 address; on a network without working IPv6, use the Session pooler connection string from the Supabase dashboard (Connect, Session pooler), which works over IPv4.
+- "rejected the login in DATABASE_URL": wrong user or password.
+- "Database is missing migration(s) …": apply the named migrations (see below) before starting the server.
+
+After changing `.env`, stop `npm run dev` (Ctrl+C) and start it again.
 
 Open http://localhost:3000. The API and sockets use port 4000. One person opens a table, another joins it from the lobby or its link, and the hand starts when both are seated. For a fresh checkout, copy `.env.example` to `.env`, supply the database URL, generate three independent secrets, and configure only `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SOCKET_URL` in `apps/web/.env.local` if changing the defaults.
 
