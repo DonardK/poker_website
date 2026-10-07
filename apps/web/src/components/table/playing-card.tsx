@@ -10,6 +10,19 @@ const SUITS: Record<string, { name: string; glyph: string }> = {
   s: { name: "spades", glyph: "\u2660" },
 };
 
+/** Spoken rank names, so a screen reader says "Ace of hearts", never "A of hearts". */
+const RANK_NAMES: Record<string, string> = {
+  "2": "Two", "3": "Three", "4": "Four", "5": "Five", "6": "Six", "7": "Seven", "8": "Eight", "9": "Nine",
+  T: "Ten", J: "Jack", Q: "Queen", K: "King", A: "Ace",
+};
+
+/** "Ace of hearts", "Ten of clubs"; null for anything that is not a card token. */
+export function cardName(card: Card | null | undefined): string | null {
+  const rank = RANK_NAMES[card?.[0] ?? ""];
+  const suit = SUITS[card?.[1] ?? ""];
+  return rank && suit ? `${rank} of ${suit.name}` : null;
+}
+
 export function PlayingCard({
   card,
   delay = 0,
@@ -30,7 +43,7 @@ export function PlayingCard({
   return (
     <motion.div
       role="img"
-      aria-label={face ? `${rank} of ${suit?.name ?? "unknown suit"}` : "Face-down card"}
+      aria-label={face ? cardName(card) ?? "Unknown card" : "Face-down card"}
       initial={reducedMotion ? false : { opacity: 0, x: -16, y: -20, rotate: -9, scale: 0.84 }}
       animate={{ opacity: 1, x: 0, y: 0, rotate: 0, scale: 1 }}
       transition={reducedMotion ? { duration: 0 } : { type: "spring", stiffness: 230, damping: 24, mass: 0.8, delay }}

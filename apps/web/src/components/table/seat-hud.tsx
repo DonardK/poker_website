@@ -2,15 +2,16 @@
 
 import { motion, useReducedMotion } from "framer-motion";
 import type { PublicPlayerView } from "@poker/shared";
+import { formatChips } from "@/lib/format";
 import { PlayingCard } from "./playing-card";
+import { TurnClockBar, type TurnClockInput } from "./turn-clock";
 
 export function SeatHud({
   player,
   isHero,
   isToAct,
   isWinner,
-  turnEndsAt,
-  timeBankMs,
+  clock,
   onClaim,
   canClaim,
   inHand,
@@ -19,8 +20,8 @@ export function SeatHud({
   isHero: boolean;
   isToAct: boolean;
   isWinner: boolean;
-  turnEndsAt: string | null;
-  timeBankMs: number;
+  /** The turn clock when this seat is to act (anchored to arrival, never the device's wall clock). */
+  clock: TurnClockInput | null;
   onClaim?: () => void;
   canClaim?: boolean;
   inHand: boolean;
@@ -32,17 +33,16 @@ export function SeatHud({
         type="button"
         disabled={!canClaim}
         onClick={onClaim}
-        className="w-28 rounded-2xl border border-dashed border-white/20 bg-black/20 px-3 py-2 text-center text-xs text-white/40 disabled:cursor-default sm:w-36"
+        // Opaque surface and full-strength text: the label must read at 4.5:1
+        // over both the felt and the page behind it (WCAG 2.2 AA).
+        className={`w-28 rounded-2xl border border-dashed px-3 py-2 text-center text-xs disabled:cursor-default sm:w-36 ${
+          canClaim ? "min-h-11 border-amber-200/70 bg-emerald-950 font-semibold text-amber-100 hover:bg-emerald-900" : "border-white/30 bg-emerald-950 text-emerald-100"}`}
+        data-testid={canClaim ? "seat-claim" : "open-seat"}
       >
         {canClaim ? "Sit here" : "Open seat"}
       </button>
     );
   }
-
-  const remainingMs =
-    isToAct && turnEndsAt ? Math.max(0, new Date(turnEndsAt).getTime() - Date.now()) : player.timeBankMsRemaining;
-  const startPct =
-    remainingMs != null && timeBankMs > 0 ? Math.max(0, Math.min(100, (remainingMs / timeBankMs) * 100)) : 0;
 
   return (
     <div
@@ -72,10 +72,10 @@ export function SeatHud({
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: reducedMotion ? 0 : 0.24 }}
             className="text-xs text-emerald-200"
-          >${player.stack.toLocaleString()}</motion.p>
+          >{formatChips(player.stack)}<span className="sr-only"> chips</span></motion.p>
         </div>
       </div>
-      <div className="mt-1 flex flex-wrap gap-1 text-[10px] uppercase tracking-wider text-amber-200/80">
+      <div className="mt-1 flex flex-wrap gap-1 text-[10px] uppercase tracking-wider text-amber-200">
         {player.isDealer ? <span className="rounded bg-amber-200/20 px-1">D</span> : null}
         {player.isSb ? <span>SB</span> : null}
         {player.isBb ? <span>BB</span> : null}
@@ -91,18 +91,7 @@ export function SeatHud({
         ) : null}
         {player.botProfile ? <span>{player.botProfile.replace("_", " ")}</span> : null}
       </div>
-      {isToAct && remainingMs != null ? (
-        <div className="mt-1 h-1 overflow-hidden rounded bg-white/10">
-          <div
-            key={turnEndsAt ?? remainingMs}
-            className="h-full origin-left bg-amber-300"
-            style={{
-              transform: `scaleX(${startPct / 100})`,
-              animation: `timebank-drain ${Math.max(remainingMs, 1)}ms linear forwards`,
-            }}
-          />
-        </div>
-      ) : null}
+      {isToAct && clock ? <TurnClockBar input={clock} compact /> : null}
       {player.committedThisStreet > 0 ? (
         <motion.p
           key={player.committedThisStreet}
@@ -111,7 +100,7 @@ export function SeatHud({
           transition={{ duration: reducedMotion ? 0 : 0.28, ease: "easeOut" }}
           className="mx-auto mt-1 w-fit rounded-full border border-amber-200/25 bg-amber-300/10 px-2 py-0.5 text-center text-xs text-amber-100"
         >
-          Bet ${player.committedThisStreet}
+          Bet {formatChips(player.committedThisStreet)}
         </motion.p>
       ) : null}
       <div className="mt-2 flex justify-center gap-1">
