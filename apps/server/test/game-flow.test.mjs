@@ -72,7 +72,12 @@ test('queued cash-out reaches the user room after leaving the table; retry never
   const db = database(t);
   const manager = new TableManager(); manager.stop();
   const emitted = [];
-  manager.io = { in: () => ({ fetchSockets: async () => [] }), to: (room) => ({ emit: (event, payload) => emitted.push({ room, event, payload }) }) };
+  // The wallet goes through notifyUser: to each signed-in socket in user:<id> whose session re-validates.
+  const userSocket = (room) => ({
+    data: { userId: 'player-0', token: signAccessToken('player-0', 'Player-0', 'fixture-session') },
+    emit: (event, payload) => emitted.push({ room, event, payload }), disconnect: () => emitted.push({ room, event: 'disconnect' }),
+  });
+  manager.io = { in: (room) => ({ fetchSockets: async () => room === 'user:player-0' ? [userSocket(room)] : [] }), to: (room) => ({ emit: (event, payload) => emitted.push({ room, event, payload }) }) };
   assert.equal(await manager.standUp('flow-test', 'player-0'), true);
   assert.equal(db.bankroll(), 9000);
   for (let n = 0; db.state().phase !== 'SHOWDOWN' && n < 100; n++) {

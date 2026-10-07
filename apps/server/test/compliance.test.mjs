@@ -141,13 +141,20 @@ function childEnv(overrides) {
     DATABASE_URL: 'postgresql://nobody:nothing@127.0.0.1:9/none?sslmode=require&sslaccept=strict',
     REDIS_URL: '',
     GAME_ENCRYPTION_KEY: randomBytes(32).toString('hex'),
-    JWT_ACCESS_SECRET: randomBytes(32).toString('hex'),
-    JWT_REFRESH_SECRET: randomBytes(32).toString('hex'),
+    GAME_ENCRYPTION_KEYS: '',
+    GAME_ENCRYPTION_ACTIVE_KEY_ID: '',
+    // base64url, not hex: production requires >= 16 distinct characters, which a
+    // 64-character hex string (16-symbol alphabet) misses about a quarter of the time.
+    JWT_ACCESS_SECRET: randomBytes(48).toString('base64url'),
+    JWT_REFRESH_SECRET: randomBytes(48).toString('base64url'),
+    PUBLIC_API_ORIGIN: '',
+    COOKIE_SITE: '',
     ...overrides,
   };
 }
 
-const PROD = { NODE_ENV: 'production', CLIENT_ORIGIN: 'https://poker.example', TRUST_PROXY_HOPS: '1', TLS_CERT_FILE: '', TLS_KEY_FILE: '' };
+// Loopback is inside "private": the probes below connect from 127.0.0.1 as the simulated proxy.
+const PROD = { NODE_ENV: 'production', CLIENT_ORIGIN: 'https://poker.example', TRUST_PROXY_HOPS: '1', TRUSTED_PROXY_CIDRS: 'private', TLS_CERT_FILE: '', TLS_KEY_FILE: '' };
 const dist = (path) => pathToFileURL(join(serverDir, 'dist', path)).href;
 
 /**
@@ -366,7 +373,8 @@ test('admin access log: every /api/admin request is logged with its outcome, inc
     { path: audit, headers: { ...https, 'x-forwarded-for': '198.51.100.7', authorization: 'Bearer not-a-token' } }, // bad token, 401
     ...Array.from({ length: 30 }, () => ({ path: audit, headers: https })),           // no token, 401 (30 per minute)
     { path: audit, headers: https },                                                  // 31st from this IP: 429
-    { path: '/api/admin/unknown', method: 'POST', headers: https },                   // rate limited as well: 429
+    // JSON content type: a POST without it is refused earlier by the CSRF guard (415, security/request-guard.ts).
+    { path: '/api/admin/unknown', method: 'POST', headers: { ...https, 'content-type': 'application/json' } }, // rate limited as well: 429
     { path: '/api/tables', headers: https },                                          // not an admin request
   ];
   const { result: { statuses }, logs } = runChildWithLogs(t, adminLogProbe(requests), childEnv(PROD));
@@ -391,7 +399,9 @@ test('admin access log middleware: user id once known, status on finish, one ent
   const entries = [];
   const log = { info: (entry, msg) => entries.push({ level: 'info', entry, msg }), warn: (entry, msg) => entries.push({ level: 'warn', entry, msg }) };
   const middleware = adminAccessLog(log);
-  const request = (overrides = {}) => ({ method: 'GET', originalUrl: `/api/admin/hands/x/audit?${'q'.repeat(400)}`, ip: '203.0.113.9', ...overrides });
+  // A long path and a query string: the query is never logged, and the path is truncated.
+  const longPath = `/api/admin/hands/${'x'.repeat(300)}/audit`;
+  const request = (overrides = {}) => ({ method: 'GET', originalUrl: `${longPath}?token=secret-query-value&${'q'.repeat(400)}`, ip: '203.0.113.9', ...overrides });
   const response = () => Object.assign(new EventEmitter(), { statusCode: 200 });
   const run = (req, res) => { let nexts = 0; middleware(req, res, () => { nexts += 1; }); assert.equal(nexts, 1); assert.equal(entries.length, logged); };
   let logged = 0;
@@ -405,9 +415,10 @@ test('admin access log middleware: user id once known, status on finish, one ent
   assert.equal(entries.length, logged, 'finish followed by close logs once');
   assert.equal(entries[0].level, 'info');
   assert.deepEqual({ ...entries[0].entry, durationMs: 0 }, {
-    audit: 'ADMIN_REQUEST', method: 'GET', path: req.originalUrl.slice(0, 200), ip: '203.0.113.9', userId: 'admin-user', status: 200, completed: true, durationMs: 0,
+    audit: 'ADMIN_REQUEST', method: 'GET', path: longPath.slice(0, 200), ip: '203.0.113.9', userId: 'admin-user', status: 200, completed: true, durationMs: 0,
   });
   assert.equal(entries[0].entry.path.length, 200, 'the path is truncated');
+  assert.ok(!JSON.stringify(entries).includes('secret-query-value'), 'the query string is never logged');
 
   // Refused before authentication: 401 and 429 are logged with no user id.
   for (const status of [401, 429]) {
@@ -603,7 +614,8 @@ async function verifyHandAsRoutesDo(t, previous = null) {
   assert.equal(cols.deckCommitment, t.fairness.deckCommitment);
   assert.equal(cols.finalStateHash, t.audit.finalStateHash);
   assert.deepEqual(cols.auditRecord, t.audit);
-  assert.match(cols.auditSealed, /^v1\./);
+  // Key-ring envelope (v2.<kid>.…); legacy v1 ciphertexts stay readable.
+  assert.match(cols.auditSealed, /^v2\.[A-Za-z0-9_-]+\./);
   // Ciphertext only: no plaintext structure or secret is visible at rest.
   assert.ok(!cols.auditSealed.includes('"deck"') && !cols.auditSealed.includes(t.fairness.deckSalt) && !cols.auditSealed.includes(t.fairness.salts[0]));
 

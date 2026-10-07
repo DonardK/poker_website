@@ -12,6 +12,14 @@
  * leaving are cashed out. A voided hand is reported once per table and hand
  * number per process.
  *
+ * A state saved before the idle clock existed gets `lastActivityAt` from the
+ * caller's fallback (TableManager passes the row's last update), so a table
+ * abandoned long ago is not granted a fresh five minutes by every load; a
+ * seated player saved without a clock of their own gets the table's. Either
+ * way it reports `upgraded`, so the defaults are stored by the next mutation.
+ * (After a restart TableManager still times every table from the moment it
+ * resumed: downtime is not inactivity.)
+ *
  * Loading never writes. `upgraded` tells TableManager.mutate() to persist the
  * upgraded state even when the mutation itself changes nothing. The cash-outs
  * it produced are then paid in that same transaction, which also stores the
@@ -34,11 +42,12 @@ const reportedVoids = new Set<string>();
 /**
  * Upgrade one decrypted table state (the object is modified in place and must
  * not be used afterwards). `upgraded` is true when the result differs from
- * what is stored.
+ * what is stored. `fallbackActivityAt` (ms epoch) starts a legacy state's
+ * idle clock; without it the engine uses now.
  */
-export function upgradeStoredTableState(tableId: string, stored: EngineTable, onVoided: (event: VoidedHandEvent) => void): { table: EngineTable; upgraded: boolean } {
+export function upgradeStoredTableState(tableId: string, stored: EngineTable, onVoided: (event: VoidedHandEvent) => void, options: { fallbackActivityAt?: number } = {}): { table: EngineTable; upgraded: boolean } {
   const before = JSON.stringify(stored);
-  const { table, voidedHand } = upgradeTableState(stored);
+  const { table, voidedHand } = upgradeTableState(stored, options);
   if (voidedHand !== null) {
     const key = JSON.stringify([tableId, voidedHand]);
     if (!reportedVoids.has(key)) {

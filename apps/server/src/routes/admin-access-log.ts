@@ -6,11 +6,14 @@
  * logged exactly once with its outcome. That includes requests refused by the
  * TLS gate (426), a rate limiter (429), authentication (401) or the ADMIN
  * check (403), as well as failures and successful reads. Each entry records
- * the method, the path (truncated), the client IP (`req.ip`, which honours
- * TRUST_PROXY_HOPS), the authenticated user id when requireAuth has set it
- * (otherwise null) and the HTTP status. A request whose connection closes
- * before the response is complete is logged with `completed: false` and a
- * null status.
+ * the method, the path (without the query string, truncated), the client IP
+ * (`req.ip`, which honours TRUST_PROXY_HOPS and TRUSTED_PROXY_CIDRS), the
+ * authenticated user id when requireAuth has set it (otherwise null) and the
+ * HTTP status. A request whose connection closes before the response is
+ * complete is logged with `completed: false` and a null status.
+ *
+ * SECURITY: the query string is never logged. It is client-controlled and may
+ * carry tokens or personal data, and audit lookups are identified by path.
  *
  * This module imports no configuration or database, so it can be tested
  * directly with a logger spy.
@@ -47,7 +50,8 @@ export function adminAccessLog(log: AccessLogger): (req: Request, res: Response,
       const entry: AdminAccessEntry = {
         audit: ADMIN_ACCESS_EVENT,
         method: req.method,
-        path: req.originalUrl.slice(0, 200),
+        // originalUrl keeps the /api/admin mount prefix (req.path would not); the query is dropped.
+        path: req.originalUrl.split("?")[0]!.slice(0, 200),
         ip: req.ip ?? null,
         // Set on this same request object by requireAuth once the token and session verify.
         userId: (req as Request & { userId?: string }).userId ?? null,
