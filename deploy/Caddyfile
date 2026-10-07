@@ -1,0 +1,188 @@
+# Production edge for the poker platform: ONE public origin.
+#
+#   https://{$PUBLIC_HOST}/            -> web  (Next.js, private address)
+#   https://{$PUBLIC_HOST}/api/*       -> API  (Express, private address)
+#   https://{$PUBLIC_HOST}/socket.io/* -> API  (Socket.io, incl. WebSocket upgrade)
+#
+# See deploy/README.md for the topology and docs/DEPLOYMENT.md for the rest.
+# UNEXECUTED: written and reviewed by reading only; run `caddy validate
+# --config deploy/Caddyfile` (with the env vars below set) before relying on it.
+#
+# Required environment (Caddy substitutes {$VAR} when it parses this file):
+#   PUBLIC_HOST   e.g. poker.example.com (the only hostname served)
+#   ACME_EMAIL    contact address for the certificate authority
+#   API_UPSTREAM  private host:port of the API,  e.g. 10.0.1.10:4000
+#   WEB_UPSTREAM  private host:port of the web,  e.g. 10.0.1.11:3000
+#
+# Edge rate limiting needs the caddy-ratelimit plugin, which is not in the
+# stock binary. Build it with:
+#   xcaddy build --with github.com/mholt/caddy-ratelimit
+# A stock Caddy refuses this file ("unrecognized directive: rate_limit"),
+# which is the intended failure: the edge must not silently run without limits.
+
+{
+	email {$ACME_EMAIL}
+	# rate_limit is a plugin directive, so it needs an explicit position in
+	# Caddy's handler order: before anything that proxies.
+	order rate_limit before reverse_proxy
+
+	servers {
+		# This Caddy IS the edge: no proxy sits in front of it, so it trusts no
+		# peer's X-Forwarded-* headers (no trusted_proxies), and {remote_host}
+		# below is always the real TCP peer. If you put an L7 load balancer in
+		# front, list ONLY its addresses with `trusted_proxies static <cidr>`
+		# and add `client_ip_headers X-Forwarded-For`; see deploy/README.md.
+		timeouts {
+			# Slow-header (slowloris) protection. read_body is deliberately not
+			# set: it is a whole-request deadline that would also apply to
+			# long-lived Socket.io requests; body SIZE is capped per route below.
+			read_header 10s
+			# Keep-alive connections with no request in flight. Upgraded
+			# WebSockets are hijacked out of the HTTP server and are not
+			# subject to this; their lifetime is governed by the reverse_proxy
+			# settings in the API block.
+			idle 2m
+		}
+		# HTTP/3 is left at Caddy's default; drop "h3" here if UDP 443 is not
+		# open on your network.
+		protocols h1 h2 h3
+	}
+}
+
+# Only {$PUBLIC_HOST} is served. A TLS handshake for any other name (or a
+# bare IP) fails because Caddy holds no certificate for it.
+{$PUBLIC_HOST} {
+	# TLS: automatic certificates; Caddy's defaults are TLS 1.2 minimum with
+	# modern AEAD ciphers. Stated explicitly so a future default change cannot
+	# silently loosen it. Plain HTTP on port 80 is redirected to HTTPS by Caddy.
+	tls {
+		protocols tls1.2 tls1.3
+	}
+
+	header {
+		# HSTS: browsers refuse plain HTTP for this host for a year. The API
+		# also sends this (helmet), but the web app and error pages must too.
+		# Add "; preload" only after reading https://hstspreload.org.
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Frame-Options "DENY"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+		-Server
+		-X-Powered-By
+	}
+
+	# Edge rate limits per client IP. They sit IN FRONT of the API's own
+	# express-rate-limit (which keys on the client IP this edge forwards) and
+	# exist to shed floods before they reach Node. Numbers are starting points:
+	# many real players can share one IP (mobile carrier NAT), so watch the
+	# 429 rate after launch before tightening. A request counts against EVERY
+	# zone whose matcher it satisfies; "web" has no matcher, so it is an
+	# overall per-IP ceiling across the whole origin.
+	rate_limit {
+		zone auth {
+			match {
+				path /api/auth/*
+			}
+			key {remote_host}
+			events 30
+			window 1m
+		}
+		zone api {
+			match {
+				path /api/*
+			}
+			key {remote_host}
+			events 600
+			window 1m
+		}
+		zone socket {
+			match {
+				path /socket.io/*
+			}
+			key {remote_host}
+			events 300
+			window 1m
+		}
+		zone web {
+			key {remote_host}
+			events 1200
+			window 1m
+		}
+	}
+
+	# The readiness probe reports dependency state (database, Redis) and is for
+	# the orchestrator on the private network only, never the internet.
+	@ready path /api/ready /api/ready/*
+	handle @ready {
+		respond 404
+	}
+
+	@api path /api /api/* /socket.io /socket.io/*
+	handle @api {
+		# The API itself accepts at most 32 KiB of JSON and 8 KiB Socket.io
+		# messages; anything far larger is refused here before it reaches Node.
+		request_body {
+			max_size 64KB
+		}
+		reverse_proxy {$API_UPSTREAM} {
+			# OVERWRITE, never append: each header_up with a value REPLACES
+			# whatever the client sent. The API trusts these headers only from
+			# this proxy's address (TRUSTED_PROXY_CIDRS), so they must carry
+			# what this edge observed, not what the client claimed.
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-Host {host}
+			header_up Host {host}
+			# RFC 7239 Forwarded is not produced by this edge; strip any client
+			# copy so no component downstream can be fooled by it.
+			header_up -Forwarded
+
+			# Stream Socket.io (long-polling and WebSocket) without buffering.
+			flush_interval -1
+
+			transport http {
+				dial_timeout 5s
+				# Long-polling requests are held open by the API for up to the
+				# Socket.io ping interval (25s) plus timeout (20s).
+				response_header_timeout 60s
+			}
+
+			# WebSockets: Caddy proxies the Upgrade automatically and imposes
+			# no idle timeout on an upgraded connection; Socket.io's own
+			# ping/pong closes dead ones. On a config reload, keep existing
+			# table connections open up to 5 minutes instead of cutting every
+			# seated player at once.
+			stream_close_delay 5m
+
+			# Only route to an API instance whose liveness probe answers.
+			health_uri /api/health
+			health_interval 10s
+			health_timeout 3s
+		}
+	}
+
+	handle {
+		request_body {
+			max_size 256KB
+		}
+		reverse_proxy {$WEB_UPSTREAM} {
+			header_up X-Forwarded-For {remote_host}
+			header_up X-Real-IP {remote_host}
+			header_up X-Forwarded-Proto https
+			header_up X-Forwarded-Host {host}
+			header_up Host {host}
+			header_up -Forwarded
+			transport http {
+				dial_timeout 5s
+				response_header_timeout 30s
+			}
+		}
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}
