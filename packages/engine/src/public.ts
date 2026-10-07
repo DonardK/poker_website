@@ -35,14 +35,43 @@ const BOARD_SIZES: Record<string, readonly number[]> = {
   COMPLETE: [0, 3, 4, 5],
 };
 
+const BETTING_PHASES = new Set(["PREFLOP", "FLOP", "TURN", "RIVER"]);
+
+// Turn clock and identity live here, beside the projection that publishes them
+// (table.ts already imports this module; defining them there would make a cycle).
+/**
+ * When the current turn times out (ms epoch): the base clock, plus the
+ * actor's personal time bank when the table has one. Null when no one is to act.
+ */
+export function turnDeadline(table: EngineTable): number | null {
+  if (table.toActSeat == null || table.turnStartedAt == null) return null;
+  const actor = table.players[table.toActSeat];
+  const extra = table.extraTimeBank && actor ? actor.extraTimeMs : 0;
+  return table.turnStartedAt + table.timeBankMs + extra;
+}
+
+/**
+ * Identity of the current turn, "<handNumber>:<turnSeq>", or null when no one
+ * is to act. It changes exactly when a turn starts (see EngineTable.turnSeq),
+ * so it changes on the actor's action or time-out, and never on a
+ * bystander's sit-out, sit-in, seat, leave or the idle warning.
+ */
+export function turnIdOf(table: EngineTable): string | null {
+  if (table.toActSeat == null || !BETTING_PHASES.has(table.phase)) return null;
+  return `${table.handNumber}:${table.turnSeq}`;
+}
+
 export function toPublicTableState(table: EngineTable, viewerUserId: string | null): PublicTableState {
   const reveal = REVEAL_PHASES.has(table.phase);
+  // One instant for every countdown in this snapshot, so they agree with each other.
+  const now = Date.now();
+  const clock = turnClock(table, now);
   const actorLegal =
     table.toActSeat != null && table.players[table.toActSeat]?.userId === viewerUserId
       ? legalActions(table, table.toActSeat)
       : null;
 
-  const players = table.players.map((p, seatIndex) => playerView(table, p, seatIndex, viewerUserId, reveal));
+  const players = table.players.map((p, seatIndex) => playerView(table, p, seatIndex, viewerUserId, reveal, clock));
   return {
     revision: table.revision,
     fairness: publicFairness(table, players),
@@ -63,12 +92,20 @@ export function toPublicTableState(table: EngineTable, viewerUserId: string | nu
     winners: table.winners.map((w) => ({ seatIndex: w.seatIndex, amount: w.amount, handName: w.handName })),
     animToken: table.animToken,
     timeBankMs: table.timeBankMs,
-    turnEndsAt:
-      table.toActSeat != null && table.turnStartedAt != null
-        ? new Date(table.turnStartedAt + table.timeBankMs).toISOString()
-        : null,
+    turnEndsAt: clock ? new Date(clock.deadline).toISOString() : null,
+    turnId: turnIdOf(table),
+    // Relative, like closingInMs: a client with a skewed clock still counts down correctly.
+    turnRemainingMs: clock ? clock.totalMs : null,
     minBuyIn: table.bigBlind * 20,
     maxBuyIn: table.bigBlind * 200,
+    // The table's current terms (the next hand is dealt under them). `?? 0`:
+    // a stored table loaded before upgradeTableState filled them in.
+    rakeBps: table.rakeBps ?? 0,
+    rakeCapChips: table.rakeCapChips ?? 0,
+    // A relative countdown, so a client with a skewed clock still shows the
+    // right number of seconds. lastActivityAt itself is never sent.
+    closingInMs: table.closingAt != null ? Math.max(0, table.closingAt - now) : null,
+    closeReason: table.closeReason ?? null,
   };
 }
 
@@ -77,6 +114,28 @@ export function projectTableState(table: EngineTable, viewerUserId: string | nul
   const state = toPublicTableState(table, viewerUserId);
   assertViewerStateSafe(state, table, viewerUserId);
   return state;
+}
+
+interface TurnClock {
+  seatIndex: number;
+  /** Wall-clock deadline including the actor's personal time bank (turnDeadline). */
+  deadline: number;
+  /** Time left in the turn, base clock plus time bank, at projection time. */
+  totalMs: number;
+  /** Base clock left at projection time. */
+  baseMs: number;
+}
+
+/** The running turn's clock at `now`, or null when no one is to act. */
+function turnClock(table: EngineTable, now: number): TurnClock | null {
+  const deadline = turnDeadline(table);
+  if (deadline === null || table.toActSeat == null || table.turnStartedAt == null) return null;
+  return {
+    seatIndex: table.toActSeat,
+    deadline,
+    totalMs: Math.max(0, deadline - now),
+    baseMs: Math.max(0, table.turnStartedAt + table.timeBankMs - now),
+  };
 }
 
 function publicFairness(table: EngineTable, players: PublicPlayerView[]): PublicFairness | null {
@@ -111,6 +170,7 @@ function playerView(
   seatIndex: number,
   viewerUserId: string | null,
   reveal: boolean,
+  clock: TurnClock | null,
 ): PublicPlayerView {
   if (!player) {
     return {
@@ -130,6 +190,9 @@ function playerView(
       waitingForBigBlind: false,
       holeCards: null,
       timeBankMsRemaining: null,
+      baseTimeMsRemaining: null,
+      extraTimeMs: null,
+      sittingOutReason: null,
       empty: true,
       avatarHue: 0,
     };
@@ -137,10 +200,7 @@ function playerView(
 
   const showHoles = Boolean(player.holeCards) && mayViewHoleCards(player, viewerUserId, reveal);
 
-  const timeBankMsRemaining =
-    table.toActSeat === seatIndex && table.turnStartedAt
-      ? Math.max(0, table.timeBankMs - (Date.now() - table.turnStartedAt))
-      : null;
+  const acting = clock !== null && clock.seatIndex === seatIndex;
 
   return {
     seatIndex,
@@ -158,7 +218,13 @@ function playerView(
     pendingLeave: player.pendingLeave,
     waitingForBigBlind: player.waitingForBigBlind === true,
     holeCards: showHoles ? [player.holeCards![0], player.holeCards![1]] : null,
-    timeBankMsRemaining,
+    // Total time left including the personal time bank (it used to ignore the bank).
+    timeBankMsRemaining: acting ? clock.totalMs : null,
+    baseTimeMsRemaining: acting ? clock.baseMs : null,
+    // The pool itself (a turn in progress is charged when it ends). Public: every
+    // player at a real table can see how much time an opponent has left.
+    extraTimeMs: table.extraTimeBank ? player.extraTimeMs : null,
+    sittingOutReason: player.sittingOut ? (player.sittingOutReason ?? null) : null,
     empty: false,
     avatarHue: player.avatarHue,
   };
@@ -187,11 +253,13 @@ const CARD_TOKEN = /^[2-9TJQKA][cdhs]$/;
  */
 const SCHEMA: Record<string, ReadonlySet<string>> = {
   state: new Set(["revision", "fairness", "tableId", "name", "status", "handNumber", "phase", "smallBlind", "bigBlind", "board", "pots", "potTotal",
-    "toActSeat", "actorLegal", "players", "logTail", "winners", "animToken", "timeBankMs", "turnEndsAt", "minBuyIn", "maxBuyIn"]),
+    "toActSeat", "actorLegal", "players", "logTail", "winners", "animToken", "timeBankMs", "turnEndsAt", "turnId", "turnRemainingMs", "minBuyIn", "maxBuyIn",
+    "rakeBps", "rakeCapChips", "closingInMs", "closeReason"]),
   fairness: new Set(["version", "handId", "context", "root", "deckCommitment", "auditSeq", "auditHead", "dealtSeats", "proofs"]),
   proof: new Set(["index", "card", "salt", "siblings"]),
   player: new Set(["seatIndex", "userId", "username", "kind", "botProfile", "stack", "committedThisStreet", "status", "isDealer", "isSb", "isBb",
-    "sittingOut", "pendingLeave", "waitingForBigBlind", "holeCards", "timeBankMsRemaining", "empty", "avatarHue"]),
+    "sittingOut", "pendingLeave", "waitingForBigBlind", "holeCards", "timeBankMsRemaining", "baseTimeMsRemaining", "extraTimeMs", "sittingOutReason",
+    "empty", "avatarHue"]),
   pot: new Set(["index", "amount"]),
   legal: new Set(["actions", "callAmount", "minBet", "minRaiseTo", "maxRaiseTo"]),
   log: new Set(["seq", "seatIndex", "username", "text", "at"]),

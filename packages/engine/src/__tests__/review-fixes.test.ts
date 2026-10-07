@@ -1340,25 +1340,36 @@ describe("4. rules fixes", () => {
       t = startHand(t, clock.tick()); // button 0, blinds 1/2, seat 3 acts first
       expect(t.toActSeat).toBe(3);
       t = sitOut(t, "rv-auto-u3", clock.tick()); // own turn, facing the big blind
-      t = move(t, { action: "CALL" }, clock); // seat 0
+      t = move(t, "TIMEOUT", clock); // seat 0: real time-out facing the big blind, and sat out (TIMEOUT)
       t = move(t, { action: "CALL" }, clock); // seat 1
       expect(t.toActSeat).toBe(2);
       t = sitOut(t, "rv-auto-u2", clock.tick()); // own turn, free check: stays in the hand
       expect([t.phase, t.toActSeat]).toEqual(["FLOP", 1]);
-      t = move(t, "TIMEOUT", clock); // real time-out, free check; seat 2 then acts automatically
-      t = move(t, { action: "BET", amount: 10 }, clock); // seat 0
-      t = move(t, "TIMEOUT", clock); // real time-out facing a bet; seat 2 then folds automatically
+      // Real time-out with a free check: seat 1 is sat out too, so from here the
+      // sat-out cascade checks both remaining hands down to a showdown, where
+      // both keep their claim on the pot.
+      t = move(t, "TIMEOUT", clock);
       expect(t.phase).toBe("SHOWDOWN");
+      expect(t.board).toHaveLength(5);
+      expect(t.players[0]).toMatchObject({ sittingOut: true, sittingOutReason: "TIMEOUT" });
+      expect(t.players[1]).toMatchObject({ sittingOut: true, sittingOutReason: "TIMEOUT" });
+      expect(t.players[2]).toMatchObject({ sittingOut: true, sittingOutReason: "SELF" });
+      expect(t.players[1]!.showedCards && t.players[2]!.showedCards).toBe(true);
       expect(actionRows(t)).toEqual([
         { seatIndex: 3, action: "FOLD", auto: "SIT_OUT", timeout: false },
-        { seatIndex: 0, action: "CALL", auto: null, timeout: false },
+        { seatIndex: 0, action: "TIMEOUT_FOLD", auto: null, timeout: true },
         { seatIndex: 1, action: "CALL", auto: null, timeout: false },
         { seatIndex: 2, action: "CHECK", auto: "SIT_OUT", timeout: false },
         { seatIndex: 1, action: "TIMEOUT_CHECK", auto: null, timeout: true },
         { seatIndex: 2, action: "CHECK", auto: "SIT_OUT", timeout: false },
-        { seatIndex: 0, action: "BET", auto: null, timeout: false },
-        { seatIndex: 1, action: "TIMEOUT_FOLD", auto: null, timeout: true },
-        { seatIndex: 2, action: "FOLD", auto: "SIT_OUT", timeout: false },
+        { seatIndex: 1, action: "CHECK", auto: "SIT_OUT", timeout: false },
+        { seatIndex: 2, action: "CHECK", auto: "SIT_OUT", timeout: false },
+        { seatIndex: 1, action: "CHECK", auto: "SIT_OUT", timeout: false },
+        { seatIndex: 2, action: "CHECK", auto: "SIT_OUT", timeout: false },
+      ]);
+      // Every sit-out, the clock's included, is in the audit trail as a status change.
+      expect(t.audit!.events.filter((e) => e.type === "PLAYER_STATUS").map((e) => e.data)).toEqual([
+        { seatIndex: 3, status: "SIT_OUT" }, { seatIndex: 0, status: "SIT_OUT" }, { seatIndex: 2, status: "SIT_OUT" }, { seatIndex: 1, status: "SIT_OUT" },
       ]);
       expect(verifyHandOutcome(t.audit!, sealedAudit(t.fairness!))).toEqual({ ok: true });
       for (const seat of t.dealtSeats) expect(await verifyParticipantAudit(json(participantAudit(t.audit!, sealedAudit(t.fairness!), seat)))).toEqual({ ok: true });

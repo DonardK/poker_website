@@ -28,10 +28,13 @@ import {
   finalStatePreimage,
   genesisPreimage,
   HAND_AUDIT_VERSION,
+  handRakeTerms,
+  handStartedTermsProblem,
   holeCardPositions,
   merkleContext,
   RNG_DESCRIPTOR,
   SEALED_AUDIT_VERSION,
+  turnClockResetProblem,
   type AuditCheck,
   type AuditEvent,
   type AuditEventType,
@@ -146,11 +149,18 @@ const FOLDS: ReadonlySet<unknown> = new Set(["FOLD", "TIMEOUT_FOLD"]);
  * - chip movements: every blind and action amount against a running stack,
  *   with the recorded `stackAfter` and all-in flags checked;
  * - who folded, derived only from the recorded fold actions;
+ * - every TURN_CLOCK_RESET names a seat that could be the one to act;
  * - the showdown: every remaining hand tabled from its committed deck
  *   position, and ranked with the evaluator;
  * - pots, side pots, uncalled-bet refunds, winners, odd chips and payouts,
  *   rebuilt with the settlement algorithm;
- * - final stacks and chip conservation.
+ * - (v2) the rake: recomputed from the terms recorded in HAND_STARTED, the
+ *   chips contested and whether a flop was dealt, and taken from the main
+ *   pot first; payouts are net of it;
+ * - (v2) a voided hand: HAND_VOIDED directly before HAND_SETTLED, no
+ *   showdown and no awards, and every final stack equal to its starting stack;
+ * - final stacks and chip conservation (final stacks plus rake equal the
+ *   hand's chips).
  *
  * The recorded SHOWDOWN, POTS_AWARDED and HAND_SETTLED data must equal the
  * replay exactly (canonical JSON). Run `verifySealedAudit` first. It proves
@@ -178,14 +188,19 @@ export function verifyHandOutcome(record: HandAuditRecord, sealed: SealedHandAud
     if (stack.size !== n || dealtSeats.some((seat) => !stack.has(seat))) return fail("Starting seats differ from the dealt seats");
     const chipTotal = [...stack.values()].reduce((sum, chips) => sum + chips, 0);
     if (started.data.chipTotal !== chipTotal) return fail("HAND_STARTED chip total differs from the starting stacks");
+    const termsProblem = handStartedTermsProblem(record);
+    if (termsProblem !== null) return fail(termsProblem);
+    const v2 = record.version === HAND_AUDIT_VERSION;
+    const startStacks = dealtSeats.map((seat) => ({ seatIndex: seat, stack: stack.get(seat)! }));
 
     const folded = new Set<number>();
     const board: Card[] = [];
     let showdown: AuditEvent | null = null;
     let awards: AuditEvent | null = null;
+    let voided: AuditEvent | null = null;
     for (const event of events) {
       if (event.type === "BLIND_POSTED" || event.type === "PLAYER_ACTION") {
-        if (awards) return fail("Chips moved after the pots were awarded");
+        if (awards || voided) return fail("Chips moved after the pots were awarded");
         const seat = event.data.seatIndex as number;
         const amount = event.data.amount;
         const before = stack.get(seat);
@@ -200,6 +215,13 @@ export function verifyHandOutcome(record: HandAuditRecord, sealed: SealedHandAud
           if (event.data.stackAfter !== after) return fail(`Recorded stack differs from the replay at event ${event.seq}`);
           if (FOLDS.has(event.data.action)) folded.add(seat);
         }
+      } else if (event.type === "TURN_CLOCK_RESET") {
+        // Moves no chips, but it must name the player who was really to act:
+        // dealt in, not folded and not all-in, before the hand was decided.
+        if (showdown || awards) return fail(`TURN_CLOCK_RESET after the hand was decided at event ${event.seq}`);
+        const problem = turnClockResetProblem(event, dealtSeats, folded);
+        if (problem !== null) return fail(problem);
+        if (stack.get(event.data.seatIndex as number) === 0) return fail(`TURN_CLOCK_RESET at event ${event.seq} names an all-in seat`);
       } else if (event.type === "STREET_DEALT") {
         board.push(...(event.data.cards as Card[]));
       } else if (event.type === "SHOWDOWN") {
@@ -208,9 +230,22 @@ export function verifyHandOutcome(record: HandAuditRecord, sealed: SealedHandAud
       } else if (event.type === "POTS_AWARDED") {
         if (awards) return fail("More than one POTS_AWARDED event");
         awards = event;
+      } else if (event.type === "HAND_VOIDED") {
+        if (!v2 || voided) return fail("Unexpected HAND_VOIDED event");
+        voided = event;
       }
     }
     const settled = events.at(-1)!;
+    if (voided) {
+      // Staff void: nothing shown, nothing awarded, every committed chip back with its owner.
+      if (settled.type !== "HAND_SETTLED" || events.at(-2) !== voided) return fail("A voided hand ends with HAND_VOIDED then HAND_SETTLED");
+      if (showdown || awards) return fail("A voided hand has no showdown and no awards");
+      const restored = dealtSeats.map((seat) => ({ seatIndex: seat, stack: stack.get(seat)! + committed.get(seat)! }));
+      if (canonicalJson(restored) !== canonicalJson(startStacks)) return fail("Chips were not conserved");
+      const expectedVoid = { reason: "void", board, stacks: startStacks, chipTotal };
+      if (canonicalJson(expectedVoid) !== canonicalJson(settled.data)) return fail("Void settlement differs from a replay of the hand");
+      return { ok: true };
+    }
     if (settled.type !== "HAND_SETTLED" || !awards || events.at(-2) !== awards) return fail("A settled hand ends with POTS_AWARDED then HAND_SETTLED");
 
     const contenders = dealtSeats.filter((seat) => !folded.has(seat));
@@ -246,6 +281,7 @@ export function verifyHandOutcome(record: HandAuditRecord, sealed: SealedHandAud
       board,
       dealerSeat: started.data.dealerSeat as number,
       maxSeats: started.data.maxSeats as number,
+      rake: handRakeTerms(record),
     });
     const expectedAwards = {
       pots: awarded.pots.map((p) => ({
@@ -254,11 +290,13 @@ export function verifyHandOutcome(record: HandAuditRecord, sealed: SealedHandAud
       })),
       refunds: [...awarded.returned].map(([seatIndex, amount]) => ({ seatIndex, amount })),
       payouts: [...awarded.payouts].sort(([a], [b]) => a - b).map(([seatIndex, amount]) => ({ seatIndex, amount })),
+      // v1 has no rake field (every v1 hand was unraked: handRakeTerms gives NO_RAKE).
+      ...(v2 ? { rake: { total: awarded.rake.total, perPot: awarded.rake.perPot } } : {}),
     };
     if (canonicalJson(expectedAwards) !== canonicalJson(awards.data)) return fail("Pot awards differ from a replay of the hand");
 
     const stacks = dealtSeats.map((seat) => ({ seatIndex: seat, stack: stack.get(seat)! + (awarded.payouts.get(seat) ?? 0) }));
-    const finalTotal = stacks.reduce((sum, row) => sum + row.stack, 0);
+    const finalTotal = stacks.reduce((sum, row) => sum + row.stack, 0) + awarded.rake.total;
     if (finalTotal !== chipTotal) return fail("Chips were not conserved");
     const expectedSettled = { reason, board, stacks, chipTotal };
     if (canonicalJson(expectedSettled) !== canonicalJson(settled.data)) return fail("Settlement differs from a replay of the hand");

@@ -3,9 +3,13 @@
  *
  *   WAITING -> PREFLOP -> FLOP -> TURN -> RIVER -> SHOWDOWN -> (Hand Clean-up) -> WAITING
  *
- * Every public function is a pure transition. It clones the input table,
- * applies one validated command and returns the new state. The input is never
- * mutated, so a rejected command cannot leave a half-applied state.
+ * Every exported transition clones the input table, applies one validated
+ * command and returns the new state (or returns the input itself when the
+ * command changes nothing). The input is never mutated, so a rejected command
+ * cannot leave a half-applied state. The transitions are deterministic in
+ * their arguments with two exceptions: startHand draws OS entropy (the
+ * shuffle) and a random UUID (the hand id), and every optional `now`
+ * parameter defaults to Date.now(). The server passes `now` explicitly.
  *
  * COMPLIANCE NOTES
  * - Shuffle and commitment (startHand): the deck comes only from
@@ -21,15 +25,22 @@
  *   engine refuses to settle if chips are not conserved.
  * - Hand Clean-up (completeHand): purges the deck, burns, hole cards and
  *   commitments from live state after the sealed record is persisted.
+ * - Table closure (closeTable / closeIfEmpty): a hand in progress is settled
+ *   under the ordinary sit-out rule and sealed like any other hand, never
+ *   voided or abandoned. Every player is cashed out exactly once, either at
+ *   once or by Hand Clean-up, and the chip total is checked across the
+ *   transition. A closing table cannot be revived.
  */
-import type { Card } from "@poker/shared";
-import { boardPositions, holeCardPositions } from "@poker/shared";
+import type { Card, RakeTerms, SitOutReason, TableCloseReason } from "@poker/shared";
+import {
+  boardPositions, HAND_AUDIT_VERSION, handRakeTerms, holeCardPositions, NO_RAKE, TABLE_IDLE_TIMEOUT_MS, TABLE_IDLE_WARNING_MS, validRakeTerms, validVoidReason,
+} from "@poker/shared";
 import { burnAndDealFlop, burnAndDealOne, dealHoleCards, dealOrderFromDealer, shuffledDeck } from "./deck.js";
 import { legalActions } from "./legal.js";
 import { awardPots, buildSidePots, mergePotsByEligibility, returnUncalledBets, type Contribution } from "./pots.js";
 import { pushLog } from "./public.js";
 import { commitDeck, newHandId } from "./fairness.js";
-import { appendAudit, openHandAudit, sealHandAudit } from "./audit.js";
+import { appendAudit, openHandAudit, sealedAudit, sealHandAudit } from "./audit.js";
 import { evaluate } from "./evaluate.js";
 import {
   anyoneNeedsAction,
@@ -49,7 +60,9 @@ import {
   type EngineIntent,
   type EnginePlayer,
   type EngineTable,
+  type ExtraTimeBankConfig,
   type SeatPlayerConfig,
+  type VoidedHand,
 } from "./types.js";
 
 const structuredClone = (globalThis as unknown as {
@@ -63,9 +76,14 @@ function cloneTable(table: EngineTable): EngineTable {
 export function createTable(cfg: CreateTableConfig): EngineTable {
   if (!Number.isInteger(cfg.maxSeats) || cfg.maxSeats < 2 || cfg.maxSeats > 9 ||
       !Number.isSafeInteger(cfg.smallBlind) || cfg.smallBlind <= 0 || cfg.smallBlind > 100_000 ||
-      cfg.bigBlind !== cfg.smallBlind * 2 || !Number.isInteger(cfg.timeBankMs) || cfg.timeBankMs <= 0) {
+      cfg.bigBlind !== cfg.smallBlind * 2 || !Number.isInteger(cfg.timeBankMs) || cfg.timeBankMs <= 0 ||
+      (cfg.createdAt !== undefined && !Number.isFinite(cfg.createdAt)) ||
+      (cfg.sitOutOnTimeout !== undefined && typeof cfg.sitOutOnTimeout !== "boolean") ||
+      (cfg.extraTimeBank != null && !validTimeBank(cfg.extraTimeBank)) ||
+      !validRakeTerms(rakeTermsOf(cfg))) {
     throw new EngineError("BAD_CONFIG", "Invalid table configuration");
   }
+  const rake = rakeTermsOf(cfg);
   return {
     revision: 0, fairness: null, audit: null, auditChainTip: null, handChipTotal: null, dealtSeats: [], smallBlindPosition: null, actions: [], awards: [], refunds: [],
     lastActedBet: Array.from({ length: cfg.maxSeats }, () => null),
@@ -76,6 +94,13 @@ export function createTable(cfg: CreateTableConfig): EngineTable {
     smallBlind: cfg.smallBlind,
     bigBlind: cfg.bigBlind,
     timeBankMs: cfg.timeBankMs,
+    // Copied, so a caller who later edits its config object cannot change a live table.
+    extraTimeBank: cfg.extraTimeBank != null ? { ...cfg.extraTimeBank } : null,
+    sitOutOnTimeout: cfg.sitOutOnTimeout ?? true,
+    rakeBps: rake.rakeBps,
+    rakeCapChips: rake.rakeCapChips,
+    rakeNoFlopNoDrop: rake.rakeNoFlopNoDrop,
+    rakeTaken: 0,
     status: "WAITING",
     handNumber: 0,
     phase: "WAITING",
@@ -96,13 +121,37 @@ export function createTable(cfg: CreateTableConfig): EngineTable {
     log: [],
     logSeq: 0,
     turnStartedAt: null,
+    turnSeq: 0,
     winners: [],
     animToken: 0,
     cashOuts: [],
+    // Creating a table is activity: the idle clock starts now.
+    lastActivityAt: cfg.createdAt ?? Date.now(),
+    closingAt: null,
+    closeReason: null,
   };
 }
 
-export function sitDown(table: EngineTable, seatIndex: number, cfg: SeatPlayerConfig): EngineTable {
+/** A config's rake terms with the defaults (no rake; no flop, no drop) filled in. */
+function rakeTermsOf(cfg: Pick<CreateTableConfig, "rakeBps" | "rakeCapChips" | "rakeNoFlopNoDrop">): RakeTerms {
+  return {
+    rakeBps: cfg.rakeBps ?? NO_RAKE.rakeBps,
+    rakeCapChips: cfg.rakeCapChips ?? NO_RAKE.rakeCapChips,
+    rakeNoFlopNoDrop: cfg.rakeNoFlopNoDrop ?? NO_RAKE.rakeNoFlopNoDrop,
+  };
+}
+
+/** Whole, non-negative milliseconds; a pool never exceeds its cap and refills come at least every hand. */
+function validTimeBank(bank: ExtraTimeBankConfig): boolean {
+  const ms = (value: unknown): boolean => Number.isSafeInteger(value) && (value as number) >= 0;
+  return typeof bank === "object" && ms(bank.initialMs) && ms(bank.maxMs) && ms(bank.refillMs) &&
+    bank.initialMs <= bank.maxMs && Number.isSafeInteger(bank.refillEveryHands) && bank.refillEveryHands >= 1;
+}
+
+/** `now` (ms epoch) starts the player's own idle clock: taking a seat is activity. */
+export function sitDown(table: EngineTable, seatIndex: number, cfg: SeatPlayerConfig, now = Date.now()): EngineTable {
+  // A closing table's chips are on their way back to bankrolls; no new money may join.
+  if (table.closeReason != null) throw tableClosing();
   const next = cloneTable(table);
   if (!Number.isInteger(seatIndex) || seatIndex < 0 || seatIndex >= next.maxSeats) throw new EngineError("BAD_SEAT", "Invalid seat");
   if (!Number.isSafeInteger(cfg.buyIn) || cfg.buyIn <= 0 || cfg.buyIn > 2_000_000_000) throw new EngineError("BUYIN", "Invalid buy-in");
@@ -133,23 +182,37 @@ export function sitDown(table: EngineTable, seatIndex: number, cfg: SeatPlayerCo
     committedThisStreet: 0,
     committedThisHand: 0,
     sittingOut: false,
+    sittingOutReason: null,
     showedCards: false,
     handResult: null,
     pendingLeave: false,
     waitingForBigBlind,
     missedBlind: false,
+    lastActivityAt: now,
+    extraTimeMs: next.extraTimeBank?.initialMs ?? 0,
+    handsSinceRefill: 0,
   };
-  pushLog(next, seatIndex, `${cfg.username} sits with $${cfg.buyIn}`);
+  pushLog(next, seatIndex, `${cfg.username} sits with ${cfg.buyIn}`);
   next.animToken += 1;
   return next;
 }
 
-export function sitOut(table: EngineTable, userId: string, now = Date.now()): EngineTable {
+const SIT_OUT_REASONS: ReadonlySet<unknown> = new Set<SitOutReason>(["SELF", "TIMEOUT", "DISCONNECTED", "CLOSING"]);
+
+/**
+ * Sit a player out. `reason` is shown to clients (sittingOutReason): SELF for
+ * the player's own request; the server passes DISCONNECTED when it sits out a
+ * player whose connection dropped. A player already sitting out is returned
+ * unchanged, keeping the reason they were first sat out for.
+ */
+export function sitOut(table: EngineTable, userId: string, now = Date.now(), reason: SitOutReason = "SELF"): EngineTable {
+  if (!SIT_OUT_REASONS.has(reason)) throw new EngineError("BAD_REASON", "Invalid sit-out reason");
   // A repeated toggle changes nothing: no audit event, no new revision.
   if (requirePlayer(table, userId).sittingOut) return table;
   const next = cloneTable(table);
   const player = requirePlayer(next, userId);
   player.sittingOut = true;
+  player.sittingOutReason = reason;
   if (next.phase === "WAITING" || next.phase === "COMPLETE") player.status = "SIT_OUT";
   pushLog(next, player.seatIndex, `${player.username} sits out`);
   auditStatus(next, player, "SIT_OUT", now);
@@ -158,10 +221,13 @@ export function sitOut(table: EngineTable, userId: string, now = Date.now()): En
 }
 
 export function sitIn(table: EngineTable, userId: string, now = Date.now()): EngineTable {
+  // Sitting in would cancel the pending leave closeTable set; closure is final.
+  if (table.closeReason != null) throw tableClosing();
   if (!requirePlayer(table, userId).sittingOut) return table;
   const next = cloneTable(table);
   const player = requirePlayer(next, userId);
   player.sittingOut = false;
+  player.sittingOutReason = null;
   // Sitting back in cancels a pending leave. The player stays seated and acts
   // for themselves again (a hand already folded for them stays folded).
   player.pendingLeave = false;
@@ -181,6 +247,8 @@ export function leaveSeat(table: EngineTable, userId: string, now = Date.now()):
   const next = cloneTable(table);
   const player = requirePlayer(next, userId);
   if (bettingInProgress(next) && player.holeCards !== null) {
+    // Leaving is the player's own choice; one already sitting out keeps their reason.
+    if (!player.sittingOut) player.sittingOutReason = "SELF";
     player.sittingOut = true;
     player.pendingLeave = true;
     pushLog(next, player.seatIndex, `${player.username} leaves the table`);
@@ -202,7 +270,14 @@ export function leaveSeat(table: EngineTable, userId: string, now = Date.now()):
 
 export function startHand(table: EngineTable, now = Date.now()): EngineTable {
   if (table.phase !== "WAITING" && table.phase !== "COMPLETE") throw new EngineError("IN_HAND", "Hand already in progress");
-  const next = upgradeTableState(cloneTable(table)).table;
+  // No hand is dealt while the idle warning is up or once closure has begun:
+  // a closing table must not put players' chips back at risk.
+  if (table.closeReason != null || table.closingAt != null) throw tableClosing();
+  const next = upgradeTableState(cloneTable(table), { fallbackActivityAt: now }).table;
+  // The terms are written into HAND_STARTED and govern the hand's settlement.
+  if (!validRakeTerms({ rakeBps: next.rakeBps, rakeCapChips: next.rakeCapChips, rakeNoFlopNoDrop: next.rakeNoFlopNoDrop })) {
+    throw new EngineError("BAD_CONFIG", "Invalid rake configuration");
+  }
   if (next.players.filter((p) => isBlindCandidate(p)).length < 2) throw new EngineError("NOT_ENOUGH_PLAYERS", "Need at least two players with chips");
   // Waiting for the big blind only matters while a game can run without you.
   if (liveDealSeats(next).length < 2) {
@@ -240,6 +315,7 @@ export function startHand(table: EngineTable, now = Date.now()): EngineTable {
   next.burns = [];
   next.pots = [];
   next.potTotal = 0;
+  next.rakeTaken = 0;
   next.lastAggressorSeat = null;
   next.audit = null;
   assignButtonAndBlinds(next);
@@ -249,13 +325,24 @@ export function startHand(table: EngineTable, now = Date.now()): EngineTable {
   next.dealtSeats = dealOrderFromDealer(next.dealerSeat, next.maxSeats,
     next.players.map((player, seat) => receivesCards(player) ? seat : -1).filter((seat) => seat >= 0));
   next.handChipTotal = next.dealtSeats.reduce((sum, seat) => sum + next.players[seat]!.stack, 0);
+  if (next.extraTimeBank) refillTimeBanks(next, next.extraTimeBank);
 
   // 1. Shuffle with the OS CSPRNG. 2. Commit to the full deck order with
   // SHA-256. 3. Open the audit record. All three happen before any blind is
-  // posted or any card is dealt.
+  // posted or any card is dealt. The record is HAND_AUDIT_VERSION (v2): it
+  // also fixes the hand's rake terms (settlement reads them back from here)
+  // and the turn clock it starts with: the base turn time and, with a
+  // personal time bank, each dealt seat's pool after this hand's refill.
   next.fairness = commitDeck(shuffledDeck(), next.tableId, next.handNumber, newHandId());
   next.deck = [...next.fairness.deck];
   openHandAudit(next, next.fairness, now, {
+    rakeBps: next.rakeBps,
+    rakeCapChips: next.rakeCapChips,
+    rakeNoFlopNoDrop: next.rakeNoFlopNoDrop,
+    turnTimeMs: next.timeBankMs,
+    timeBankPools: next.extraTimeBank
+      ? next.dealtSeats.map((seat) => ({ seatIndex: seat, extraTimeMs: next.players[seat]!.extraTimeMs }))
+      : null,
     maxSeats: next.maxSeats,
     smallBlind: next.smallBlind,
     bigBlind: next.bigBlind,
@@ -295,15 +382,87 @@ export function applyAction(table: EngineTable, userId: string, intent: EngineIn
   }
   const before = player.committedThisStreet;
   executeIntent(next, player, intent, legal);
+  chargeTurnClock(next, player, now);
   recordAction(next, player, intent.action, player.committedThisStreet - before, now);
   next.animToken += 1;
   progressAfterAction(next, now);
   return next;
 }
 
-/** The acting player's time bank expired: check if free, otherwise fold. */
+/**
+ * The acting player's time expired: check if free, otherwise fold. With
+ * sitOutOnTimeout (the default) a human is also sat out (reason TIMEOUT): the
+ * sat-out cascade acts for them for the rest of the hand, and they are not
+ * dealt in again until they sit in (missed blinds then apply as usual). So a
+ * player who has walked away loses at most the hand they timed out in instead
+ * of being blinded off. A time-out is never activity: the idle clocks do not move.
+ */
 export function applyTimeout(table: EngineTable, now = Date.now()): EngineTable {
   return autoAct(table, now, "TIMEOUT");
+}
+
+/**
+ * Restart the pending actor's base clock at `now` after server downtime, so a
+ * restart cannot time a player out at once for time they could not use. The
+ * actor's personal time bank is not charged for the downtime (nor for the
+ * part of the turn before it). It starts a new turn (new turnId) and appends
+ * a TURN_CLOCK_RESET audit event. No one to act: the input is returned unchanged.
+ */
+export function rebaseTurnClock(table: EngineTable, now: number, reason: "SERVER_RESUME"): EngineTable {
+  if (reason !== "SERVER_RESUME") throw new EngineError("BAD_REASON", "Invalid clock reset reason");
+  if (!Number.isSafeInteger(now)) throw new EngineError("BAD_TIME", "Invalid time");
+  if (table.toActSeat == null || !bettingInProgress(table)) return table;
+  const next = cloneTable(table);
+  const seatIndex = next.toActSeat!;
+  startTurn(next, now);
+  appendAudit(next, "TURN_CLOCK_RESET", { seatIndex, reason }, now);
+  return next;
+}
+
+/** A new turn begins for `table.toActSeat` (or none): restart the base clock and give the turn a new identity. */
+function startTurn(table: EngineTable, now: number): void {
+  if (table.toActSeat == null) {
+    table.turnStartedAt = null;
+    return;
+  }
+  table.turnStartedAt = now;
+  table.turnSeq = (Number.isSafeInteger(table.turnSeq) ? table.turnSeq : 0) + 1;
+}
+
+/**
+ * The actor's turn is over: time used beyond the base clock comes out of
+ * their personal time bank, which never goes below zero. Without a time bank
+ * nothing changes, so timing is exactly the base clock.
+ */
+function chargeTurnClock(table: EngineTable, player: EnginePlayer, now: number): void {
+  if (!table.extraTimeBank || table.turnStartedAt == null || table.toActSeat !== player.seatIndex) return;
+  const over = Math.ceil(now - table.turnStartedAt - table.timeBankMs);
+  if (over > 0) player.extraTimeMs = Math.max(0, player.extraTimeMs - over);
+}
+
+/** Every dealt player's hand counts toward their next refill: `refillMs` every `refillEveryHands` hands, capped at `maxMs`. */
+function refillTimeBanks(table: EngineTable, bank: ExtraTimeBankConfig): void {
+  for (const seat of table.dealtSeats) {
+    const p = table.players[seat]!;
+    p.handsSinceRefill += 1;
+    if (p.handsSinceRefill < bank.refillEveryHands) continue;
+    p.handsSinceRefill = 0;
+    p.extraTimeMs = Math.min(bank.maxMs, p.extraTimeMs + bank.refillMs);
+  }
+}
+
+/**
+ * Sit out a human whose turn just timed out (EngineTable.sitOutOnTimeout).
+ * Recorded like a sit-out (log and PLAYER_STATUS) right after the time-out
+ * action, before the hand moves on. Bots never walk away, so they are never
+ * sat out by the clock (nothing would sit them back in).
+ */
+function sitOutAfterTimeout(table: EngineTable, player: EnginePlayer, now: number): void {
+  if (table.sitOutOnTimeout === false || player.kind !== "HUMAN" || player.sittingOut) return;
+  player.sittingOut = true;
+  player.sittingOutReason = "TIMEOUT";
+  pushLog(table, player.seatIndex, `${player.username} sits out`);
+  auditStatus(table, player, "SIT_OUT", now);
 }
 
 type AutoReason = "TIMEOUT" | "SIT_OUT" | "LEAVE";
@@ -326,6 +485,8 @@ function autoAct(table: EngineTable, now: number, reason: AutoReason): EngineTab
   if (!player) return next;
   const legal = legalActions(next, player.seatIndex);
   const before = player.committedThisStreet;
+  // The turn ends now, whoever ended it; a cascade auto-act starts and ends at the same instant.
+  chargeTurnClock(next, player, now);
   const leaverFolds = reason === "LEAVE" && foldKeepsEveryPotContested(next, player);
   let folded = false;
   if (!leaverFolds && legal?.actions.includes("CHECK")) {
@@ -343,6 +504,7 @@ function autoAct(table: EngineTable, now: number, reason: AutoReason): EngineTab
   if (last && !last.text.endsWith(AUTO_SUFFIX[reason])) last.text = `${last.text}${AUTO_SUFFIX[reason]}`;
   const action = reason === "TIMEOUT" ? (folded ? "TIMEOUT_FOLD" : "TIMEOUT_CHECK") : (folded ? "FOLD" : "CHECK");
   recordAction(next, player, action, player.committedThisStreet - before, now, reason === "TIMEOUT" ? null : reason);
+  if (reason === "TIMEOUT") sitOutAfterTimeout(next, player, now);
   next.animToken += 1;
   progressAfterAction(next, now);
   return next;
@@ -369,20 +531,88 @@ function foldKeepsEveryPotContested(table: EngineTable, player: EnginePlayer): b
 export function completeHand(table: EngineTable): EngineTable {
   if (table.phase !== "SHOWDOWN" && table.phase !== "COMPLETE") throw new EngineError("IN_HAND", "Cannot complete an unsettled hand");
   const next = cloneTable(table);
-  purgeHandState(next);
-  for (const p of next.players) {
+  cleanUp(next);
+  return next;
+}
+
+/** Hand Clean-up proper: purge the hand, then cash out leavers and busted players (in place). */
+function cleanUp(table: EngineTable): void {
+  purgeHandState(table);
+  for (const p of table.players) {
     if (!p) continue;
     if (p.pendingLeave) {
-      next.cashOuts.push({ userId: p.userId, stack: p.stack });
-      next.players[p.seatIndex] = null;
+      table.cashOuts.push({ userId: p.userId, stack: p.stack });
+      table.players[p.seatIndex] = null;
       continue;
     }
     if (p.stack <= 0) {
-      next.cashOuts.push({ userId: p.userId, stack: 0 });
-      next.players[p.seatIndex] = null;
+      table.cashOuts.push({ userId: p.userId, stack: 0 });
+      table.players[p.seatIndex] = null;
     }
   }
-  return next;
+}
+
+/**
+ * Staff recovery: void the hand in progress.
+ *
+ * COMPLIANCE NOTE (voided hand): nobody wins or loses anything. Every chip
+ * committed to the hand (blinds, bets, calls) goes back to the player who
+ * put it in, so every final stack equals its starting stack and no rake is
+ * taken. The audit trail records it rather than hiding it: HAND_VOIDED
+ * {reason} and then HAND_SETTLED {reason: "void", board, starting stacks},
+ * with no showdown and no awards, sealed like any other hand so it verifies
+ * and the table's hash chain continues through it. The table is then left
+ * exactly as Hand Clean-up leaves it (no card secrets, pending leavers
+ * cashed out). The sealed record and its deck secrets are returned for the
+ * server to persist, because Clean-up has already removed them from the
+ * table. Pure: the input is never mutated.
+ *
+ * Refused (EngineError) when no hand is in progress (between hands, or
+ * already settled: a settled hand is final), for a blank or over-long
+ * reason (it is public in every participant's audit, so it must not carry
+ * private detail), and for a hand dealt under a v1 audit record, which
+ * cannot express a void; such a hand can only be played to its end.
+ */
+export function voidHand(table: EngineTable, now: number, reason: string): VoidedHand {
+  if (!bettingInProgress(table)) throw new EngineError("NO_HAND", "No hand is in progress");
+  if (!validVoidReason(reason)) throw new EngineError("BAD_REASON", "A void needs a short, printable reason");
+  if (!Number.isSafeInteger(now)) throw new EngineError("BAD_TIME", "Invalid time");
+  if (table.audit && table.audit.version !== HAND_AUDIT_VERSION) {
+    throw new EngineError("AUDIT_VERSION", "This hand was dealt under an audit format that cannot record a void");
+  }
+  const chipsBefore = chipsOnTable(table);
+  const next = cloneTable(table);
+  const handNumber = next.handNumber;
+  const returned = next.dealtSeats.map((seat) => {
+    const p = next.players[seat]!;
+    return { seatIndex: seat, userId: p.userId, amount: p.committedThisHand };
+  });
+  for (const p of next.players) {
+    if (!p) continue;
+    p.stack += p.committedThisHand;
+    p.committedThisHand = 0;
+    p.committedThisStreet = 0;
+  }
+  const stacks = next.dealtSeats.map((seat) => ({ seatIndex: seat, stack: next.players[seat]!.stack }));
+  const chipTotal = stacks.reduce((sum, row) => sum + row.stack, 0);
+  if (next.handChipTotal != null && chipTotal !== next.handChipTotal) {
+    throw new EngineError("CHIP_INVARIANT", `Void did not restore the starting stacks: ${chipTotal} now, ${next.handChipTotal} at hand start`);
+  }
+  next.toActSeat = null;
+  next.turnStartedAt = null;
+  // Both events carry the street the hand was stopped on (nothing was shown down).
+  appendAudit(next, "HAND_VOIDED", { reason }, now);
+  appendAudit(next, "HAND_SETTLED", { reason: "void", board: [...next.board], stacks, chipTotal }, now);
+  sealHandAudit(next, now);
+  const record = next.audit ? structuredClone(next.audit) : null;
+  const sealed = next.fairness ? sealedAudit(next.fairness) : null;
+  cleanUp(next);
+  pushLog(next, null, `Hand #${handNumber} was voided; all bets were returned`);
+  next.animToken += 1;
+  if (chipsOnTable(next) !== chipsBefore) {
+    throw new EngineError("CHIP_INVARIANT", `Chip conservation failed while voiding: ${chipsOnTable(next)} after, ${chipsBefore} before`);
+  }
+  return { table: next, handNumber, record, sealed, returned };
 }
 
 /** Remove every trace of the finished hand from live state (Hand Clean-up). */
@@ -400,6 +630,7 @@ function purgeHandState(table: EngineTable): void {
   table.dealtSeats = [];
   table.pots = [];
   table.potTotal = 0;
+  table.rakeTaken = 0;
   table.currentBet = 0;
   table.winners = [];
   table.actions = [];
@@ -417,12 +648,217 @@ function purgeHandState(table: EngineTable): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Table lifecycle: idle clock, idle warning, closure
+//
+// The server decides WHEN (its timers are advisory; every decision is
+// re-checked under the table's row lock on fresh state). These transitions
+// decide WHAT happens to seats, hands and chips.
+// ---------------------------------------------------------------------------
+
+function tableClosing(): EngineError {
+  return new EngineError("TABLE_CLOSING", "This table is closing");
+}
+
+/**
+ * A voluntary player action: restart the idle clock and cancel an idle
+ * warning. The server calls it only for a human's own action (see
+ * EngineTable.lastActivityAt), naming that player as `userId` so their own
+ * clock restarts too (see idleSince). Time-outs, bots and dealing never call
+ * it, so a table of AFK players whose hands keep timing out still goes idle.
+ * Closure, once begun, cannot be undone: the input is then returned unchanged.
+ */
+export function recordActivity(table: EngineTable, now = Date.now(), userId?: string): EngineTable {
+  if (table.closeReason != null) return table;
+  const next = cloneTable(table);
+  next.lastActivityAt = now;
+  next.closingAt = null;
+  const player = userId === undefined ? undefined : next.players.find((p) => p?.userId === userId);
+  if (player) player.lastActivityAt = now;
+  return next;
+}
+
+/**
+ * When this table last saw activity that still counts: the latest own
+ * activity of the humans still at it (seated and not leaving), or, with no
+ * such human, the table's own clock. So an outsider who takes a seat and
+ * leaves again, or a player who acted and then left, no longer keeps an AFK
+ * table open, while a newcomer who stays does. Bots never count. A legacy
+ * player without a clock of their own counts from the table's.
+ */
+export function idleSince(table: EngineTable): number {
+  let since: number | null = null;
+  for (const p of table.players) {
+    if (!p || p.kind !== "HUMAN" || p.pendingLeave) continue;
+    const own = Number.isFinite(p.lastActivityAt) ? p.lastActivityAt : table.lastActivityAt;
+    since = since === null ? own : Math.max(since, own);
+  }
+  return since ?? table.lastActivityAt;
+}
+
+/**
+ * Drop an idle warning without touching anything else (the clocks, the
+ * hand, the log): the server uses it for a warning that began before it
+ * restarted, since downtime is not the players' inactivity. No warning, or a
+ * closure already begun: the input is returned unchanged.
+ */
+export function clearIdleWarning(table: EngineTable): EngineTable {
+  if (table.closingAt == null || table.closeReason != null) return table;
+  const next = cloneTable(table);
+  next.closingAt = null;
+  return next;
+}
+
+/**
+ * "I'm still here" from the idle warning. Only a seated human who is not
+ * leaving may keep a table open. A spectator, a bot or a departing player
+ * cannot hold everyone else's chips at an abandoned table. Without an active
+ * warning nothing changes (same object, so no new revision).
+ */
+export function keepTableOpen(table: EngineTable, userId: string, now = Date.now()): EngineTable {
+  if (table.closeReason != null) throw tableClosing();
+  const player = table.players.find((p) => p?.userId === userId);
+  if (!player || player.kind !== "HUMAN" || player.pendingLeave) {
+    throw new EngineError("NOT_SEATED", "Only seated players can keep the table open");
+  }
+  if (table.closingAt == null) return table;
+  const next = recordActivity(table, now, userId);
+  pushLog(next, player.seatIndex, `${player.username} is back — the table stays open`);
+  return next;
+}
+
+/**
+ * Start the idle warning: the table closes at `closesAt` unless a player acts
+ * first. The caller has established that the idle timeout has passed. A hand
+ * in progress is untouched (no card, bet, turn or audit event changes); the
+ * server just deals no new hand while the warning is up.
+ */
+export function beginIdleWarning(table: EngineTable, closesAt: number): EngineTable {
+  if (table.closeReason != null || table.closingAt != null) return table;
+  const next = cloneTable(table);
+  next.closingAt = closesAt;
+  pushLog(next, null,
+    `No activity for ${TABLE_IDLE_TIMEOUT_MS / 60_000} minutes — the table closes in ${TABLE_IDLE_WARNING_MS / 1_000} seconds unless a player acts`);
+  return next;
+}
+
+/**
+ * Begin closing the table. It becomes CLOSED as soon as it is empty.
+ *
+ * COMPLIANCE NOTE (closure): chips are never created, lost or paid twice.
+ * - Between hands every player is cashed out now and the table is CLOSED.
+ * - A hand in progress is FINISHED, not voided. It has a pre-deal commitment
+ *   and an audit trail, so it settles by the ordinary rules and its sealed
+ *   record verifies like any other hand:
+ *   1. players not dealt in are cashed out at once (as leaveSeat does);
+ *   2. every dealt player is sat out, with a PLAYER_STATUS audit event (as
+ *      sitOut does). They are all marked BEFORE anyone acts, so
+ *   3. one auto-action by the current actor lets the existing cascade
+ *      (progressAfterAction) auto-act every remaining actor until the hand
+ *      settles: check when free, otherwise fold; a player who already asked
+ *      to leave folds, as always. All-in players keep their claim on the pots.
+ *   A dealt seat is never released here: the server records the hand's
+ *   players from the seats in the transaction that enters SHOWDOWN.
+ * - At SHOWDOWN every remaining player is marked as leaving. Hand Clean-up
+ *   (completeHand) cashes each of them out once, and the server's
+ *   closeIfEmpty then closes the empty table.
+ * - The chips the table is responsible for (stacks, the unsettled pot and
+ *   unpaid cash-outs) are counted before and after. A mismatch, or a hand
+ *   that does not settle, throws, so the transaction rolls back and nothing
+ *   is paid.
+ */
+export function closeTable(table: EngineTable, reason: TableCloseReason, now = Date.now()): EngineTable {
+  if (table.closeReason != null || table.status === "CLOSED") return table;
+  const chipsBefore = chipsOnTable(table);
+  let next = cloneTable(table);
+  next.closingAt = null;
+  next.closeReason = reason;
+  next.animToken += 1;
+  pushLog(next, null, reason === "IDLE" ? "The table is closing for inactivity" : "The table is closing");
+  if (bettingInProgress(next)) {
+    // 1. Not dealt in (sitting out, waiting for the big blind, busted): nothing at stake.
+    for (const p of next.players) if (p && p.holeCards === null) cashOutNow(next, p);
+    // 2. Every dealt player sits out first, so the cascade below acts for all of them.
+    for (const p of next.players) {
+      if (!p || p.sittingOut) continue;
+      p.sittingOut = true;
+      p.sittingOutReason = "CLOSING";
+      pushLog(next, p.seatIndex, `${p.username} sits out`);
+      auditStatus(next, p, "SIT_OUT", now);
+    }
+    // 3. One auto-action; progressAfterAction auto-acts every later sat-out actor.
+    const actor = next.toActSeat != null ? next.players[next.toActSeat] : null;
+    if (actor?.status === "ACTIVE") next = autoAct(next, now, actor.pendingLeave ? "LEAVE" : "SIT_OUT");
+    else progressAfterAction(next, now);
+    if (next.phase !== "SHOWDOWN") throw new EngineError("CLOSE_FAILED", `The hand in progress could not be settled (${next.phase})`);
+  }
+  if (next.phase === "SHOWDOWN") {
+    // Settled: Hand Clean-up pays everyone. Seats stay until then (hand history).
+    for (const p of next.players) {
+      if (!p) continue;
+      if (!p.sittingOut) p.sittingOutReason = "CLOSING";
+      p.pendingLeave = true;
+      p.sittingOut = true;
+    }
+  } else {
+    for (const p of next.players) if (p) cashOutNow(next, p);
+    markClosed(next);
+  }
+  // A hand settled here may have been raked: those chips left the table legitimately.
+  const raked = bettingInProgress(table) && next.phase === "SHOWDOWN" ? next.rakeTaken : 0;
+  const chipsAfter = chipsOnTable(next) + raked;
+  if (chipsAfter !== chipsBefore) {
+    throw new EngineError("CHIP_INVARIANT", `Chip conservation failed while closing: ${chipsAfter} after, ${chipsBefore} before`);
+  }
+  return next;
+}
+
+/**
+ * Every seat is empty and no hand is running: the table is CLOSED, with
+ * reason EMPTY unless closure had already begun for another reason. The
+ * server applies this to every committed mutation, so a host who leaves a
+ * table nobody joined, or the last player to leave any table, closes it in
+ * that same transaction. Otherwise the input is returned unchanged.
+ */
+export function closeIfEmpty(table: EngineTable): EngineTable {
+  if (table.status === "CLOSED" || (table.phase !== "WAITING" && table.phase !== "COMPLETE") || table.players.some((p) => p != null)) return table;
+  const next = cloneTable(table);
+  markClosed(next);
+  return next;
+}
+
+function markClosed(table: EngineTable): void {
+  table.status = "CLOSED";
+  table.closingAt = null;
+  table.closeReason ??= "EMPTY";
+  pushLog(table, null, "Table closed");
+}
+
+/** Release a seat whose player holds no cards in a running hand, returning the whole stack. */
+function cashOutNow(table: EngineTable, player: EnginePlayer): void {
+  // Log first: pushLog labels the entry with the seated player's name.
+  pushLog(table, player.seatIndex, `${player.username} leaves the table`);
+  table.cashOuts.push({ userId: player.userId, stack: player.stack });
+  table.players[player.seatIndex] = null;
+}
+
+/** Chips the table is answerable for: stacks, an unsettled pot, and cash-outs not yet paid. */
+function chipsOnTable(table: EngineTable): number {
+  const unsettled = bettingInProgress(table);
+  return table.players.reduce((sum, p) => sum + (p ? p.stack + (unsettled ? p.committedThisHand : 0) : 0), 0) +
+    table.cashOuts.reduce((sum, cash) => sum + cash.stack, 0);
+}
+
 /**
  * Bring table state saved by an earlier engine version up to this model.
  * The upgrade is deterministic and idempotent. The server applies it on
  * every load; on current state it changes nothing.
  * - Missing fields get their defaults. The retired pre-deal seed protocol,
- *   including its server seed, is dropped.
+ *   including its server seed, is dropped. A table saved before the idle
+ *   clock existed starts it at `fallbackActivityAt` (the server passes the
+ *   row's last update, so a long-abandoned table does not get a fresh five
+ *   minutes on every load), or now. It is open, with no warning pending. A
+ *   seated player saved without a clock of their own gets the table's.
  * - WAITING state that still holds the previous hand's cards, log or
  *   commitments is purged (old versions did not purge at clean-up).
  * - A legacy hand already settled (SHOWDOWN) was recorded by the old server,
@@ -433,7 +869,7 @@ function purgeHandState(table: EngineTable): void {
  *   were leaving are cashed out. `voidedHand` reports its number so the
  *   server can log it.
  */
-export function upgradeTableState(table: EngineTable): { table: EngineTable; voidedHand: number | null } {
+export function upgradeTableState(table: EngineTable, options: { fallbackActivityAt?: number } = {}): { table: EngineTable; voidedHand: number | null } {
   const t = table as EngineTable & { pendingShuffle?: unknown };
   delete t.pendingShuffle;
   t.audit ??= null;
@@ -441,10 +877,27 @@ export function upgradeTableState(table: EngineTable): { table: EngineTable; voi
   t.handChipTotal ??= null;
   t.smallBlindPosition ??= null;
   t.dealtSeats ??= [];
+  t.closingAt ??= null;
+  t.closeReason ??= null;
+  t.extraTimeBank ??= null;
+  if (typeof t.sitOutOnTimeout !== "boolean") t.sitOutOnTimeout = true;
+  // Saved before rake existed: such a table never raked, so it keeps not raking.
+  t.rakeBps ??= NO_RAKE.rakeBps;
+  t.rakeCapChips ??= NO_RAKE.rakeCapChips;
+  t.rakeNoFlopNoDrop ??= NO_RAKE.rakeNoFlopNoDrop;
+  t.rakeTaken ??= 0;
+  if (!Number.isSafeInteger(t.turnSeq) || t.turnSeq < 0) t.turnSeq = 0;
+  if (typeof t.lastActivityAt !== "number" || !Number.isFinite(t.lastActivityAt)) t.lastActivityAt = options.fallbackActivityAt ?? Date.now();
   for (const p of t.players) {
     if (!p) continue;
     p.waitingForBigBlind ??= false;
     p.missedBlind ??= false;
+    // Saved before reasons were recorded: the reason a sat-out player left is unknown.
+    if (p.sittingOutReason === undefined) p.sittingOutReason = null;
+    if (!Number.isSafeInteger(p.extraTimeMs) || p.extraTimeMs < 0) p.extraTimeMs = t.extraTimeBank?.initialMs ?? 0;
+    if (!Number.isSafeInteger(p.handsSinceRefill) || p.handsSinceRefill < 0) p.handsSinceRefill = 0;
+    // A player seated before per-player clocks existed last counted as active with the table.
+    if (typeof p.lastActivityAt !== "number" || !Number.isFinite(p.lastActivityAt)) p.lastActivityAt = t.lastActivityAt;
   }
   if (t.audit !== null) return { table: t, voidedHand: null };
   if (bettingInProgress(t)) {
@@ -580,7 +1033,7 @@ function beginStreet(table: EngineTable, phase: EngineTable["phase"], now: numbe
   table.actedThisStreet = table.actedThisStreet.map(() => false);
   table.lastActedBet = table.lastActedBet.map(() => null);
   table.toActSeat = firstToAct(table);
-  table.turnStartedAt = table.toActSeat == null ? null : now;
+  startTurn(table, now);
   refreshPots(table);
 }
 
@@ -617,7 +1070,7 @@ function executeIntent(
     case "BET": {
       const to = intent.amount ?? legal.minBet;
       if (to < legal.minBet && to < legal.maxRaiseTo) {
-        throw new EngineError("MIN_BET", `Minimum bet is $${legal.minBet}`);
+        throw new EngineError("MIN_BET", `Minimum bet is ${legal.minBet}`);
       }
       raiseTo(table, player, Math.min(to, legal.maxRaiseTo), false);
       return;
@@ -625,7 +1078,7 @@ function executeIntent(
     case "RAISE": {
       const to = intent.amount ?? legal.minRaiseTo;
       if (to < legal.minRaiseTo && to < legal.maxRaiseTo) {
-        throw new EngineError("MIN_RAISE", `Minimum raise is to $${legal.minRaiseTo}`);
+        throw new EngineError("MIN_RAISE", `Minimum raise is to ${legal.minRaiseTo}`);
       }
       raiseTo(table, player, Math.min(to, legal.maxRaiseTo), false);
       return;
@@ -645,7 +1098,7 @@ function putChips(table: EngineTable, player: EnginePlayer, amount: number, verb
   player.committedThisHand += pay;
   table.actedThisStreet[player.seatIndex] = true;
   if (player.stack === 0) player.status = "ALL_IN";
-  pushLog(table, player.seatIndex, `${player.username} ${verb} $${pay}`);
+  pushLog(table, player.seatIndex, `${player.username} ${verb} ${pay}`);
 }
 
 function raiseTo(table: EngineTable, player: EnginePlayer, toAmount: number, allIn: boolean): void {
@@ -676,7 +1129,7 @@ function raiseTo(table: EngineTable, player: EnginePlayer, toAmount: number, all
     table.lastAggressorSeat = player.seatIndex;
   }
   const label = allIn ? "all-in" : opening ? "bets" : "raises to";
-  pushLog(table, player.seatIndex, `${player.username} ${label} $${target}`);
+  pushLog(table, player.seatIndex, `${player.username} ${label} ${target}`);
 }
 
 function progressAfterAction(table: EngineTable, now = Date.now()): void {
@@ -699,7 +1152,7 @@ function progressAfterAction(table: EngineTable, now = Date.now()): void {
     if (!current || !needsAction(table, current)) {
       table.toActSeat = nextToActSeat(table, table.toActSeat ?? table.dealerSeat);
     }
-    table.turnStartedAt = table.toActSeat == null ? null : now;
+    startTurn(table, now);
     const actor = table.toActSeat != null ? table.players[table.toActSeat] : null;
     if (actor?.sittingOut) {
       Object.assign(table, autoAct(table, now, actor.pendingLeave ? "LEAVE" : "SIT_OUT"));
@@ -791,15 +1244,21 @@ function settle(table: EngineTable, reason: "fold" | "showdown", now: number): v
     }, now);
   }
 
+  // The rake terms recorded when the hand was dealt (v2 HAND_STARTED), never
+  // the table's current settings; a v1 hand (dealt by the previous engine and
+  // settled after an upgrade) and a legacy hand without a record are unraked.
+  const v2 = table.audit?.version === HAND_AUDIT_VERSION;
   const awarded = awardPots({
     contribs,
     holeCards,
     board: table.board,
     dealerSeat: table.dealerSeat,
     maxSeats: table.maxSeats,
+    rake: table.audit ? handRakeTerms(table.audit) : NO_RAKE,
   });
 
   table.awards = awarded.pots;
+  table.rakeTaken = awarded.rake.total;
   table.refunds = [...awarded.returned].map(([seatIndex, amount]) => ({ seatIndex, amount }));
   table.settledAt = now;
   table.pots = awarded.pots.map((p) => ({
@@ -823,8 +1282,9 @@ function settle(table: EngineTable, reason: "fold" | "showdown", now: number): v
     const name = reason === "showdown" ? (player.handResult?.name ?? null) : null;
     table.winners.push({ seatIndex: seat, amount, handName: name });
     const extra = name ? ` with ${name}` : "";
-    pushLog(table, seat, `${player.username} wins $${amount}${extra}`);
+    pushLog(table, seat, `${player.username} wins ${amount}${extra}`);
   }
+  if (awarded.rake.total > 0) pushLog(table, null, `Rake ${awarded.rake.total}`);
   appendAudit(table, "POTS_AWARDED", {
     pots: awarded.pots.map((p) => ({
       potIndex: p.potIndex, amount: p.amount, eligibleSeatIndexes: [...p.eligibleSeatIndexes],
@@ -832,13 +1292,16 @@ function settle(table: EngineTable, reason: "fold" | "showdown", now: number): v
     })),
     refunds: table.refunds.map((r) => ({ seatIndex: r.seatIndex, amount: r.amount })),
     payouts: [...awarded.payouts].sort(([a], [b]) => a - b).map(([seatIndex, amount]) => ({ seatIndex, amount })),
+    // v1 records keep their exact v1 shape (they can only be unraked).
+    ...(v2 ? { rake: { total: awarded.rake.total, perPot: awarded.rake.perPot.map((row) => ({ ...row })) } } : {}),
   }, now);
 
-  // Invariant: settlement redistributes chips and never creates or destroys them.
-  const chipTotal = table.dealtSeats.reduce((sum, seat) => sum + (table.players[seat]?.stack ?? 0), 0);
+  // Invariant: settlement redistributes chips and never creates or destroys
+  // them; the only chips that leave the players are the rake.
+  const chipTotal = table.dealtSeats.reduce((sum, seat) => sum + (table.players[seat]?.stack ?? 0), 0) + awarded.rake.total;
   // `!= null`: tables persisted before this field existed decrypt with it undefined.
   if (table.handChipTotal != null && chipTotal !== table.handChipTotal) {
-    throw new EngineError("CHIP_INVARIANT", `Chip conservation failed: ${chipTotal} after settlement, ${table.handChipTotal} at hand start`);
+    throw new EngineError("CHIP_INVARIANT", `Chip conservation failed: ${chipTotal} after settlement (stacks plus rake), ${table.handChipTotal} at hand start`);
   }
   appendAudit(table, "HAND_SETTLED", {
     reason,

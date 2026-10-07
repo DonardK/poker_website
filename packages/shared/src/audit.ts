@@ -24,13 +24,38 @@
  * (synchronous node:crypto) and these verifiers (asynchronous WebCrypto), so
  * both sides always hash identical bytes.
  */
-import type { HandPhase } from "./constants.js";
+import { HAND_VOID_REASON_MAX_LENGTH, RAKE_BPS_DENOMINATOR, RAKE_MAX_BPS, type HandPhase } from "./constants.js";
 import { RANKS, SUITS, type Card } from "./poker.js";
 
 /** Salted Merkle opening for one deck position. */
 export interface CardProof { index: number; card: Card; salt: string; siblings: string[] }
 
-export const HAND_AUDIT_VERSION = "poker-hand-audit-v1" as const;
+/**
+ * Audit format versions. Every new hand is written as v2; v1 records (hands
+ * dealt before rake, voiding and time-bank pools existed) stay valid forever
+ * and verify exactly as they always did.
+ *
+ * v2 adds, compared with v1:
+ * - HAND_STARTED: the rake terms in force for the hand (rakeBps, rakeCapChips,
+ *   rakeNoFlopNoDrop), the base turn time (turnTimeMs) and, when the personal
+ *   time bank is enabled, each dealt seat's pool at the deal (timeBankPools,
+ *   null otherwise), so an independent replay can check timeout timing;
+ * - POTS_AWARDED: `rake` {total, perPot:[{potIndex, amount}]}. Pot amounts
+ *   stay gross (the chips contested); each pot's winners share its amount
+ *   minus its rake. HAND_SETTLED.chipTotal is still the hand's chip total,
+ *   which now equals the final stacks plus the rake;
+ * - HAND_VOIDED {reason}: staff voided the hand; every committed chip went
+ *   back to its owner (see the engine's voidHand). It is followed directly by
+ *   HAND_SETTLED with reason "void" and the starting stacks.
+ *
+ * The next engine step (auto-muck) also writes v2: it extends this same
+ * version rather than adding a v3. A v1 record can never contain any of the
+ * v2 fields or events above.
+ */
+export const HAND_AUDIT_VERSION_V1 = "poker-hand-audit-v1" as const;
+export const HAND_AUDIT_VERSION = "poker-hand-audit-v2" as const;
+export type HandAuditVersion = typeof HAND_AUDIT_VERSION_V1 | typeof HAND_AUDIT_VERSION;
+export const HAND_AUDIT_VERSIONS: readonly HandAuditVersion[] = Object.freeze([HAND_AUDIT_VERSION_V1, HAND_AUDIT_VERSION]);
 export const SEALED_AUDIT_VERSION = "poker-hand-sealed-v1" as const;
 /** Merkle tree width. Leaves 52..63 are salted padding with a null card. */
 export const MERKLE_LEAVES = 64;
@@ -86,8 +111,11 @@ export type AuditEventType =
   | "STREET_DEALT"
   | "PLAYER_ACTION"
   | "PLAYER_STATUS"
+  | "TURN_CLOCK_RESET"
   | "SHOWDOWN"
   | "POTS_AWARDED"
+  /** v2 only: staff voided the hand and returned every committed chip. */
+  | "HAND_VOIDED"
   | "HAND_SETTLED";
 
 export interface AuditEvent {
@@ -103,7 +131,7 @@ export interface AuditEvent {
 }
 
 export interface HandAuditHeader {
-  version: typeof HAND_AUDIT_VERSION;
+  version: HandAuditVersion;
   handId: string;
   tableId: string;
   handNumber: number;
@@ -228,6 +256,73 @@ export function burnPositions(dealtCount: number): number[] {
 }
 
 // ---------------------------------------------------------------------------
+// Rake (single source of truth for the engine's settlement and the verifiers)
+// ---------------------------------------------------------------------------
+
+/**
+ * The rake terms a hand is dealt under. Recorded in v2 HAND_STARTED, so a
+ * hand is always settled and verified under the terms in force when it was
+ * dealt, even if the table's configuration changes later.
+ * - rakeBps: integer 0..RAKE_MAX_BPS, basis points of the chips contested;
+ * - rakeCapChips: integer >= 0, the most a hand can be raked. 0 means no
+ *   rake at all (the rake is min(cap, ...)), not "uncapped";
+ * - rakeNoFlopNoDrop: no rake unless a flop was dealt (all-in runouts count).
+ */
+export interface RakeTerms {
+  rakeBps: number;
+  rakeCapChips: number;
+  rakeNoFlopNoDrop: boolean;
+}
+
+/** The terms of a table that takes no rake (also every v1 hand). */
+export const NO_RAKE: RakeTerms = Object.freeze({ rakeBps: 0, rakeCapChips: 0, rakeNoFlopNoDrop: true });
+
+export function validRakeTerms(terms: unknown): terms is RakeTerms {
+  if (!isPlainObject(terms)) return false;
+  const { rakeBps, rakeCapChips, rakeNoFlopNoDrop } = terms;
+  return Number.isSafeInteger(rakeBps) && (rakeBps as number) >= 0 && (rakeBps as number) <= RAKE_MAX_BPS &&
+    Number.isSafeInteger(rakeCapChips) && (rakeCapChips as number) >= 0 && typeof rakeNoFlopNoDrop === "boolean";
+}
+
+/**
+ * Chips raked from a hand: min(cap, floor(contested x bps / 10000)), or 0
+ * when no flop was dealt under "no flop, no drop". `contested` is the sum of
+ * the pots, which never includes a returned uncalled bet. Integer arithmetic
+ * only: contested x bps stays far below 2^53 for any stack the engine allows.
+ */
+export function rakeFor(contested: number, terms: RakeTerms, flopDealt: boolean): number {
+  if (!Number.isSafeInteger(contested) || contested < 0 || !validRakeTerms(terms)) throw new RangeError("Invalid rake input");
+  if (terms.rakeNoFlopNoDrop && !flopDealt) return 0;
+  const product = contested * terms.rakeBps;
+  if (!Number.isSafeInteger(product)) throw new RangeError("Rake computation out of range");
+  return Math.min(terms.rakeCapChips, (product - (product % RAKE_BPS_DENOMINATOR)) / RAKE_BPS_DENOMINATOR);
+}
+
+/**
+ * Take `total` out of the pots: main pot first, then each side pot in order,
+ * never driving a pot below zero. Returns the per-pot deduction, listing only
+ * pots that were actually raked (so a hand without rake has an empty list).
+ */
+export function rakeByPot(potAmounts: readonly number[], total: number): { potIndex: number; amount: number }[] {
+  const perPot: { potIndex: number; amount: number }[] = [];
+  let left = total;
+  potAmounts.forEach((amount, potIndex) => {
+    if (left <= 0) return;
+    const take = Math.min(left, amount);
+    if (take > 0) perPot.push({ potIndex, amount: take });
+    left -= take;
+  });
+  if (left !== 0) throw new RangeError("Rake exceeds the pots");
+  return perPot;
+}
+
+/** A staff void reason: 1..HAND_VOID_REASON_MAX_LENGTH printable characters, not blank. */
+export function validVoidReason(reason: unknown): reason is string {
+  // eslint-disable-next-line no-control-regex
+  return typeof reason === "string" && reason.trim().length > 0 && reason.length <= HAND_VOID_REASON_MAX_LENGTH && !/[\u0000-\u001f\u007f]/.test(reason);
+}
+
+// ---------------------------------------------------------------------------
 // WebCrypto verification
 // ---------------------------------------------------------------------------
 
@@ -277,11 +372,85 @@ const EVENT_KEYS: ReadonlySet<string> = new Set(["seq", "type", "phase", "at", "
 const SEALED_KEYS: ReadonlySet<string> = new Set(["version", "handId", "deck", "deckSalt", "merkleSalts"]);
 const PARTICIPANT_KEYS: ReadonlySet<string> = new Set(["record", "viewerSeat", "proofs"]);
 const PROOF_KEYS: ReadonlySet<string> = new Set(["index", "card", "salt", "siblings"]);
-const EVENT_TYPES: ReadonlySet<string> = new Set<AuditEventType>([
-  "HAND_STARTED", "BLIND_POSTED", "HOLE_CARDS_DEALT", "STREET_DEALT", "PLAYER_ACTION", "PLAYER_STATUS", "SHOWDOWN", "POTS_AWARDED", "HAND_SETTLED",
+const EVENT_TYPES_V1: ReadonlySet<string> = new Set<AuditEventType>([
+  "HAND_STARTED", "BLIND_POSTED", "HOLE_CARDS_DEALT", "STREET_DEALT", "PLAYER_ACTION", "PLAYER_STATUS", "TURN_CLOCK_RESET", "SHOWDOWN", "POTS_AWARDED",
+  "HAND_SETTLED",
 ]);
+/** v2 adds HAND_VOIDED; a v1 record that contains one is refused as an unknown type. */
+const EVENT_TYPES_V2: ReadonlySet<string> = new Set<string>([...EVENT_TYPES_V1, "HAND_VOIDED"]);
+const EVENT_TYPES: Readonly<Record<HandAuditVersion, ReadonlySet<string>>> = {
+  [HAND_AUDIT_VERSION_V1]: EVENT_TYPES_V1,
+  [HAND_AUDIT_VERSION]: EVENT_TYPES_V2,
+};
+const VERSIONS: ReadonlySet<unknown> = new Set(HAND_AUDIT_VERSIONS);
+/** v2 HAND_STARTED fields that v1 never had (see HAND_AUDIT_VERSION). */
+const V2_STARTED_KEYS = ["rakeBps", "rakeCapChips", "rakeNoFlopNoDrop", "turnTimeMs", "timeBankPools"] as const;
+const HAND_VOIDED_KEYS: ReadonlySet<string> = new Set(["reason"]);
+const RAKE_KEYS: ReadonlySet<string> = new Set(["total", "perPot"]);
+const SEAT_AMOUNT_KEYS: ReadonlySet<string> = new Set(["seatIndex", "amount"]);
+const POT_RAKE_KEYS: ReadonlySet<string> = new Set(["potIndex", "amount"]);
+const POOL_KEYS: ReadonlySet<string> = new Set(["seatIndex", "extraTimeMs"]);
+
+/** The rake terms recorded in a hand's HAND_STARTED: v2 only; every v1 hand was unraked. */
+export function handRakeTerms(record: HandAuditRecord): RakeTerms {
+  if (record.version !== HAND_AUDIT_VERSION) return NO_RAKE;
+  const data = record.events[0]?.data;
+  const terms = { rakeBps: data?.rakeBps, rakeCapChips: data?.rakeCapChips, rakeNoFlopNoDrop: data?.rakeNoFlopNoDrop };
+  if (!validRakeTerms(terms)) throw new Error("HAND_STARTED has invalid rake terms");
+  return terms;
+}
+
+/**
+ * Format of the v2-only HAND_STARTED fields, or null when they are valid.
+ * A v1 record must not carry any of them (it would claim terms its version
+ * cannot express). In v2: valid rake terms, a positive base turn time, and
+ * either no time-bank pools (null) or exactly one whole, non-negative pool
+ * per dealt seat, in deal order.
+ */
+export function handStartedTermsProblem(record: HandAuditRecord): string | null {
+  const data = record.events[0]?.data;
+  if (!isPlainObject(data)) return "HAND_STARTED has no data";
+  if (record.version !== HAND_AUDIT_VERSION) {
+    return V2_STARTED_KEYS.some((key) => key in data) ? `A ${record.version} record cannot carry v2 hand terms` : null;
+  }
+  if (V2_STARTED_KEYS.some((key) => !(key in data))) return "HAND_STARTED is missing the v2 hand terms";
+  if (!validRakeTerms({ rakeBps: data.rakeBps, rakeCapChips: data.rakeCapChips, rakeNoFlopNoDrop: data.rakeNoFlopNoDrop })) return "HAND_STARTED has invalid rake terms";
+  if (!Number.isSafeInteger(data.turnTimeMs) || (data.turnTimeMs as number) <= 0) return "HAND_STARTED has an invalid turn time";
+  const pools = data.timeBankPools;
+  if (pools === null) return null;
+  const dealtSeats = data.dealtSeats;
+  if (!Array.isArray(pools) || !Array.isArray(dealtSeats) || pools.length !== dealtSeats.length ||
+      pools.some((row, i) => !isPlainObject(row) || extraKey(row, POOL_KEYS) !== null || row.seatIndex !== dealtSeats[i] ||
+        !Number.isSafeInteger(row.extraTimeMs) || (row.extraTimeMs as number) < 0)) return "HAND_STARTED time-bank pools do not match the dealt seats";
+  return null;
+}
 const EVENT_PHASES: ReadonlySet<string> = new Set<HandPhase>(["PREFLOP", "FLOP", "TURN", "RIVER", "SHOWDOWN"]);
 const FOLD_ACTIONS: ReadonlySet<unknown> = new Set(["FOLD", "TIMEOUT_FOLD"]);
+const BETTING_PHASES: ReadonlySet<unknown> = new Set<HandPhase>(["PREFLOP", "FLOP", "TURN", "RIVER"]);
+/** TURN_CLOCK_RESET data, exactly: the seat whose clock restarted and why. */
+const TURN_CLOCK_RESET_KEYS: ReadonlySet<string> = new Set(["seatIndex", "reason"]);
+const TURN_CLOCK_RESET_REASONS: ReadonlySet<unknown> = new Set(["SERVER_RESUME"]);
+
+/**
+ * Structural check of one TURN_CLOCK_RESET event (the server restarted the
+ * pending actor's clock after downtime): exactly {seatIndex, reason}, a known
+ * reason, during a betting round, for a dealt seat that has not folded (only
+ * a player still in the hand can be the one to act). Returns the failure, or
+ * null. The engine's verifyHandOutcome also checks the seat still had chips.
+ */
+export function turnClockResetProblem(event: AuditEvent, dealtSeats: readonly number[], folded: ReadonlySet<number>): string | null {
+  const data = event.data;
+  if (!isPlainObject(data) || extraKey(data, TURN_CLOCK_RESET_KEYS) !== null || Object.keys(data).length !== TURN_CLOCK_RESET_KEYS.size) {
+    return `TURN_CLOCK_RESET at event ${String(event.seq)} has unexpected data`;
+  }
+  if (!TURN_CLOCK_RESET_REASONS.has(data.reason)) return `TURN_CLOCK_RESET at event ${String(event.seq)} has an unknown reason`;
+  if (!BETTING_PHASES.has(event.phase)) return `TURN_CLOCK_RESET at event ${String(event.seq)} is outside a betting round`;
+  const seat = data.seatIndex;
+  if (typeof seat !== "number" || !dealtSeats.includes(seat) || folded.has(seat)) {
+    return `TURN_CLOCK_RESET at event ${String(event.seq)} names seat ${String(seat)}, which cannot be the one to act`;
+  }
+  return null;
+}
 
 function extraKey(value: Record<string, unknown>, allowed: ReadonlySet<string>): string | null {
   return Object.keys(value).find((key) => !allowed.has(key)) ?? null;
@@ -304,7 +473,8 @@ export async function holeCardsDigest(handId: string, cards: readonly [Card, Car
  */
 export async function verifyAuditRecord(record: HandAuditRecord, opts: { requireSettled?: boolean } = {}): Promise<AuditCheck> {
   try {
-    if (!isPlainObject(record) || record.version !== HAND_AUDIT_VERSION) return fail("Unsupported audit version");
+    if (!isPlainObject(record) || !VERSIONS.has(record.version)) return fail("Unsupported audit version");
+    const eventTypes = EVENT_TYPES[record.version];
     const extra = extraKey(record, RECORD_KEYS);
     if (extra !== null) return fail(`Unexpected record field "${extra}"`);
     if (typeof record.handId !== "string" || !UUID_V4.test(record.handId)) return fail("Hand id is not a UUID v4");
@@ -324,7 +494,7 @@ export async function verifyAuditRecord(record: HandAuditRecord, opts: { require
       const extraEventKey = extraKey(event, EVENT_KEYS);
       if (extraEventKey !== null) return fail(`Event ${i} has unexpected field "${extraEventKey}"`);
       if (event.seq !== i) return fail(`Event ${i} has sequence ${String(event.seq)}`);
-      if (!EVENT_TYPES.has(event.type)) return fail(`Event ${i} has unknown type`);
+      if (!eventTypes.has(event.type)) return fail(`Event ${i} has unknown type`);
       if (!EVENT_PHASES.has(event.phase)) return fail(`Event ${i} has unknown phase`);
       if ((i === 0) !== (event.type === "HAND_STARTED")) return fail("HAND_STARTED must be the first event, exactly once");
       if (typeof event.at !== "string" || !UTC_ISO.test(event.at)) return fail(`Event ${i} time is not UTC ISO-8601`);
@@ -333,6 +503,16 @@ export async function verifyAuditRecord(record: HandAuditRecord, opts: { require
       const { hash, ...body } = event;
       if (await sha256HexAsync(eventPreimage(record.handId, body)) !== hash) return fail(`Event ${i} hash mismatch`);
       prev = hash;
+    }
+    const termsProblem = handStartedTermsProblem(record);
+    if (termsProblem !== null) return fail(termsProblem);
+    // A void is written atomically with its settlement: HAND_VOIDED is always
+    // the event directly before the final HAND_SETTLED, and carries only a reason.
+    const voided = record.events.filter((event) => event.type === "HAND_VOIDED");
+    if (voided.length > 0) {
+      const event = voided[0]!;
+      if (voided.length > 1 || record.events.at(-2) !== event || record.events.at(-1)!.type !== "HAND_SETTLED") return fail("HAND_VOIDED must directly precede HAND_SETTLED, exactly once");
+      if (extraKey(event.data, HAND_VOIDED_KEYS) !== null || !validVoidReason(event.data.reason)) return fail("HAND_VOIDED has malformed data");
     }
 
     const settled = record.events.at(-1)!.type === "HAND_SETTLED";
@@ -422,6 +602,9 @@ function dealtLayout(record: HandAuditRecord): DealtLayout | string {
       }
       burns.push(burnPosition as number);
       (cards as Card[]).forEach((card, i) => board.push({ position: want[i]!, card }));
+    } else if (event.type === "TURN_CLOCK_RESET") {
+      const problem = turnClockResetProblem(event, seats, folded);
+      if (problem !== null) return problem;
     } else if (event.type === "PLAYER_ACTION" || event.type === "BLIND_POSTED" || event.type === "PLAYER_STATUS") {
       const seat = event.data.seatIndex as number;
       if (!holeBySeat.has(seat)) return `${event.type} for a seat that was not dealt in`;
@@ -456,13 +639,143 @@ function dealtLayout(record: HandAuditRecord): DealtLayout | string {
       if (shown.size !== contenders.length || contenders.some((seat) => !shown.has(seat))) return "Showdown must table exactly the hands that did not fold";
     } else if (settledReason === "fold") {
       if (showdowns !== 0 || contenders.length !== 1) return "A hand won by folds has one remaining player and no showdown";
+    } else if (settledReason === "void") {
+      // Only a v2 record can be voided (verifyAuditRecord placed HAND_VOIDED); nothing is tabled or awarded.
+      if (record.version !== HAND_AUDIT_VERSION || record.events.at(-2)?.type !== "HAND_VOIDED") return "A void settlement must follow HAND_VOIDED";
+      if (showdowns !== 0 || record.events.some((event) => event.type === "POTS_AWARDED")) return "A voided hand has no showdown and no awards";
     } else {
       return "Unknown settlement reason";
     }
+    if (settledReason !== "void" && record.events.some((event) => event.type === "HAND_VOIDED")) return "A voided hand must settle as void";
   }
   const visible = [...board.map((entry) => entry.card), ...[...shown.values()].flat()];
   if (new Set(visible).size !== visible.length) return "A visible card appears more than once";
   return { dealtSeats: seats, holeBySeat, board, burns, folded, shown };
+}
+
+const AWARD_KEYS_V2: ReadonlySet<string> = new Set(["pots", "refunds", "payouts", "rake"]);
+const POT_KEYS: ReadonlySet<string> = new Set(["potIndex", "amount", "eligibleSeatIndexes", "winnerSeatIndexes", "oddChipSeatIndex"]);
+
+/** Seat order for odd chips: clockwise from the seat left of the button (as the engine's splitOddChips). */
+function oddChipOrder(dealerSeat: number, maxSeats: number): number[] {
+  return Array.from({ length: maxSeats }, (_, i) => (dealerSeat + 1 + i) % maxSeats);
+}
+
+/**
+ * Money replay of a settled v2 record that needs no hidden card and no hand
+ * evaluator, so a participant's browser can run it. It recomputes:
+ * - every seat's contribution from the blinds and actions, against its stack;
+ * - the returned uncalled bet, and so the chips actually contested;
+ * - the rake, exactly: from the HAND_STARTED terms, the contested chips and
+ *   whether a flop was dealt, taken from the main pot first, then the side
+ *   pots in order (`rakeFor`, `rakeByPot`);
+ * - every payout from each pot's recorded winners: the pot minus its rake,
+ *   split evenly, odd chips clockwise from the left of the button;
+ * - the final stacks, and that stacks plus rake equal the hand's chip total.
+ * A voided hand (reason "void") must end with every starting stack intact.
+ * Which hands won is not judged here (that needs the evaluator; see the
+ * engine's verifyHandOutcome). v1 records are not checked (they verify
+ * exactly as before). Returns the failure, or null.
+ */
+export function settlementMoneyProblem(record: HandAuditRecord): string | null {
+  if (record.version !== HAND_AUDIT_VERSION) return null;
+  const events = record.events;
+  const started = events[0]!.data;
+  const dealtSeats = started.dealtSeats as number[];
+  const start = new Map<number, number>();
+  for (const row of started.seats as { seatIndex: number; stack: unknown }[]) {
+    if (!Number.isSafeInteger(row.stack) || (row.stack as number) <= 0) return `Invalid starting stack for seat ${row.seatIndex}`;
+    start.set(row.seatIndex, row.stack as number);
+  }
+  const chipTotal = [...start.values()].reduce((sum, chips) => sum + chips, 0);
+  if (started.chipTotal !== chipTotal) return "HAND_STARTED chip total differs from the starting stacks";
+  const stack = new Map(start);
+  const committed = new Map(dealtSeats.map((seat) => [seat, 0]));
+  let flopDealt = false;
+  let awards: AuditEvent | null = null;
+  for (const event of events) {
+    if (event.type === "BLIND_POSTED" || event.type === "PLAYER_ACTION") {
+      if (awards) return "Chips moved after the pots were awarded";
+      const seat = event.data.seatIndex as number;
+      const amount = event.data.amount;
+      const before = stack.get(seat);
+      if (before === undefined || !Number.isSafeInteger(amount) || (amount as number) < 0 || (amount as number) > before) return `Invalid amount at event ${event.seq}`;
+      stack.set(seat, before - (amount as number));
+      committed.set(seat, committed.get(seat)! + (amount as number));
+    } else if (event.type === "STREET_DEALT" && event.data.street === "FLOP") {
+      flopDealt = true;
+    } else if (event.type === "POTS_AWARDED") {
+      if (awards) return "More than one POTS_AWARDED event";
+      awards = event;
+    }
+  }
+  const settled = events.at(-1)!;
+  if (settled.type !== "HAND_SETTLED") return "Hand is not settled";
+  let rake = 0;
+  const payouts = new Map<number, number>();
+  if (settled.data.reason === "void") {
+    if (awards) return "A voided hand has no awards";
+    // Every committed chip went back: the final stacks are the starting stacks.
+    for (const [seat, chips] of committed) payouts.set(seat, chips);
+  } else {
+    if (!awards || events.at(-2) !== awards) return "A settled hand ends with POTS_AWARDED then HAND_SETTLED";
+    const data = awards.data;
+    if (extraKey(data, AWARD_KEYS_V2) !== null || !Array.isArray(data.pots) || !Array.isArray(data.refunds) || !Array.isArray(data.payouts) ||
+        !isPlainObject(data.rake) || extraKey(data.rake, RAKE_KEYS) !== null) return "POTS_AWARDED is malformed";
+    // The uncalled part of the single largest contribution is returned before any pot is built.
+    let maxSeat = -1;
+    let max = 0;
+    let second = 0;
+    for (const seat of [...dealtSeats].sort((a, b) => a - b)) {
+      const chips = committed.get(seat)!;
+      if (chips > max) [second, max, maxSeat] = [max, chips, seat];
+      else if (chips > second) second = chips;
+    }
+    const refund = max - second;
+    const expectedRefunds = refund > 0 ? [{ seatIndex: maxSeat, amount: refund }] : [];
+    if (canonicalJson(expectedRefunds) !== canonicalJson(data.refunds)) return "Returned uncalled bet differs from the contributions";
+    if (refund > 0) payouts.set(maxSeat, refund);
+    const contested = [...committed.values()].reduce((sum, chips) => sum + chips, 0) - refund;
+
+    const pots = data.pots as unknown[];
+    const amounts: number[] = [];
+    for (const [i, pot] of pots.entries()) {
+      if (!isPlainObject(pot) || extraKey(pot, POT_KEYS) !== null || pot.potIndex !== i || !Number.isSafeInteger(pot.amount) || (pot.amount as number) <= 0 ||
+          !Array.isArray(pot.eligibleSeatIndexes) || !Array.isArray(pot.winnerSeatIndexes)) return `Pot ${i} is malformed`;
+      const eligible = pot.eligibleSeatIndexes as unknown[];
+      const winners = pot.winnerSeatIndexes as unknown[];
+      if (eligible.some((seat) => !dealtSeats.includes(seat as number)) || winners.some((seat) => !eligible.includes(seat)) ||
+          new Set(winners).size !== winners.length || (eligible.length > 0) !== (winners.length > 0)) return `Pot ${i} has invalid winners`;
+      amounts.push(pot.amount as number);
+    }
+    if (amounts.reduce((sum, chips) => sum + chips, 0) !== contested) return "Pots differ from the chips contested";
+    rake = rakeFor(contested, handRakeTerms(record), flopDealt);
+    const perPot = rakeByPot(amounts, rake);
+    if (canonicalJson({ total: rake, perPot }) !== canonicalJson(data.rake)) return "Rake differs from the hand's rake terms";
+
+    const order = oddChipOrder(started.dealerSeat as number, started.maxSeats as number);
+    pots.forEach((pot, i) => {
+      const winners = (pot as { winnerSeatIndexes: number[] }).winnerSeatIndexes;
+      if (winners.length === 0) return;
+      const net = amounts[i]! - (perPot.find((row) => row.potIndex === i)?.amount ?? 0);
+      let odd = net % winners.length;
+      for (const seat of order) {
+        if (!winners.includes(seat)) continue;
+        const share = (net - (net % winners.length)) / winners.length + (odd > 0 ? 1 : 0);
+        if (odd > 0) odd -= 1;
+        payouts.set(seat, (payouts.get(seat) ?? 0) + share);
+      }
+    });
+    const recorded = data.payouts as unknown[];
+    if (recorded.some((row) => !isPlainObject(row) || extraKey(row, SEAT_AMOUNT_KEYS) !== null || !Number.isSafeInteger(row.amount) || (row.amount as number) < 0)) return "Payouts are malformed";
+    const nonZero = (rows: { seatIndex: number; amount: number }[]) => rows.filter((row) => row.amount !== 0);
+    const expectedPayouts = [...payouts].sort(([a], [b]) => a - b).map(([seatIndex, amount]) => ({ seatIndex, amount }));
+    if (canonicalJson(nonZero(expectedPayouts)) !== canonicalJson(nonZero(recorded as { seatIndex: number; amount: number }[]))) return "Payouts differ from the pots, winners and rake";
+  }
+  const stacks = dealtSeats.map((seat) => ({ seatIndex: seat, stack: stack.get(seat)! + (payouts.get(seat) ?? 0) }));
+  if (canonicalJson(stacks) !== canonicalJson(settled.data.stacks)) return "Final stacks differ from a replay of the hand";
+  if (stacks.reduce((sum, row) => sum + row.stack, 0) + rake !== chipTotal || settled.data.chipTotal !== chipTotal) return "Chips were not conserved (final stacks plus rake must equal the hand's chips)";
+  return null;
 }
 
 /**
@@ -493,6 +806,8 @@ export async function verifyParticipantAudit(audit: ParticipantHandAudit, observ
     }
     const layout = dealtLayout(record);
     if (typeof layout === "string") return fail(layout);
+    const money = settlementMoneyProblem(record);
+    if (money !== null) return fail(money);
     const own = layout.holeBySeat.get(viewerSeat);
     if (!own) return fail("Viewer was not dealt into this hand");
     if (observed.userId !== undefined) {
@@ -562,6 +877,8 @@ export async function verifySealedAudit(record: HandAuditRecord, sealed: SealedH
     if (root !== record.merkleRoot) return fail("Merkle root does not match the sealed deck");
     const layout = dealtLayout(record);
     if (typeof layout === "string") return fail(layout);
+    const money = settlementMoneyProblem(record);
+    if (money !== null) return fail(money);
     for (const { position, card } of layout.board) if (sealed.deck[position] !== card) return fail(`Board card at position ${position} was not dealt from the committed deck`);
     for (const [seat, cards] of layout.shown) {
       const [a, b] = layout.holeBySeat.get(seat)!;

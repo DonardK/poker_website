@@ -1,4 +1,4 @@
-import type { Card, PotShare } from "@poker/shared";
+import { NO_RAKE, rakeByPot, rakeFor, type Card, type PotShare, type RakeTerms } from "@poker/shared";
 import { evaluate, type EvaluatedHand } from "./evaluate.js";
 
 export interface Contribution {
@@ -131,20 +131,41 @@ export function splitOddChips(
   return { payouts, oddChipSeatIndex };
 }
 
+export interface RakeTaken {
+  total: number;
+  /** Deduction per pot (main pot first), listing only pots actually raked. */
+  perPot: { potIndex: number; amount: number }[];
+}
+
+/**
+ * Settle the pots. Uncalled bets go back first; the rest is the chips
+ * contested. With `rake` terms (omitted = no rake) the rake is
+ * min(cap, floor(contested x bps / 10000)), or 0 when no flop was dealt
+ * under "no flop, no drop" (a flop was dealt when the board has 3+ cards,
+ * all-in runouts included). It comes out of the main pot first, then the
+ * side pots in order. Each pot's winners share what is left of it, with the
+ * usual odd-chip rule. The returned pots keep their gross amounts (what was
+ * contested); payouts are net of rake.
+ */
 export function awardPots(opts: {
   contribs: readonly Contribution[];
   holeCards: Record<number, [Card, Card]>;
   board: readonly Card[];
   dealerSeat: number;
   maxSeats: number;
+  rake?: RakeTerms;
 }): {
   returned: Map<number, number>;
   pots: PotShare[];
   payouts: Map<number, number>;
   evaluations: Map<number, EvaluatedHand>;
+  rake: RakeTaken;
 } {
   const { returned, adjusted } = returnUncalledBets(opts.contribs);
   const built = mergePotsByEligibility(buildSidePots(adjusted));
+  const contested = built.reduce((sum, pot) => sum + pot.amount, 0);
+  const total = rakeFor(contested, opts.rake ?? NO_RAKE, opts.board.length >= 3);
+  const perPot = rakeByPot(built.map((pot) => pot.amount), total);
   const evaluations = new Map<number, EvaluatedHand>();
   const payouts = new Map<number, number>();
   const add = (seat: number, amt: number) => payouts.set(seat, (payouts.get(seat) ?? 0) + amt);
@@ -152,6 +173,8 @@ export function awardPots(opts: {
   for (const [seat, amt] of returned) add(seat, amt);
 
   const pots: PotShare[] = built.map((pot) => {
+    // What the winners share: the pot less the rake taken from it.
+    const net = pot.amount - (perPot.find((row) => row.potIndex === pot.potIndex)?.amount ?? 0);
     const eligible = pot.eligibleSeatIndexes;
     if (eligible.length === 0) {
       return {
@@ -163,7 +186,7 @@ export function awardPots(opts: {
       };
     }
     if (eligible.length === 1) {
-      add(eligible[0]!, pot.amount);
+      add(eligible[0]!, net);
       return {
         potIndex: pot.potIndex,
         amount: pot.amount,
@@ -183,7 +206,7 @@ export function awardPots(opts: {
       if (ev.rankValue > best) best = ev.rankValue;
     }
     const winners = scores.filter((s) => s.value === best).map((s) => s.seat);
-    const split = splitOddChips(pot.amount, winners, opts.dealerSeat, opts.maxSeats);
+    const split = splitOddChips(net, winners, opts.dealerSeat, opts.maxSeats);
     for (const [seat, amt] of split.payouts) add(seat, amt);
     return {
       potIndex: pot.potIndex,
@@ -194,7 +217,7 @@ export function awardPots(opts: {
     };
   });
 
-  return { returned, pots, payouts, evaluations };
+  return { returned, pots, payouts, evaluations, rake: { total, perPot } };
 }
 
 export function totalChips(contribs: readonly Contribution[], stacks: Record<number, number>): number {
