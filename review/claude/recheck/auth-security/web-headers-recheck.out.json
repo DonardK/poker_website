@@ -1,0 +1,47 @@
+{
+  "/": {
+    "csp": "default-src 'self'; script-src 'self' 'nonce-D5Mb+cNaj1CdjFyDroWiBA==' 'strict-dynamic'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://poker.example.com wss://poker.example.com; img-src 'self' data: blob:; font-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; upgrade-insecure-requests",
+    "forwardsNonceToRender": true
+  },
+  "/login": {
+    "csp": "default-src 'self'; script-src 'self' 'nonce-DRRnsnuGR+9MJVTWgSeHDg==' 'strict-dynamic'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://poker.example.com wss://poker.example.com; img-src 'self' data: blob:; font-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; upgrade-insecure-requests",
+    "forwardsNonceToRender": true
+  },
+  "/table/x": {
+    "csp": "default-src 'self'; script-src 'self' 'nonce-OlnClyfc73hrDPvQSP9t+Q==' 'strict-dynamic'; style-src 'self' 'unsafe-inline'; connect-src 'self' https://poker.example.com wss://poker.example.com; img-src 'self' data: blob:; font-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'; form-action 'self'; upgrade-insecure-requests",
+    "forwardsNonceToRender": true
+  },
+  "productionPolicyHasNoUnsafeEval": true,
+  "nonceDiffersPerRequest": true,
+  "policyDiffersOnlyByNonce": true,
+  "matcher": [
+    {
+      "source": "/((?!_next/static|_next/image|favicon.ico).*)",
+      "missing": [
+        {
+          "type": "header",
+          "key": "next-router-prefetch"
+        },
+        {
+          "type": "header",
+          "key": "purpose",
+          "value": "prefetch"
+        }
+      ]
+    }
+  ],
+  "nextConfigHeaders": [
+    {
+      "source": "/:path*",
+      "headers": {
+        "X-Frame-Options": "DENY",
+        "Referrer-Policy": "strict-origin-when-cross-origin",
+        "X-Content-Type-Options": "nosniff",
+        "Permissions-Policy": "camera=(), microphone=(), geolocation=(), payment=()",
+        "Cross-Origin-Opener-Policy": "same-origin",
+        "Strict-Transport-Security": "max-age=63072000; includeSubDomains"
+      }
+    }
+  ],
+  "poweredByHeader": false
+}

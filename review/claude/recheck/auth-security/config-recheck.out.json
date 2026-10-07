@@ -1,0 +1,102 @@
+{
+  "CR-040 DEFAULT_STARTING_BANKROLL=2147483648": {
+    "ok": false,
+    "error": "["
+  },
+  "CR-040 TURN_TIME_BANK_MS=2147483648": {
+    "ok": false,
+    "error": "["
+  },
+  "CR-040 JWT_ACCESS_TTL=not-a-duration": {
+    "ok": false,
+    "error": "JWT_ACCESS_TTL must be an integer number of seconds or an integer with a unit s, m, h or d (e.g. \"15m\", \"7d\")"
+  },
+  "CR-040 JWT_ACCESS_TTL=900 (bare seconds)": {
+    "ok": true,
+    "HOST": "0.0.0.0",
+    "JWT_ACCESS_TTL": "900s",
+    "bankroll": 10000,
+    "idleMs": 604800000
+  },
+  "CR-040 JWT_ACCESS_TTL=61m": {
+    "ok": false,
+    "error": "JWT_ACCESS_TTL must be between 1 minute and 60 minutes"
+  },
+  "CR-040 JWT_ACCESS_TTL=60s (below the 10 min client refresh)": {
+    "ok": true,
+    "HOST": "0.0.0.0",
+    "JWT_ACCESS_TTL": "60s",
+    "bankroll": 10000,
+    "idleMs": 604800000
+  },
+  "CR-040 JWT_ACCESS_TTL=9m (below the 10 min client refresh)": {
+    "ok": true,
+    "HOST": "0.0.0.0",
+    "JWT_ACCESS_TTL": "540s",
+    "bankroll": 10000,
+    "idleMs": 604800000
+  },
+  "CR-040 TIME_BANK_INITIAL_MS=2147483648": {
+    "ok": false,
+    "error": "["
+  },
+  "CR-040 SESSION_IDLE_TTL=forever": {
+    "ok": false,
+    "error": "SESSION_IDLE_TTL must be a duration between 1 minute and 366 days (e.g. \"7d\"), got \"forever\""
+  },
+  "F11 prod: all-zero key reused as access secret": {
+    "ok": false,
+    "error": "Encryption key \"k0\" repeats a single byte; generate a random key"
+  },
+  "F11 prod: random key reused as access secret": {
+    "ok": false,
+    "error": "JWT_ACCESS_SECRET reuses encryption key \"k0\"; every purpose needs an independent secret"
+  },
+  "F11 prod: independent strong secrets": {
+    "ok": true,
+    "HOST": "0.0.0.0",
+    "JWT_ACCESS_TTL": "900s",
+    "bankroll": 10000,
+    "idleMs": 604800000
+  },
+  "CR-012 prod: two *.vercel.app hosts": {
+    "ok": false,
+    "error": "COOKIE_SITE \"vercel.app\" is a shared-hosting suffix: every subdomain under it is a separate site, so the SameSite=Strict refresh cookie would never be sent. The refresh c"
+  },
+  "CR-012 prod: web vercel.app, API onrender.com": {
+    "ok": false,
+    "error": "The refresh cookie is SameSite=Strict and host-only on the API host (poker-api.onrender.com); browsers send it from the web app (poker.vercel.app) only when both are the "
+  },
+  "CR-012 prod: web vercel.app, PUBLIC_API_ORIGIN left unset": {
+    "ok": true,
+    "HOST": "0.0.0.0",
+    "JWT_ACCESS_TTL": "900s",
+    "bankroll": 10000,
+    "idleMs": 604800000
+  },
+  "CR-012 prod: app./api.example.com with COOKIE_SITE": {
+    "ok": true,
+    "HOST": "0.0.0.0",
+    "JWT_ACCESS_TTL": "900s",
+    "bankroll": 10000,
+    "idleMs": 604800000
+  },
+  "CR-012 prod: app./api.co.uk with COOKIE_SITE=co.uk (a public suffix)": {
+    "ok": true,
+    "HOST": "0.0.0.0",
+    "JWT_ACCESS_TTL": "900s",
+    "bankroll": 10000,
+    "idleMs": 604800000
+  },
+  "F15 prod: proxy hops without TRUSTED_PROXY_CIDRS": {
+    "ok": false,
+    "error": "Production proxy mode (TRUST_PROXY_HOPS >= 1) requires TRUSTED_PROXY_CIDRS: the proxy addresses or networks allowed to set X-Forwarded-Proto/For (\"private\" = loopback, RF"
+  },
+  "F15 prod: HOST left unset": {
+    "ok": true,
+    "HOST": "0.0.0.0",
+    "JWT_ACCESS_TTL": "900s",
+    "bankroll": 10000,
+    "idleMs": 604800000
+  }
+}

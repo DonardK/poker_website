@@ -1,0 +1,32 @@
+[
+  {
+    "label": "1: a refresh had already failed (retry pending) when the player signed out offline",
+    "signedInAs": "Guest_0011223344",
+    "apiOfflineAtSignOut": true,
+    "logout": "logout failed: notice shown (\"Reloading while that session is still valid may sign you back in\")",
+    "userRightAfterSignOut": null,
+    "userFourSecondsAfterReconnect": "Guest_0011223344",
+    "hasAccessToken": true,
+    "serverSessionStillValid": true,
+    "requests": [
+      "online POST /api/auth/refresh",
+      "OFFLINE POST /api/auth/refresh",
+      "OFFLINE POST /api/auth/logout",
+      "online POST /api/auth/refresh"
+    ]
+  },
+  {
+    "label": "2: network dropped, no refresh had failed yet",
+    "signedInAs": "Guest_0011223344",
+    "apiOfflineAtSignOut": false,
+    "logout": "logout failed: notice shown (\"Reloading while that session is still valid may sign you back in\")",
+    "userRightAfterSignOut": null,
+    "userFourSecondsAfterReconnect": null,
+    "hasAccessToken": false,
+    "serverSessionStillValid": true,
+    "requests": [
+      "online POST /api/auth/refresh",
+      "OFFLINE POST /api/auth/logout"
+    ]
+  }
+]

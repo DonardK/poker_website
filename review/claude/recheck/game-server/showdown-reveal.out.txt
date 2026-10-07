@@ -1,0 +1,13 @@
+{
+  "showdowns": 50,
+  "showdownsWhereALosingHandWasShownToASpectator": 50,
+  "example": {
+    "winners": [
+      1
+    ],
+    "losersShownToSpectator": [
+      0,
+      2
+    ]
+  }
+}

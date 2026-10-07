@@ -1,0 +1,13 @@
+file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/packages/engine/dist/table.js:74
+        throw new EngineError("ALREADY_SEATED", "Already seated at this table");
+              ^
+
+EngineError: Already seated at this table
+    at Module.sitDown (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/packages/engine/dist/table.js:74:15)
+    at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/review/gpt-6.1-sol/repro/engine-properties.mjs:28:165
+    at transition (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/review/gpt-6.1-sol/repro/engine-properties.mjs:19:73)
+    at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/review/gpt-6.1-sol/repro/engine-properties.mjs:28:149 {
+  code: 'ALREADY_SEATED'
+}
+
+Node.js v24.19.0

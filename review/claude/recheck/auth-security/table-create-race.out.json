@@ -1,0 +1,16 @@
+{
+  "doubleSubmit": [
+    [
+      201,
+      {
+        "tableId": "table-1"
+      }
+    ],
+    [
+      500,
+      {
+        "error": "Request could not be completed"
+      }
+    ]
+  ]
+}

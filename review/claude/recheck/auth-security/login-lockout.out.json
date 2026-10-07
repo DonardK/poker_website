@@ -1,0 +1,79 @@
+{
+  "timeline": [
+    {
+      "step": "attacker: 5 wrong guesses",
+      "lockSeconds": 30,
+      "ownerWithCorrectPassword": [
+        401,
+        "Invalid credentials"
+      ]
+    },
+    {
+      "step": "lock lapsed #1; attacker sends ONE wrong guess",
+      "lockSeconds": 60,
+      "ownerWithCorrectPassword": [
+        401,
+        "Invalid credentials"
+      ]
+    },
+    {
+      "step": "lock lapsed #2; attacker sends ONE wrong guess",
+      "lockSeconds": 120,
+      "ownerWithCorrectPassword": [
+        401,
+        "Invalid credentials"
+      ]
+    },
+    {
+      "step": "lock lapsed #3; attacker sends ONE wrong guess",
+      "lockSeconds": 240,
+      "ownerWithCorrectPassword": [
+        401,
+        "Invalid credentials"
+      ]
+    },
+    {
+      "step": "lock lapsed #4; attacker sends ONE wrong guess",
+      "lockSeconds": 480,
+      "ownerWithCorrectPassword": [
+        401,
+        "Invalid credentials"
+      ]
+    },
+    {
+      "step": "lock lapsed #5; attacker sends ONE wrong guess",
+      "lockSeconds": 900,
+      "ownerWithCorrectPassword": [
+        401,
+        "Invalid credentials"
+      ]
+    },
+    {
+      "step": "lock lapsed #6; attacker sends ONE wrong guess",
+      "lockSeconds": 900,
+      "ownerWithCorrectPassword": [
+        401,
+        "Invalid credentials"
+      ]
+    },
+    {
+      "step": "lock lapsed #7; attacker sends ONE wrong guess",
+      "lockSeconds": 900,
+      "ownerWithCorrectPassword": [
+        401,
+        "Invalid credentials"
+      ]
+    },
+    {
+      "step": "lock lapsed #8; attacker sends ONE wrong guess",
+      "lockSeconds": 900,
+      "ownerWithCorrectPassword": [
+        401,
+        "Invalid credentials"
+      ]
+    }
+  ],
+  "attackerRequests": 13,
+  "steadyStateLockMinutes": 15,
+  "attackerRequestsPerDayToKeepLocked": 96
+}

@@ -1,0 +1,18 @@
+{
+  "TAG": {
+    "phase": "FLOP",
+    "opponents": 5,
+    "decisions": 30,
+    "medianMs": 28,
+    "p90Ms": 38.6,
+    "maxMs": 47.7
+  },
+  "GTO": {
+    "phase": "FLOP",
+    "opponents": 5,
+    "decisions": 30,
+    "medianMs": 59.7,
+    "p90Ms": 65.2,
+    "maxMs": 70.4
+  }
+}

@@ -1,0 +1,87 @@
+snapshot turnId: 1:2 revision: 0
+ack for the web payload (with turnId): {"ok":false,"code":"INVALID_REQUEST","message":"Request could not be completed"}
+ack without turnId: {"ok":true}
+manager.intent calls: 1
+✔ ACTION_INTENT exactly as action-bar.tsx sends it (with turnId) is refused before it reaches the manager (68.2067ms)
+ack for amount 150.5: {"ok":false,"code":"INVALID_REQUEST","message":"Request could not be completed"}
+✔ CR-019 server side: a fractional amount gets the generic INVALID_REQUEST, not BAD_AMOUNT (14.1143ms)
+[2026-10-07 17:13:40.285 +0200] [33mWARN[39m (41720): [36msocket request rejected[39m
+    err: {
+      "name": "ZodError",
+      "message": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"turnId\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"turnId\\\"\"\n  }\n]",
+      "stack":
+          ZodError: [
+            {
+              "code": "unrecognized_keys",
+              "keys": [
+                "turnId"
+              ],
+              "path": [],
+              "message": "Unrecognized key: \"turnId\""
+            }
+          ]
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:293:41
+              at Socket.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:298:15)
+              at Socket.emit (node:events:509:28)
+              at Socket.emitUntyped (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\typed-events.js:69:22)
+              at C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\socket.js:697:39
+              at process.processTicksAndRejections (node:internal/process/task_queues:85:11)
+    }
+[2026-10-07 17:13:40.306 +0200] [33mWARN[39m (41720): [36msocket request rejected[39m
+    err: {
+      "name": "ZodError",
+      "message": "[\n  {\n    \"expected\": \"int\",\n    \"format\": \"safeint\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"amount\"\n    ],\n    \"message\": \"Invalid input: expected int, received number\"\n  }\n]",
+      "stack":
+          ZodError: [
+            {
+              "expected": "int",
+              "format": "safeint",
+              "code": "invalid_type",
+              "path": [
+                "amount"
+              ],
+              "message": "Invalid input: expected int, received number"
+            }
+          ]
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:293:41
+              at Socket.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:298:15)
+              at Socket.emit (node:events:509:28)
+              at Socket.emitUntyped (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\typed-events.js:69:22)
+              at C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\socket.js:697:39
+              at process.processTicksAndRejections (node:internal/process/task_queues:85:11)
+    }
+[2026-10-07 17:13:40.318 +0200] [33mWARN[39m (41720): [36msocket request rejected[39m
+    err: {
+      "name": "ZodError",
+      "message": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"commandId\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"commandId\\\"\"\n  }\n]",
+      "stack":
+          ZodError: [
+            {
+              "code": "unrecognized_keys",
+              "keys": [
+                "commandId"
+              ],
+              "path": [],
+              "message": "Unrecognized key: \"commandId\""
+            }
+          ]
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:256:146
+              at Socket.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:260:15)
+              at Socket.emit (node:events:509:28)
+              at Socket.emitUntyped (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\typed-events.js:69:22)
+              at C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\socket.js:697:39
+              at process.processTicksAndRejections (node:internal/process/task_queues:85:11)
+    }
+SERVER_ERROR after web SEAT_CLAIM: [{"code":"INVALID_REQUEST","message":"Request could not be completed","tableId":"contract"}] ack: null seatClaim calls: 0
+payload without commandId: seatClaim calls: 1 ack: null
+✔ SEAT_CLAIM exactly as buy-in-dialog.tsx sends it (with commandId) is refused; no ack in either case (CR-017) (824.7663ms)
+SIT_OUT: sitToggle calls 1 ack null
+✔ CR-017: SIT_OUT / SIT_IN have no acknowledgement (321.5031ms)
+ℹ tests 4
+ℹ suites 0
+ℹ pass 4
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 2086.8209

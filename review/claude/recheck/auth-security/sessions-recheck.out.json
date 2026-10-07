@@ -1,0 +1,250 @@
+{
+  "A_concurrentRefresh": {
+    "natural": [
+      200,
+      200
+    ],
+    "naturalRotations": 1,
+    "forcedInterleaving": [
+      200,
+      200
+    ],
+    "forcedRotations": 1,
+    "bothAccessTokensWork": [
+      200,
+      200
+    ],
+    "sessionRevoked": false
+  },
+  "A2_refreshReplay": {
+    "firstRotation": 200,
+    "previousTokenInsideGrace": 200,
+    "replayAfterGrace": 401,
+    "replayClearedCookie": true,
+    "revokeReason": "REFRESH_REUSE",
+    "currentTokenAfterReplay": 401,
+    "accessTokenAfterReplay": 401
+  },
+  "A3_lifetime": {
+    "createdDaysAgo365": 401,
+    "cookieCleared": true,
+    "refreshNearAbsoluteEnd": 200,
+    "expiryCappedAtAbsolute": true,
+    "cookieMaxAgeMatchesRowSeconds": true,
+    "jwtExpMatchesRow": true,
+    "idleTtlDays": 7,
+    "absoluteTtlDays": 30
+  },
+  "B_transientDbErrorOnPacket": {
+    "ack": {
+      "ok": false,
+      "code": "SERVICE_UNAVAILABLE",
+      "message": "Temporarily unavailable, please retry",
+      "retryable": true
+    },
+    "serverError": {
+      "code": "SERVICE_UNAVAILABLE",
+      "message": "Temporarily unavailable, please retry",
+      "retryable": true,
+      "tableId": "t-b"
+    },
+    "stillConnected": true,
+    "sessionRevokedEvents": 0
+  },
+  "C_transientDbErrorOnBroadcast": {
+    "duringOutage": {
+      "connected": true,
+      "snapshots": 0
+    },
+    "afterRecovery": {
+      "connected": true,
+      "snapshots": 1
+    }
+  },
+  "D_tokenExpiryOnLiveSocket": {
+    "withRenew": {
+      "renewAck": {
+        "ok": true
+      },
+      "sameSocketId": true,
+      "connectedAfterExpiry": true,
+      "snapshotAfterExpiry": 1,
+      "packetAfterExpiry": "TABLE_NOT_FOUND"
+    },
+    "withoutRenew": {
+      "connectedAfterBroadcast": false,
+      "disconnectReason": "io server disconnect",
+      "snapshots": 0,
+      "toldSessionRevoked": 0
+    },
+    "renewWithOtherUsersToken": {
+      "ack": {
+        "ok": false,
+        "code": "UNAUTHORIZED",
+        "message": "Please sign in again"
+      },
+      "disconnected": true
+    }
+  },
+  "E_uniqueRaces": {
+    "registrationRace": [
+      201,
+      409
+    ],
+    "loserBody": {
+      "error": "Username unavailable"
+    },
+    "emailRace": [
+      201,
+      409
+    ],
+    "emailLoserBody": {
+      "error": "Registration could not be completed with these details"
+    },
+    "usernamePolicy": {
+      "racename": [
+        409,
+        "Username unavailable"
+      ],
+      "RACENAME": [
+        409,
+        "Username unavailable"
+      ],
+      "Guest_abc123": [
+        409,
+        "Username unavailable"
+      ],
+      "guest_1a2b3c": [
+        409,
+        "Username unavailable"
+      ],
+      "Admin": [
+        409,
+        "Username unavailable"
+      ],
+      "Support": [
+        409,
+        "Username unavailable"
+      ],
+      "Dealer": [
+        409,
+        "Username unavailable"
+      ],
+      "System": [
+        409,
+        "Username unavailable"
+      ],
+      "Bot_Alice": [
+        409,
+        "Username unavailable"
+      ],
+      "AdminJoe": [
+        409,
+        "Username unavailable"
+      ],
+      "Al1ce_ok": [
+        201,
+        null
+      ]
+    },
+    "guestNameClashRetried": [
+      201,
+      "Guest_9f04907d56"
+    ]
+  },
+  "F_transientDbErrorOnRefresh": {
+    "status": 503,
+    "body": {
+      "error": "Service temporarily unavailable, please retry",
+      "retryable": true
+    },
+    "retryAfter": "2",
+    "setCookieHeader": null,
+    "refreshCookieCleared": false,
+    "sameCookieAfterRecovery": 200,
+    "meDuringOutage": 503
+  },
+  "G_revokedSockets": {
+    "validSession": {
+      "patches": 3,
+      "connected": true
+    },
+    "revokedElsewhereAfterCacheTtl": {
+      "patches": 0,
+      "toldRevoked": [
+        {
+          "reason": "SESSION_REVOKED"
+        }
+      ],
+      "connected": false
+    },
+    "revokedElsewhereWithin5sCache": {
+      "patchesDeliveredAfterRevocationInsideCacheWindow": 1,
+      "patchesAfterCacheLapsed": 0,
+      "connected": false
+    },
+    "revokedInProcess": {
+      "toldRevoked": [
+        {
+          "reason": "LOGOUT"
+        }
+      ],
+      "connected": false
+    }
+  },
+  "H_crossOrigin": {
+    "textPlainForeignOriginGuest": 403,
+    "textPlainNoOriginGuest": 415,
+    "formSameOrigin": 415,
+    "secFetchCrossSiteNoOrigin": 403,
+    "nullOrigin": 403,
+    "siblingOrigin": 403,
+    "jsonSameOrigin": 201,
+    "refreshForeignOrigin": 403,
+    "logoutForeignOrigin": 403,
+    "socketHandshakeForeignOrigin": "connect_error:websocket error"
+  },
+  "I_cacheControl": {
+    "guest201": "201 no-store",
+    "me200": "200 no-store",
+    "refresh200": "200 no-store",
+    "logout204": "204 no-store",
+    "me401": "401 no-store",
+    "guest403": "403 no-store",
+    "guest415": "415 no-store",
+    "api404": "404 no-store",
+    "lobbyList": "200 private, no-cache vary=Authorization, Origin etag=true",
+    "lobbyRevalidate": 304
+  },
+  "J_logHygiene": {
+    "malformedStatus": 400,
+    "oversizeStatus": 413,
+    "passwordInLogs": false,
+    "sixteenMalformed": "400,400,400,400,400,400,400,400,400,400,400,400,400,429,429,429",
+    "adminDeniedStatus": 403,
+    "querySecretInLogs": true,
+    "querySecretLogLines": [
+      {
+        "msg": "admin route denied",
+        "path": "/api/admin/hands/00000000-0000-4000-8000-000000000000/audit?token=RECHECK_QUERY_SECRET",
+        "security": "ADMIN_DENIED"
+      }
+    ]
+  },
+  "K_sharedIp": {
+    "fiftyUsersOneIp_requests": 200,
+    "ok": 200,
+    "tooMany": 0,
+    "guestCreations20OneIp": {
+      "created": 15,
+      "tooMany": 5
+    },
+    "distinctSessionsRefreshingOnceFromOneIp": {
+      "sessions": 130,
+      "ok": 120,
+      "tooMany": 10,
+      "firstLimitedAt": 121,
+      "rateLimitPolicyHeader": "120;w=60"
+    }
+  }
+}

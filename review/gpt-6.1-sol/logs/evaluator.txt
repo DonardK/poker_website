@@ -1,0 +1,16 @@
+{
+  totalHands: 2598960,
+  categories: {
+    FOUR_OF_A_KIND: 624,
+    FULL_HOUSE: 3744,
+    THREE_OF_A_KIND: 54912,
+    TWO_PAIR: 123552,
+    ONE_PAIR: 1098240,
+    STRAIGHT_FLUSH: 36,
+    STRAIGHT: 10200,
+    FLUSH: 5108,
+    HIGH_CARD: 1302540,
+    ROYAL_FLUSH: 4
+  },
+  result: 'All standard five-card category counts match.'
+}

@@ -1,0 +1,128 @@
+{
+  "CR002_engineHeadsUp": {
+    "handsDealt": 1,
+    "absentStackAfterEachHand": [
+      990
+    ],
+    "timeoutsTaken": 1,
+    "absentSatOut": true,
+    "sittingOutReason": "TIMEOUT",
+    "dealtWhileSatOut": 0
+  },
+  "CR002_engineThreeHanded": {
+    "handsPlayed": 30,
+    "absentStack": [
+      990,
+      990,
+      990
+    ],
+    "timeouts": 1,
+    "sittingOutReason": "TIMEOUT"
+  },
+  "CR002_serverTimer": {
+    "absent": "A",
+    "satOutByTimer": true,
+    "reason": "TIMEOUT",
+    "lastAction": "TIMEOUT_FOLD",
+    "nextHandNumber": 2,
+    "absentDealtNextHand": false,
+    "absentStatus": "SIT_OUT"
+  },
+  "CR002_onDisconnect": {
+    "onDisconnectBody": "onDisconnect(_userId, _socketId) { // A disconnect never changes hand eligibility. The original turn deadline // checks/folds the player, including all-in playe"
+  },
+  "CR008_staleAction": {
+    "actorsOptionsUnchanged": true,
+    "turnIdBefore": "1:2",
+    "turnIdAfter": "1:2",
+    "revisionSeen": 0,
+    "revisionNow": 1,
+    "validCallRefused": {
+      "code": "STALE_ACTION",
+      "message": "The table changed; use the latest action buttons"
+    },
+    "intentSignatureArity": 4
+  },
+  "F10_outageRecovery": {
+    "resumedAction": "TIMEOUT_FOLD",
+    "msAfterRecover": 8,
+    "actorSatOutToo": true,
+    "sittingOutReason": "TIMEOUT",
+    "turnClockResetInAudit": false,
+    "engineHasRebaseTurnClock": true
+  },
+  "CR004_stuckTable": {
+    "missingState": "RECOVERY_REQUIRED",
+    "corruptCiphertext": "Invalid encrypted state",
+    "retryLoop": {
+      "secondsObserved": 6,
+      "failureLogs": 7,
+      "messages": [
+        "table timer failed",
+        "recovery retry failed"
+      ],
+      "statusWrites": [],
+      "pausedEverWritten": false,
+      "incidentsCreated": 0,
+      "tableIncidentDelegateExists": false
+    }
+  },
+  "CR033_nextDealFailure": {
+    "stateUnchanged": true,
+    "phaseStill": "SHOWDOWN",
+    "leaverStillSeated": true,
+    "leaverPendingLeave": true,
+    "cashOutCredits": 0,
+    "timerFailureLogs": 3
+  },
+  "CR036_postCommitBotFailure": {
+    "mutationRejected": "Synthetic bot RNG outage",
+    "committedRevision": 1,
+    "priorRevision": 0,
+    "broadcastsAttempted": 0,
+    "turnTimerArmed": false
+  },
+  "CR037_multiWorker": {
+    "freshWorkerWarned": false,
+    "olderWorkerWarned": true,
+    "resumedAtIsInstanceField": true
+  },
+  "CR038_walletOrder": {
+    "balancesReceived": [
+      10000,
+      9000
+    ],
+    "payloadKeys": [
+      "bankroll"
+    ]
+  },
+  "F09_zeroRowCredit": {
+    "error": null,
+    "creditAttempts": 1,
+    "creditWhere": {
+      "id": "P0",
+      "kind": "HUMAN"
+    },
+    "seatReleased": true,
+    "pendingCashOuts": 0
+  },
+  "F14_auditLegality": {
+    "version": "poker-hand-audit-v2",
+    "forgedAction": "CHECK",
+    "forgedAmount": 10,
+    "verifySealedAudit": true,
+    "verifyHandOutcome": true,
+    "settlementMoneyProblem": null,
+    "verifyAuditRecord": true
+  },
+  "CR027_botDecision": {
+    "decisions": 20,
+    "medianMs": 0,
+    "maxMs": 0.1
+  },
+  "CR017_seatClaimPostCommit": {
+    "seatClaimRejected": "Synthetic read failure after commit",
+    "seatTakenInCommittedState": true,
+    "debitWrites": 1
+  }
+}

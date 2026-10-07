@@ -1,0 +1,11 @@
+{
+  "result": "PASS",
+  "runs": 100,
+  "transitions": 2101,
+  "projections": 1772,
+  "settled": 210,
+  "restarts": 41,
+  "rejected": 886,
+  "selectionSeed": "0x61502026",
+  "shuffle": "OS CSPRNG; not seeded"
+}
