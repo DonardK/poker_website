@@ -1,0 +1,31 @@
+# Copy to apps/web/.dev.vars (gitignored). Wrangler reads that file for
+# `opennextjs-cloudflare preview`. Do not put TURNSTILE_SECRET_KEY here:
+# siteverify runs on the API Worker (apps/edge).
+#
+# NEXT_PUBLIC_* is inlined into the browser bundle when `next build` runs
+# (OpenNext calls that script). Set the same names in the build environment
+# or in apps/web/.env.local. A value that exists only in .dev.vars is visible
+# to server code at preview time; it does not rewrite an already-built client.
+# Production and preview need separate builds if these origins differ.
+# Preferred production build: API and socket URLs are both the site origin
+# (https://example.com) so the browser calls same-origin /api and wss.
+#
+# next dev (:3000) against the Node game server (:4000) — also the defaults
+# in the repo-root .env.example:
+# NEXT_PUBLIC_API_URL=http://localhost:4000
+# NEXT_PUBLIC_SOCKET_URL=http://localhost:4000
+#
+# next dev against `wrangler dev` for the API Worker (:8787):
+# NEXT_PUBLIC_API_URL=http://localhost:8787
+# NEXT_PUBLIC_SOCKET_URL=http://localhost:8787
+
+NEXT_PUBLIC_SITE_URL=http://localhost:3000
+NEXT_PUBLIC_API_URL=http://localhost:4000
+NEXT_PUBLIC_SOCKET_URL=http://localhost:4000
+
+# Cloudflare's published dummy site key (always passes). Not a secret.
+# Pair the API Worker with secret 1x0000000000000000000000000000000AA.
+# Always-block pair, if you need a refusal: site 2x00000000000000000000AB
+# and secret 2x0000000000000000000000000000000AA.
+# Leave this blank to render no widget and send no turnstileToken.
+NEXT_PUBLIC_TURNSTILE_SITE_KEY=1x00000000000000000000AA

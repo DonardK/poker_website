@@ -4,20 +4,32 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import {
-  TABLE_IDLE_TIMEOUT_MS, type AuthResponse, type CreateTableRequest, type PublicUser, type TableListItem, type TableStatus,
+  SOCKET_EVENTS, TABLE_IDLE_TIMEOUT_MS, type AuthResponse, type CreateTableRequest, type PublicUser, type TableListItem, type TableStatus,
 } from "@poker/shared";
 import { AgeTermsGate, hasConsent, NO_CONSENT, type AgeTermsConsent } from "@/components/age-terms-gate";
+import { TurnstileWidget, turnstileTokenField } from "@/components/turnstile-widget";
 import { clearLiveEvidence } from "@/hooks/use-table-socket";
 import { api, API_UNAVAILABLE_MESSAGE } from "@/lib/api";
 import { formatChips, formatChipsWithUnit } from "@/lib/format";
 import { PLAY_CHIPS_NOTICE, PLAY_MONEY_NOTICE, termsAcceptance, termsErrorMessage } from "@/lib/legal";
-import { disconnectSocket } from "@/lib/socket";
+import { disconnectSocket, getSocket } from "@/lib/socket";
 import { dropStaleClosedNotice, useAuthStore } from "@/stores/session";
 
 /** Table list refresh while the lobby is visible and the last request succeeded. */
 const POLL_INTERVAL_MS = 5_000;
 /** Ceiling of the exponential back-off after consecutive failed refreshes (5 s, 10 s, 20 s, 40 s, 60 s, ...). */
 const POLL_MAX_BACKOFF_MS = 60_000;
+
+function applyLobbyPatch(tables: TableListItem[], payload: { removed?: boolean; table?: TableListItem }): TableListItem[] {
+  const table = payload.table;
+  if (!table) return tables;
+  if (payload.removed) return tables.filter((row) => row.id !== table.id);
+  const index = tables.findIndex((row) => row.id === table.id);
+  if (index < 0) return [table, ...tables];
+  const next = tables.slice();
+  next[index] = table;
+  return next;
+}
 
 const STATUS_LABELS: Record<TableStatus, string> = {
   WAITING: "Waiting for players",
@@ -37,6 +49,7 @@ export default function LobbyPage() {
   const [listError, setListError] = useState<string | null>(null);
   const [signOutNotice, setSignOutNotice] = useState<string | null>(null);
   const [consent, setConsent] = useState<AgeTermsConsent>(NO_CONSENT);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const [showSetup, setShowSetup] = useState(false);
   const [tableName, setTableName] = useState("");
   const [seats, setSeats] = useState(6);
@@ -139,6 +152,28 @@ export default function LobbyPage() {
     };
   }, [hydrated, accessToken, refreshTables]);
 
+  // The lobby socket pushes seat and status changes. The poll remains the
+  // fallback when that socket is down.
+  useEffect(() => {
+    if (!hydrated || !accessToken) return;
+    const socket = getSocket(accessToken);
+    const onPatch = (payload: { removed?: boolean; table?: TableListItem }) => {
+      setTables((current) => applyLobbyPatch(current, payload));
+      setTablesLoaded(true);
+    };
+    const onSnapshot = (payload: { tables?: TableListItem[] }) => {
+      if (!Array.isArray(payload?.tables)) return;
+      setTables(payload.tables);
+      setTablesLoaded(true);
+    };
+    socket.on(SOCKET_EVENTS.LOBBY_PATCH, onPatch);
+    socket.on(SOCKET_EVENTS.LOBBY_SNAPSHOT, onSnapshot);
+    return () => {
+      socket.off(SOCKET_EVENTS.LOBBY_PATCH, onPatch);
+      socket.off(SOCKET_EVENTS.LOBBY_SNAPSHOT, onSnapshot);
+    };
+  }, [hydrated, accessToken]);
+
   // A table this player sat at has just closed and paid them out. Reload now
   // rather than at the next poll, so the lobby never offers "Return to your
   // table" for a table that no longer exists.
@@ -157,7 +192,10 @@ export default function LobbyPage() {
     setError(null);
     setSignOutNotice(null);
     try {
-      const data = await api<AuthResponse>("/api/auth/guest", { method: "POST", body: JSON.stringify(termsAcceptance()) });
+      const data = await api<AuthResponse>("/api/auth/guest", {
+        method: "POST",
+        body: JSON.stringify({ ...termsAcceptance(), ...turnstileTokenField(turnstileToken) }),
+      });
       setSession(data.user, data.accessToken);
     } catch (err) {
       setError(termsErrorMessage(err) ?? (err instanceof Error ? err.message : "Guest login failed"));
@@ -310,6 +348,7 @@ export default function LobbyPage() {
         <section aria-labelledby="start-heading" className="flex max-w-xl flex-col gap-4">
           <h2 id="start-heading" className="sr-only">Start playing</h2>
           <AgeTermsGate value={consent} onChange={setConsent} disabled={busy} />
+          <TurnstileWidget onToken={setTurnstileToken} />
           <div className="flex flex-wrap gap-3">
             <button
               type="button"

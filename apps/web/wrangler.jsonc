@@ -1,0 +1,21 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "poker-web",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "example.com/*", "zone_name": "example.com" }
+  ],
+  "assets": {
+    "directory": ".open-next/assets",
+    "binding": "ASSETS"
+  },
+  "vars": {
+    "NEXT_PUBLIC_API_URL": "https://example.com",
+    "NEXT_PUBLIC_SOCKET_URL": "https://example.com",
+    "NEXT_PUBLIC_TURNSTILE_SITE_KEY": ""
+  }
+}

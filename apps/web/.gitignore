@@ -1,0 +1,11 @@
+# OpenNext build output and Wrangler local state
+.open-next/
+.wrangler/
+
+# Local Worker overrides (see .dev.vars.example). Not secrets for NEXT_PUBLIC_*,
+# but the file is the place operators paste local values.
+.dev.vars
+
+# `npm run cf-typegen` (`wrangler types`)
+worker-configuration.d.ts
+cloudflare-env.d.ts

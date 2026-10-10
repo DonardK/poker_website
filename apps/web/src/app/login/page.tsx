@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import type { AuthResponse } from "@poker/shared";
 import { AgeTermsGate, hasConsent, NO_CONSENT, type AgeTermsConsent } from "@/components/age-terms-gate";
+import { TurnstileWidget, turnstileTokenField } from "@/components/turnstile-widget";
 import { api } from "@/lib/api";
 import { PLAY_CHIPS_NOTICE, PLAY_MONEY_NOTICE, termsAcceptance, termsErrorMessage } from "@/lib/legal";
 import { useAuthStore } from "@/stores/session";
@@ -19,6 +20,7 @@ export default function LoginPage() {
   const [consent, setConsent] = useState<AgeTermsConsent>(NO_CONSENT);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [turnstileToken, setTurnstileToken] = useState<string | null>(null);
   const registering = mode === "register";
 
   function switchMode(next: "login" | "register") {
@@ -34,7 +36,10 @@ export default function LoginPage() {
     setError(null);
     try {
       const path = registering ? "/api/auth/register" : "/api/auth/login";
-      const body = registering ? { username, email, password, ...termsAcceptance() } : { username, password };
+      const turnstile = turnstileTokenField(turnstileToken);
+      const body = registering
+        ? { username, email, password, ...termsAcceptance(), ...turnstile }
+        : { username, password, ...turnstile };
       const data = await api<AuthResponse>(path, { method: "POST", body: JSON.stringify(body) });
       setSession(data.user, data.accessToken);
       router.push("/");
@@ -112,6 +117,7 @@ export default function LoginPage() {
           onChange={(e) => setPassword(e.target.value)}
         />
         {registering ? <AgeTermsGate value={consent} onChange={setConsent} disabled={busy} /> : null}
+        <TurnstileWidget onToken={setTurnstileToken} />
         {error ? <p role="alert" className="rounded-xl border border-red-400/50 bg-red-950/60 px-4 py-2 text-red-100">{error}</p> : null}
         <button
           disabled={busy || (registering && !hasConsent(consent))}

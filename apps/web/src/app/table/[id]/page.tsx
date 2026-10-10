@@ -144,6 +144,9 @@ export default function TablePage() {
             ) : null}
           </div>
           <h1 className="mt-2 font-[family-name:var(--font-display)] text-2xl sm:text-3xl">{snapshot?.name ?? "Table"}</h1>
+          {snapshot ? (
+            <span className="sr-only" data-testid="table-snapshot" data-revision={snapshot.revision} data-phase={snapshot.phase} data-board={snapshot.board.join(",")} data-hand={snapshot.handNumber} />
+          ) : null}
           <p className="flex flex-wrap items-center gap-x-1 text-sm text-emerald-50">
             <span>{snapshot ? `Blinds ${formatChips(snapshot.smallBlind)}/${formatChips(snapshot.bigBlind)} · ` : tableClosed ? "" : "connecting · "}</span>
             <ConnectionStatus status={socketStatus} closed={closure?.kind === "closed"} />

@@ -34,6 +34,20 @@ const nextConfig = (phase: string): NextConfig => ({
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders(phase) }];
   },
+  /**
+   * Local `next dev` only. Production is one origin: Cloudflare routes
+   * `/api/*` and `/ws/*` to the API Worker. In development those paths are
+   * proxied to `wrangler dev` so cookies, CORP, and the WebSocket ticket
+   * stay same-origin (the API cookie paths are `/api/auth` and `/ws`).
+   */
+  async rewrites() {
+    if (phase !== PHASE_DEVELOPMENT_SERVER) return [];
+    const edge = (process.env.POKER_EDGE_ORIGIN ?? "http://127.0.0.1:8787").replace(/\/+$/, "");
+    return [
+      { source: "/api/:path*", destination: `${edge}/api/:path*` },
+      { source: "/ws/:path*", destination: `${edge}/ws/:path*` },
+    ];
+  },
   webpack: (config) => {
     config.resolve.extensionAlias = {
       ".js": [".ts", ".tsx", ".js"],

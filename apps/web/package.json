@@ -7,10 +7,15 @@
     "dev": "next dev --turbopack --port 3000",
     "build": "next build",
     "start": "next start --port 3000",
+    "preview": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
+    "deploy": "opennextjs-cloudflare build && opennextjs-cloudflare deploy",
+    "cf-typegen": "wrangler types",
     "typecheck": "tsc --noEmit",
+    "test:unit": "tsx --test src/lib/ws-client.test.ts",
     "test:browser": "playwright test"
   },
   "dependencies": {
+    "@opennextjs/cloudflare": "^1.20.10",
     "@poker/shared": "*",
     "framer-motion": "^12.23.12",
     "next": "^15.5.3",
@@ -26,6 +31,7 @@
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
     "tailwindcss": "^4.1.13",
-    "typescript": "^5.9.2"
+    "typescript": "^5.9.2",
+    "wrangler": "^4.149.0"
   }
 }
