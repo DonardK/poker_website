@@ -22,7 +22,7 @@
   "vars": {
     "NEXT_PUBLIC_API_URL": "",
     "NEXT_PUBLIC_SOCKET_URL": "",
-    "NEXT_PUBLIC_TURNSTILE_SITE_KEY": ""
+    "NEXT_PUBLIC_TURNSTILE_SITE_KEY": "0x4AAAAAAFTUqOe5Dq9a5IdE"
   },
   "env": {
     "preview": {

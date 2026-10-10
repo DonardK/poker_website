@@ -12,7 +12,7 @@
   "vars": {
     // DEPLOY: replace <subdomain> with the account workers.dev subdomain.
     // Must be the web Worker origin (https://poker-web.<subdomain>.workers.dev).
-    "CLIENT_ORIGIN": "https://poker-web.<subdomain>.workers.dev",
+    "CLIENT_ORIGIN": "https://poker-web.poker-demo.workers.dev",
     "TERMS_VERSION": "2026-10-01",
     "JWT_ACCESS_TTL": "15m",
     "JWT_REFRESH_TTL": "7d",
@@ -31,7 +31,7 @@
     // Demo: skip Access JWT when CF_ACCESS_* are unset. Role === ADMIN still required.
     // Set to "true" for the strict https check.
     "ADMIN_REQUIRE_CF_ACCESS": "false",
-    "TURNSTILE_SITE_KEY": "",
+    "TURNSTILE_SITE_KEY": "0x4AAAAAAFTUqOe5Dq9a5IdE",
     "TABLE_DO_LOCATION_HINT": "weur",
     // Cloudflare Access for /api/admin. Team domain is the subdomain only.
     // With ADMIN_REQUIRE_CF_ACCESS=false, both empty skips the JWT (no 500).
@@ -44,7 +44,7 @@
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
-      "id": "<HYPERDRIVE_ID_CACHE_DISABLED>",
+      "id": "f9812d2651234b829b7d43963b34f2e3",
       // Local only. Not a real password. `.dev.vars` overrides this with the
       // Docker poker_app URL (127.0.0.1). The demo Hyperdrive uses the Supabase
       // runtime login with caching disabled. Never put that URL in this file.
