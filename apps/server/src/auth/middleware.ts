@@ -26,7 +26,11 @@ export async function authenticate(token: unknown): Promise<Authenticated> {
   const row = await prisma.session.findUnique({ where: { id: claims.sid }, include: { user: true } });
   if (!row || row.userId !== claims.sub) throw new AuthError("REVOKED", "Session not found", "SESSION_REVOKED");
   if (row.revokedAt) throw new AuthError("REVOKED", "Session revoked", endReason(row.revokeReason));
-  if (row.expiresAt.getTime() <= now) throw new AuthError("EXPIRED", "Session expired", "EXPIRED");
+  // Idle expiry and the absolute lifetime are both fatal. Refresh already
+  // refuses a row whose idle expiry was pushed past absoluteExpiresAt; access
+  // tokens must stop at the same instant, or a stolen access token keeps
+  // working after the session's hard end.
+  if (row.expiresAt.getTime() <= now || (row.absoluteExpiresAt != null && row.absoluteExpiresAt.getTime() <= now)) throw new AuthError("EXPIRED", "Session expired", "EXPIRED");
   if (row.user.kind !== "HUMAN") throw new AuthError("USER_BLOCKED", "Account cannot sign in", "ACCOUNT_RESTRICTED");
   const { user, ...session } = row;
   rememberSession(claims.sid, user, session, now, startedAt);

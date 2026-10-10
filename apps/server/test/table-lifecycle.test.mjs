@@ -131,7 +131,7 @@ function database(t, { state = null, row = {}, seats = null, bankrolls = {} } = 
         return { count: 1 };
       },
     },
-    session: { findUnique: async ({ where }) => s.users[where.id] ? { userId: where.id, expiresAt: new Date(Date.now() + 60_000), user: structuredClone(s.users[where.id]) } : null },
+    session: { findUnique: async ({ where }) => s.users[where.id] ? { userId: where.id, expiresAt: new Date(Date.now() + 60_000), absoluteExpiresAt: new Date(Date.now() + 86_400_000), revokedAt: null, user: structuredClone(s.users[where.id]) } : null },
     hand: {
       findFirst: async () => s.hands.at(-1) ?? null,
       create: async ({ data }) => { s.hands.push({ handNumber: data.handNumber }); pending.hands.push(data); return data; },

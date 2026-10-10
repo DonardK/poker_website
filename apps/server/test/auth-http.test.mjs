@@ -146,6 +146,7 @@ test('lifetime: a session past its absolute expiry is refused (401, cookie clear
   assert.equal(r.status, 401);
   assert.ok(cleared(r), 'the cookie is cleared');
   assert.equal(db.session(old.id).refreshToken, sha256(old.refreshToken), 'not rotated');
+  assert.equal((await request('/auth/me', { method: 'GET', token: old.accessToken })).status, 401, 'an access token dies at the absolute end too');
 });
 
 test('rotation: two concurrent refreshes with the same cookie both succeed; exactly one rotates and sets a cookie; both access tokens work', async (t) => {

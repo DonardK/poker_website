@@ -25,7 +25,7 @@ test('custom tables seat only the human host, reject bots, and do not debit an a
   let occupied = false;
   let debits = 0;
   let creation = null;
-  replace(t, prisma.session, 'findUnique', async () => ({ userId: host.id, expiresAt: new Date(Date.now() + 60_000), user: host }));
+  replace(t, prisma.session, 'findUnique', async () => ({ userId: host.id, expiresAt: new Date(Date.now() + 60_000), absoluteExpiresAt: new Date(Date.now() + 86_400_000), revokedAt: null, user: host }));
   replace(t, prisma.user, 'findUnique', async () => host);
   replace(t, prisma, '$transaction', async (run) => run({
     tableSeat: { findFirst: async () => occupied ? { userId: host.id } : null },

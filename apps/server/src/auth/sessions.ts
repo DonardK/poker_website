@@ -56,7 +56,7 @@ export function cachedSession(sessionId: string, userId: string, now: number): C
   const hit = cache.get(sessionId);
   if (!hit) return null;
   const age = now - hit.cachedAt;
-  if (age < 0 || age >= AUTH_CACHE_TTL_MS || hit.userId !== userId || hit.expiresAt <= now) { cache.delete(sessionId); return null; }
+  if (age < 0 || age >= AUTH_CACHE_TTL_MS || hit.userId !== userId || hit.expiresAt <= now || (hit.session.absoluteExpiresAt != null && hit.session.absoluteExpiresAt.getTime() <= now)) { cache.delete(sessionId); return null; }
   return hit;
 }
 export function rememberSession(sessionId: string, user: User, session: Session, now: number, startedAtEpoch: number): void {

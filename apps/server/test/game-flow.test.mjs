@@ -35,7 +35,7 @@ function database(t) {
   replace(prisma.table, 'findUnique', async (args) => { reads.push(args); return structuredClone(row); });
   replace(prisma.user, 'findUnique', async () => user());
   replace(prisma.tableSeat, 'findUnique', async () => ({ tableId: row.id }));
-  replace(prisma.session, 'findUnique', async () => ({ userId: 'player-0', expiresAt: new Date(Date.now() + 60_000), user: user() }));
+  replace(prisma.session, 'findUnique', async () => ({ userId: 'player-0', expiresAt: new Date(Date.now() + 60_000), absoluteExpiresAt: new Date(Date.now() + 86_400_000), revokedAt: null, user: user() }));
   replace(prisma, '$transaction', async (run) => {
     let nextRow = structuredClone(row);
     let nextBankroll = bankroll;

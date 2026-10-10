@@ -381,7 +381,7 @@ export function coarseIp(ip: string | null | undefined): string | null {
 
 authRouter.get("/sessions", requireAuth, route(async (req, res) => {
   const rows = await prisma.session.findMany({
-    where: { userId: req.userId, revokedAt: null, expiresAt: { gt: new Date() } },
+    where: { userId: req.userId, revokedAt: null, expiresAt: { gt: new Date() }, absoluteExpiresAt: { gt: new Date() } },
     orderBy: { lastUsedAt: "desc" },
     select: { id: true, createdAt: true, lastUsedAt: true, userAgent: true, ip: true },
   });

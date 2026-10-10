@@ -20,7 +20,7 @@ import { ipKeyGenerator } from "express-rate-limit";
 
 export const FAMILIAR_WINDOW_MS = 90 * 86_400_000;
 /** Bounds the familiar-address counters; entries untouched for a day are dropped first. */
-const MAX_ENTRIES = 10_000;
+export const FAMILIAR_MAX_ENTRIES = 10_000;
 const STALE_MS = 86_400_000;
 /** Queried for a sign-in that names no usable account, so every attempt does the same work. */
 const NO_USER = "no-such-user";
@@ -52,13 +52,24 @@ export function familiarLockedUntil(userId: string, ip: string | null | undefine
   return familiar.get(entryKey(userId, ip))?.lockedUntil ?? 0;
 }
 
-/** Count a failed sign-in from a familiar address; returns the lock length started, if any (0 otherwise). */
+/**
+ * Count a failed sign-in from a familiar address; returns the lock length started, if any (0 otherwise).
+ * Eviction never drops the key being counted: Map insertion order does not move when an entry is updated,
+ * so deleting the oldest key first would reset that account's counter (and its lock) once the map is full.
+ */
 export function recordFamiliarFailure(userId: string, ip: string | null | undefined, now: number, lockMs: (failures: number) => number): number {
-  if (familiar.size >= MAX_ENTRIES) {
-    for (const [key, entry] of familiar) if (now - entry.touchedAt > STALE_MS) familiar.delete(key);
-    if (familiar.size >= MAX_ENTRIES) familiar.delete(familiar.keys().next().value!);
-  }
   const key = entryKey(userId, ip);
+  if (!familiar.has(key) && familiar.size >= FAMILIAR_MAX_ENTRIES) {
+    for (const [stored, entry] of familiar) if (now - entry.touchedAt > STALE_MS) familiar.delete(stored);
+    if (familiar.size >= FAMILIAR_MAX_ENTRIES) {
+      let oldestKey: string | undefined;
+      let oldestTouch = Infinity;
+      for (const [stored, entry] of familiar) {
+        if (entry.touchedAt < oldestTouch) { oldestTouch = entry.touchedAt; oldestKey = stored; }
+      }
+      if (oldestKey) familiar.delete(oldestKey);
+    }
+  }
   const entry = familiar.get(key) ?? { failures: 0, lockedUntil: 0, touchedAt: now };
   entry.failures += 1;
   entry.touchedAt = now;
