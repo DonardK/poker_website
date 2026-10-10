@@ -183,7 +183,7 @@ configs (Caddy, nginx), the Dockerfiles, `.dockerignore` and
 
 Node 24, `npm ci`, on every push to `main`, every pull request, nightly and on
 demand. Check jobs set `DATABASE_URL` and `DIRECT_URL` to a loopback port with
-nothing listening, and they do not receive `NEON_DIRECT_URL`. Jobs: **typecheck**
+nothing listening, and they do not receive `SUPABASE_DIRECT_URL`. Jobs: **typecheck**
 (`npm run typecheck`, including `apps/edge` source and tests); **engine** (Jest
 without `rng.test.ts`); **server** (`npm test -w @poker/server` plus the ledger
 unit tests, with random throwaway secrets because there is no `.env` in CI);
@@ -192,7 +192,7 @@ dry-run); **web** (Next.js production build and the OpenNext build);
 **playwright**; **audit** (`npm audit --omit=dev
 --audit-level=high`); **secrets** (gitleaks over the full history); **rng-nightly**
 (the full RNG suite, scheduled and manual runs only). The default-branch deploy
-job is the only one that reads `NEON_DIRECT_URL`, and only for `prisma migrate
+job is the only one that reads `SUPABASE_DIRECT_URL`, and only for `prisma migrate`
 deploy`. The workflow does not run `prisma migrate dev`, `prisma db push`,
 `prisma db seed`, or `npm run dev`.
 

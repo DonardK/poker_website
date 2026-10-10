@@ -9,6 +9,27 @@
 -- poker_refuse_history_mutation() trigger enforces that even if a grant is
 -- widened later. There is no break-glass hatch beyond the one that function
 -- already documents (poker.break_glass = 'on').
+--
+-- Supabase fires public.rls_auto_enable() on CREATE TABLE in public.
+-- 20260920141323 revoked EXECUTE from PUBLIC. If that function is not
+-- SECURITY DEFINER, the migration role needs EXECUTE or CREATE TABLE fails.
+-- Grant it when we own the function. A refusal is noticed and ignored so a
+-- security-definer trigger (the usual Supabase shape) still proceeds.
+-- Local Postgres has no such function.
+
+DO $$
+BEGIN
+  IF to_regprocedure('public.rls_auto_enable()') IS NULL THEN
+    RETURN;
+  END IF;
+  BEGIN
+    EXECUTE format('GRANT EXECUTE ON FUNCTION public.rls_auto_enable() TO %I', current_user);
+  EXCEPTION
+    WHEN insufficient_privilege OR undefined_object THEN
+      RAISE NOTICE 'rls_auto_enable: leaving execute grants unchanged (%)', SQLERRM;
+  END;
+END
+$$;
 
 CREATE TABLE public."GameCommand" (
   "id" TEXT NOT NULL,

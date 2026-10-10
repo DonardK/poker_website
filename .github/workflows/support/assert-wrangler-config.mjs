@@ -54,8 +54,11 @@ function hyperdriveIdError(id, label) {
   return null;
 }
 
-function httpsHost(value, label, { allowWorkersDev }) {
-  if (typeof value !== "string" || value.trim() === "") return { error: `${label} is empty` };
+function httpsHost(value, label, { allowWorkersDev, allowEmpty }) {
+  if (typeof value !== "string" || value.trim() === "") {
+    if (allowEmpty) return { host: "" };
+    return { error: `${label} is empty` };
+  }
   let url;
   try {
     url = new URL(value);
@@ -112,7 +115,27 @@ function turnstileError(value, label) {
 
 function leakedDatabaseUrl(raw, path) {
   if (typeof raw === "string" && (raw.includes("supabase.co") || raw.includes("pooler.supabase.com") || raw.includes("neon.tech"))) {
-    return `${path} contains a database host. Keep the Neon password in Hyperdrive only.`;
+    return `${path} contains a database host. Keep the database password in Hyperdrive only.`;
+  }
+  return null;
+}
+
+function serviceError(services, binding, service, label) {
+  const list = Array.isArray(services) ? services : [];
+  const found = list.find((entry) => entry?.binding === binding);
+  if (!found) return `${label} is missing a services binding named ${binding}.`;
+  if (found.service !== service) return `${label} binding ${binding} must target ${service}.`;
+  return null;
+}
+
+/** The workers.dev demo has no zone routes. Preview must set [] so it cannot inherit a domain. */
+function noCustomDomain(routes, label, { requireExplicitEmpty }) {
+  if (routes == null) {
+    if (requireExplicitEmpty) return `${label} routes must be an explicit empty array.`;
+    return null;
+  }
+  if (!Array.isArray(routes) || routes.length !== 0) {
+    return `${label} must not attach a custom domain. Omit routes or set [].`;
   }
   return null;
 }
@@ -124,7 +147,6 @@ function bindingId(config) {
 
 export function configErrors(edge, web, mode) {
   const errors = [];
-  const allowWorkersDev = mode === "preview";
   if (edge.name !== "poker-api") errors.push(`apps/edge/wrangler.jsonc name must be poker-api (found ${edge.name ?? "(missing)"}).`);
   if (web.name !== "poker-web") errors.push(`apps/web/wrangler.jsonc name must be poker-web (found ${web.name ?? "(missing)"}).`);
 
@@ -134,13 +156,18 @@ export function configErrors(edge, web, mode) {
   const previewId = bindingId(edge.env?.preview);
   const previewIdError = hyperdriveIdError(previewId, "Preview Hyperdrive id");
   if (!previewIdError && !productionIdError && previewId === bindingId(edge)) {
-    errors.push("Preview Hyperdrive id matches the production id. Preview needs its own Neon branch and Hyperdrive config.");
+    errors.push("Preview Hyperdrive id matches the production id. Preview needs its own Hyperdrive config.");
   }
+  const apiBinding = serviceError(web.services, "API", "poker-api", "Web production");
+  if (apiBinding) errors.push(apiBinding);
+  const previewApiBinding = serviceError(web.env?.preview?.services, "API", "poker-api-preview", "Web preview");
+  if (web.env?.preview && previewApiBinding) errors.push(previewApiBinding);
+
   if (mode === "preview") {
     if (!edge.env?.preview) errors.push("apps/edge/wrangler.jsonc is missing env.preview.");
     if (previewIdError) errors.push(previewIdError);
     if (edge.env?.preview?.name !== "poker-api-preview") errors.push("Edge preview worker name must be poker-api-preview.");
-    if (edge.env?.preview?.workers_dev !== true) errors.push("Edge preview workers_dev must be true.");
+    if (edge.env?.preview?.workers_dev !== false) errors.push("Edge preview workers_dev must be false. The API is reached only through the service binding.");
     const edgePreviewRoutes = emptyRoutesError(edge.env?.preview?.routes, "Edge preview");
     if (edgePreviewRoutes) errors.push(edgePreviewRoutes);
     const origin = httpsHost(edge.env?.preview?.vars?.CLIENT_ORIGIN, "Edge preview CLIENT_ORIGIN", { allowWorkersDev: true });
@@ -150,18 +177,20 @@ export function configErrors(edge, web, mode) {
     if (web.env?.preview?.workers_dev !== true) errors.push("Web preview workers_dev must be true.");
     const webPreviewRoutes = emptyRoutesError(web.env?.preview?.routes, "Web preview");
     if (webPreviewRoutes) errors.push(webPreviewRoutes);
-    errors.push(...routeErrors(edge.routes, "Edge production", { allowEmpty: false, allowWorkersDev: false }));
-    errors.push(...routeErrors(web.routes, "Web production", { allowEmpty: false, allowWorkersDev: false }));
+    const edgeRoutes = noCustomDomain(edge.routes, "Edge production", { requireExplicitEmpty: false });
+    if (edgeRoutes) errors.push(edgeRoutes);
+    const webRoutes = noCustomDomain(web.routes, "Web production", { requireExplicitEmpty: false });
+    if (webRoutes) errors.push(webRoutes);
     if (process.env.CHECK_GITHUB_PUBLIC_VARS === "1") {
-      const envApi = httpsHost(process.env.NEXT_PUBLIC_API_URL, "Preview GitHub variable NEXT_PUBLIC_API_URL", { allowWorkersDev: true });
-      const envSocket = httpsHost(process.env.NEXT_PUBLIC_SOCKET_URL, "Preview GitHub variable NEXT_PUBLIC_SOCKET_URL", { allowWorkersDev: true });
+      const envApi = httpsHost(process.env.NEXT_PUBLIC_API_URL, "Preview GitHub variable NEXT_PUBLIC_API_URL", { allowWorkersDev: true, allowEmpty: true });
+      const envSocket = httpsHost(process.env.NEXT_PUBLIC_SOCKET_URL, "Preview GitHub variable NEXT_PUBLIC_SOCKET_URL", { allowWorkersDev: true, allowEmpty: true });
       if (envApi.error) errors.push(envApi.error);
       if (envSocket.error) errors.push(envSocket.error);
       if (!envApi.error && !envSocket.error && envApi.host !== envSocket.host) {
-        errors.push("Preview NEXT_PUBLIC_API_URL and NEXT_PUBLIC_SOCKET_URL must share one https host.");
+        errors.push("Preview NEXT_PUBLIC_API_URL and NEXT_PUBLIC_SOCKET_URL must both be empty or share one https host.");
       }
-      const productionHost = httpsHost(edge.vars?.CLIENT_ORIGIN, "CLIENT_ORIGIN", { allowWorkersDev: false });
-      if (!envApi.error && !productionHost.error && envApi.host === productionHost.host) {
+      const productionHost = httpsHost(edge.vars?.CLIENT_ORIGIN, "CLIENT_ORIGIN", { allowWorkersDev: true });
+      if (!envApi.error && envApi.host && !productionHost.error && envApi.host === productionHost.host) {
         errors.push("Preview NEXT_PUBLIC_API_URL uses the production host.");
       }
       const previewKeyError = turnstileError(process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY, "Preview GitHub variable NEXT_PUBLIC_TURNSTILE_SITE_KEY");
@@ -171,29 +200,30 @@ export function configErrors(edge, web, mode) {
 
   if (mode === "production") {
     if (edge.workers_dev !== false) errors.push("Edge production workers_dev must be false.");
-    if (web.workers_dev !== false) errors.push("Web production workers_dev must be false.");
-    errors.push(...routeErrors(edge.routes, "Edge production", { allowEmpty: false, allowWorkersDev }));
-    errors.push(...routeErrors(web.routes, "Web production", { allowEmpty: false, allowWorkersDev }));
-    const client = httpsHost(edge.vars?.CLIENT_ORIGIN, "CLIENT_ORIGIN", { allowWorkersDev });
-    const api = httpsHost(web.vars?.NEXT_PUBLIC_API_URL, "NEXT_PUBLIC_API_URL", { allowWorkersDev });
-    const socket = httpsHost(web.vars?.NEXT_PUBLIC_SOCKET_URL, "NEXT_PUBLIC_SOCKET_URL", { allowWorkersDev });
+    if (web.workers_dev !== true) errors.push("Web production workers_dev must be true for the workers.dev demo.");
+    const edgeRoutes = noCustomDomain(edge.routes, "Edge production", { requireExplicitEmpty: false });
+    if (edgeRoutes) errors.push(edgeRoutes);
+    const webRoutes = noCustomDomain(web.routes, "Web production", { requireExplicitEmpty: false });
+    if (webRoutes) errors.push(webRoutes);
+    const client = httpsHost(edge.vars?.CLIENT_ORIGIN, "CLIENT_ORIGIN", { allowWorkersDev: true });
+    const api = httpsHost(web.vars?.NEXT_PUBLIC_API_URL, "NEXT_PUBLIC_API_URL", { allowWorkersDev: true, allowEmpty: true });
+    const socket = httpsHost(web.vars?.NEXT_PUBLIC_SOCKET_URL, "NEXT_PUBLIC_SOCKET_URL", { allowWorkersDev: true, allowEmpty: true });
     for (const result of [client, api, socket]) if (result.error) errors.push(result.error);
-    if (!client.error && !api.error && !socket.error) {
-      const hosts = new Set([client.host, api.host, socket.host]);
-      if (hosts.size !== 1) errors.push("CLIENT_ORIGIN, NEXT_PUBLIC_API_URL, and NEXT_PUBLIC_SOCKET_URL must share one https host.");
-      const zones = [...(edge.routes ?? []), ...(web.routes ?? [])].map((route) => String(route.zone_name ?? "").toLowerCase());
-      if (zones.some((zone) => zone !== client.host)) errors.push("Route zone_name must match CLIENT_ORIGIN.");
+    if (!client.error && !api.error && !socket.error && (api.host || socket.host)) {
+      if (!api.host || !socket.host || api.host !== client.host || socket.host !== client.host) {
+        errors.push("When NEXT_PUBLIC_API_URL or NEXT_PUBLIC_SOCKET_URL is set, both must be the CLIENT_ORIGIN host. Leave them empty for same-origin workers.dev.");
+      }
     }
     const siteKeyError = turnstileError(edge.vars?.TURNSTILE_SITE_KEY, "TURNSTILE_SITE_KEY");
     if (siteKeyError) errors.push(siteKeyError);
     const publicSiteKeyError = turnstileError(web.vars?.NEXT_PUBLIC_TURNSTILE_SITE_KEY, "NEXT_PUBLIC_TURNSTILE_SITE_KEY");
     if (publicSiteKeyError) errors.push(publicSiteKeyError);
     if (typeof edge.placement?.region !== "string" || !/^aws:[a-z0-9-]+$/.test(edge.placement.region)) {
-      errors.push("placement.region must be the Neon region, for example aws:eu-central-1.");
+      errors.push("placement.region must be an aws: region. The Supabase demo uses aws:eu-west-1.");
     }
     if (process.env.CHECK_GITHUB_PUBLIC_VARS === "1") {
-      const envApi = httpsHost(process.env.NEXT_PUBLIC_API_URL, "GitHub variable NEXT_PUBLIC_API_URL", { allowWorkersDev });
-      const envSocket = httpsHost(process.env.NEXT_PUBLIC_SOCKET_URL, "GitHub variable NEXT_PUBLIC_SOCKET_URL", { allowWorkersDev });
+      const envApi = httpsHost(process.env.NEXT_PUBLIC_API_URL, "GitHub variable NEXT_PUBLIC_API_URL", { allowWorkersDev: true, allowEmpty: true });
+      const envSocket = httpsHost(process.env.NEXT_PUBLIC_SOCKET_URL, "GitHub variable NEXT_PUBLIC_SOCKET_URL", { allowWorkersDev: true, allowEmpty: true });
       if (envApi.error) errors.push(envApi.error);
       if (envSocket.error) errors.push(envSocket.error);
       if (!envApi.error && !api.error && envApi.host !== api.host) {
@@ -202,7 +232,7 @@ export function configErrors(edge, web, mode) {
       if (!envSocket.error && !socket.error && envSocket.host !== socket.host) {
         errors.push("GitHub variable NEXT_PUBLIC_SOCKET_URL does not match apps/web/wrangler.jsonc.");
       }
-      if (process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY !== web.vars?.NEXT_PUBLIC_TURNSTILE_SITE_KEY) {
+      if ((process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "") !== (web.vars?.NEXT_PUBLIC_TURNSTILE_SITE_KEY ?? "")) {
         errors.push("GitHub variable NEXT_PUBLIC_TURNSTILE_SITE_KEY does not match apps/web/wrangler.jsonc.");
       }
     }

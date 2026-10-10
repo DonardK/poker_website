@@ -1,6 +1,20 @@
-# Runtime login (`poker_app`)
+# Runtime login
 
-The game server connects as `poker_app`. That role is `LOGIN`, `NOSUPERUSER`, `NOBYPASSRLS`, and `INHERIT`, and it is a member of `poker_server`. `poker_server` stays `NOLOGIN`; it holds the grants and the row-level security policies. `poker_app` uses them by inheritance. Nothing in a migration sets the password.
+Two shapes. The migration `20261010120000_runtime_hardening` picks from the role that already exists. Nothing in a migration sets a password.
+
+## Supabase demo
+
+Project `tgfudufxslhrxbdxcnyl` (eu-west-1). `poker_server` is already a `LOGIN` role there (`poker_server.tgfudufxslhrxbdxcnyl` on the session pooler). It is `NOSUPERUSER` and `NOBYPASSRLS`, and it holds the table grants and the row-level security policies. The demo Hyperdrive connection uses that login. Do not create `poker_app` for this database and do not remove `LOGIN` from `poker_server`.
+
+The migration sees `rolcanlogin` and leaves `poker_server` as the runtime role. Policies written `TO poker_server` apply to that session. A role is a member of itself, so the privilege guards match `current_user = poker_server`.
+
+Migrations use a different URL: the Supabase admin role `postgres` (session pooler user `postgres.<ref>` on port 5432, or direct `db.<ref>.supabase.co:5432`). Port 6543 is transaction mode and cannot run these migrations. The admin URL is `SUPABASE_DIRECT_URL` / `DIRECT_URL` only. Hyperdrive never receives it.
+
+`supabase/README.md` and `supabase/ACCESS.md` record that this login was already provisioned and that no administrator password lives in the application. The Cloudflare demo does not change that.
+
+## Local docker and a NOLOGIN `poker_server`
+
+The game server connects as `poker_app`. That role is `LOGIN`, `NOSUPERUSER`, `NOBYPASSRLS`, and `INHERIT`, and it is a member of `poker_server`. `poker_server` stays `NOLOGIN`; it holds the grants and the row-level security policies. `poker_app` uses them by inheritance.
 
 `DATABASE_URL` is this login (the API, and Cloudflare Hyperdrive in production). `DIRECT_URL` is the administrator, used only by `prisma migrate`. The process refuses to boot in production if the login is a superuser, has `BYPASSRLS`, or can `UPDATE` or `DELETE` `"Hand"`.
 
@@ -62,6 +76,12 @@ COMMIT;
 ```
 
 Use the third argument `true` (transaction-local). Do not `ALTER ROLE poker_app SET poker.break_glass = 'on'`. Setting the variable may log `unrecognized configuration parameter "poker.break_glass"` once; that warning is harmless. Reading it when unset does not warn.
+
+## Supabase, Neon, and the older RLS migration
+
+On Supabase, `public.rls_auto_enable()` is the platform event trigger that enables row-level security when a table is created in `public`. `20260920141323_restrict_rls_event_trigger` revokes `EXECUTE` from `PUBLIC` when that function exists. `20261010130000_game_command` grants it back to the migration role when the role is allowed to, and continues if the grant is refused. A security-definer trigger still runs. Local docker and Neon do not have the function, so both statements are no-ops.
+
+The Supabase `postgres` role is not a true superuser. Pending migrations do not create event triggers, extensions, or tablespaces. See `docs/cloudflare/SUPABASE_MIGRATION_PLAN.md` before applying them.
 
 ## Neon and the older RLS migration
 

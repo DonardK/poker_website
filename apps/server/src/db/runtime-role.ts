@@ -1,9 +1,11 @@
 /**
  * Production boot check for the restricted runtime login.
  *
- * The game server must connect as `poker_app` (a member of the NOLOGIN role
- * `poker_server`). An administrator URL in DATABASE_URL would bypass row
- * level security or be able to rewrite hand history. This module does not
+ * The game server must connect as a restricted login: `poker_app` on local
+ * docker (a member of NOLOGIN `poker_server`), or `poker_server` itself on
+ * the Supabase demo where that role is already LOGIN. An administrator URL
+ * in DATABASE_URL would bypass row level security or be able to rewrite hand
+ * history. This module does not
  * import Prisma and does not open a connection: pass any executor that runs
  * one SELECT and returns its rows (Prisma, node-postgres, or a Worker
  * Hyperdrive client).
@@ -87,7 +89,7 @@ export function assertRestrictedRuntimeRole(row: Record<string, unknown> | undef
   if (problems.length > 0) {
     throw new RuntimeRoleError(
       `Refusing to start: database login "${facts.currentUser}" ${problems.join(", ")}. `
-      + "DATABASE_URL must be the poker_app role. Keep the administrator URL in DIRECT_URL for migrations only.",
+      + "DATABASE_URL must be the runtime login (poker_app, or poker_server on the Supabase demo). Keep the administrator URL in DIRECT_URL for migrations only.",
     );
   }
 }

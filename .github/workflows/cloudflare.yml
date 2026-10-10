@@ -4,11 +4,11 @@
 # edge Worker, OpenNext, and the production deploy added. docs/TESTING.md
 # names this file.
 #
-# Check jobs receive no NEON_DIRECT_URL and no Cloudflare API token. Their
+# Check jobs receive no SUPABASE_DIRECT_URL and no Cloudflare API token. Their
 # DATABASE_URL and DIRECT_URL are a loopback port with nothing listening
 # (support/assert-ci-offline.mjs). Server tests keep that stub. test-db
 # starts embedded Postgres on 127.0.0.1. The production job is the only one
-# that reads NEON_DIRECT_URL, and only on its migrate step.
+# that reads SUPABASE_DIRECT_URL, and only on its migrate step.
 #
 # This workflow does not run prisma migrate dev, prisma db push, prisma db
 # seed, prisma migrate reset, or npm run dev.
@@ -333,7 +333,7 @@ jobs:
       - run: npm run build:core
       # wrangler deploy --env preview, not versions upload: Durable Object
       # exports make versions upload fail, and a Version URL would use the
-      # production Hyperdrive. This step has no NEON_DIRECT_URL.
+      # production Hyperdrive. This step has no SUPABASE_DIRECT_URL.
       - name: Deploy preview API Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -402,14 +402,14 @@ jobs:
       - run: npm ci
       - run: node .github/workflows/support/platform-binaries.mjs
       - run: npm run build:core
-      - name: Apply Neon migrations
+      - name: Apply Supabase migrations
         env:
-          NEON_DIRECT_URL: ${{ secrets.NEON_DIRECT_URL }}
-          DATABASE_URL: ${{ secrets.NEON_DIRECT_URL }}
-          DIRECT_URL: ${{ secrets.NEON_DIRECT_URL }}
+          SUPABASE_DIRECT_URL: ${{ secrets.SUPABASE_DIRECT_URL }}
+          DATABASE_URL: ${{ secrets.SUPABASE_DIRECT_URL }}
+          DIRECT_URL: ${{ secrets.SUPABASE_DIRECT_URL }}
         run: |
           set -euo pipefail
-          node .github/workflows/support/assert-neon-direct-url.mjs
+          node .github/workflows/support/assert-supabase-direct-url.mjs
           npm run prisma:migrate -w @poker/server
       - name: Deploy API Worker
         env:

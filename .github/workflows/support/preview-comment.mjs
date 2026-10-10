@@ -13,7 +13,7 @@ const log = readFileSync(logPath, "utf8");
 const urls = [...new Set([...log.matchAll(/https:\/\/[A-Za-z0-9.-]+\.workers\.dev/g)].map((match) => match[0]))];
 const lines = [
   "<!-- poker-cloudflare-preview -->",
-  "Preview workers for this pull request. They use the Wrangler `preview` environment and its Hyperdrive config. This job does not receive NEON_DIRECT_URL.",
+  "Preview workers for this pull request. They use the Wrangler `preview` environment and its Hyperdrive config. The API Worker is reached through the web Worker's service binding. This job does not receive SUPABASE_DIRECT_URL.",
   "",
   ...(urls.length
     ? urls.map((url) => `- ${url}`)

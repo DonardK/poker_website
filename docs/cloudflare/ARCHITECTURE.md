@@ -4,7 +4,19 @@ Status: authoritative for the Workers port. Other agents implement this document
 
 This program does not change poker rules, chip amounts, session lifetimes, or the ledger's "foundation only" status. `User.bankroll` stays the live wallet until a later program calls `ledger_post`. See `docs/money/LEDGER.md`.
 
-Do not deploy this against the current production database. The repo-root `.env` points at live Supabase. The edge runtime uses a **new Neon Postgres** reached only through Hyperdrive. `apps/server` keeps using its own env for local Node tests and is not pointed at Neon by this spec.
+The current target is the **Free-plan demo** in the next section. The rest of this document is the earlier paid-plan, custom-domain spec. Where they disagree, the demo section wins. The repo-root `.env` is the live Supabase database; do not point ad-hoc commands at it. `apps/server` keeps its own env for local Node tests.
+
+## Demo on the Workers Free plan
+
+A client demo on the Workers Free plan, with no custom domain. Every switch below is config, so a later paid plan can change it without a rewrite.
+
+- **One public origin.** `poker-web.<account>.workers.dev` (`workers_dev: true` on `poker-web`). No zone routes. `poker-api` has `workers_dev: false` and is reached only by the service binding `API`. `apps/web/worker.ts` forwards `/api/*`, `/ws`, and `/ws/*`, including WebSocket upgrades, to `env.API.fetch(request)`. The browser Host and Origin stay the web host. `CLIENT_ORIGIN` is that origin (placeholder `https://poker-web.<subdomain>.workers.dev` until deploy). Cookies have no `Domain` attribute, so they stay host-only on that origin. CSRF accepts that Origin.
+- **Same-origin browser.** Leave `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SOCKET_URL` empty. The client uses `window.location.origin` (and `wss` on https). CSP `'self'` covers that host. `next dev` still proxies `/api` and `/ws` to wrangler; set the public URLs to `http://localhost:4000` only for the legacy `npm run dev` server.
+- **Passwords.** PBKDF2-SHA256, `pbkdf2-sha256$v1$<iterations>$<salt_b64url>$<dk_b64url>`, 16-byte salt, 32-byte key. `PASSWORD_PBKDF2_ITERATIONS` defaults to `10000` (Free). Paid: `600000`. Stored counts above 1,000,000 are not computed. Unknown users pay one PBKDF2 derivation at the current count. `ENABLE_LEGACY_BCRYPT` defaults to `false` (dummy PBKDF2, then 401). `true` compares `$2a$` / `$2b$` / `$2y$` via a dynamic `bcryptjs` import and rehashes to PBKDF2. Login also rehashes when the stored PBKDF2 count is below the current setting.
+- **Database.** Existing Supabase project `tgfudufxslhrxbdxcnyl`, region `eu-west-1`, through Hyperdrive with caching disabled. Runtime login is `poker_server` (already `LOGIN` there) on the session pooler, port 5432. Migrations use the admin URL on port 5432 (session pooler user `postgres.<ref>`, or direct `db.<ref>.supabase.co`). Port 6543 is rejected. Worker placement `aws:eu-west-1`. Durable Object hint `weur`.
+- **Admin.** `ADMIN_REQUIRE_CF_ACCESS` defaults to `false`. With `CF_ACCESS_*` unset, `/api/admin` skips the Access JWT and still requires `User.role === ADMIN`. `true` restores the strict https check.
+- **Prisma.** The generated client and its WASM are imported at the top of the Worker and Durable Object entry modules so compile happens at startup. `new PrismaClient({ adapter })` is still per request. pg pools are not stored on `globalThis`.
+- **Risks.** Free-plan CPU is 10 ms per request. PBKDF2 at 10,000 iterations and Prisma query execution share that budget; a paid plan raises the budget and the iteration count together. Free daily request quotas apply. Hyperdrive caching stays off so chip and seat reads are not stale. See [SUPABASE_MIGRATION_PLAN.md](./SUPABASE_MIGRATION_PLAN.md) before the first `prisma migrate deploy`.
 
 ## 0. How to use this spec
 
@@ -863,7 +875,7 @@ On pull request:
 
 On push to the default branch, after the above, in order:
 
-1. `prisma migrate deploy` from `apps/server` with secret `NEON_DIRECT_URL` as `DIRECT_URL` / `DATABASE_URL` for that step only. The job must not load the repo-root `.env`. Refuse to run if the URL host contains the current Supabase host (check for the known production host fragment in the workflow and fail closed).
+1. `prisma migrate deploy` from `apps/server` with secret `SUPABASE_DIRECT_URL` as `DIRECT_URL` / `DATABASE_URL` for that step only. The job must not load the repo-root `.env`. Accept only the Supabase admin session pooler (`*.pooler.supabase.com:5432`, user `postgres.<ref>`) or the direct host (`db.<ref>.supabase.co:5432`, user `postgres`). Refuse port 6543, loopback, and a runtime login.
 2. `wrangler deploy -w` is wrong for this repo layout. Deploy from each app:
 
 ```sh
@@ -1020,7 +1032,7 @@ Files owned:
 
 - `.github/workflows/cloudflare.yml`
 
-Acceptance: the PR job does not receive `NEON_DIRECT_URL` and cannot reach a database. The default-branch job's migrate step fails if the URL looks like the current Supabase host. Workflow does not run `migrate dev`, `db push`, `db seed`, or `npm run dev`.
+Acceptance: the PR job does not receive `SUPABASE_DIRECT_URL` and cannot reach a database. The default-branch job's migrate step accepts only the Supabase admin session-pooler URL on port 5432 (or the direct `db.<ref>.supabase.co` host) and rejects port 6543 and loopback. Workflow does not run `migrate dev`, `db push`, `db seed`, or `npm run dev`.
 
 ### Parallelism
 

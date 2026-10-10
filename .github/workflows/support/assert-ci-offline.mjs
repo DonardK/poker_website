@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 /**
- * Check jobs and the start of deploy must not be able to reach Neon or
- * Supabase. DATABASE_URL and DIRECT_URL stay on a loopback port with nothing
- * listening. NEON_DIRECT_URL and the Cloudflare deploy token are unset here;
- * the production job passes them only to the later steps that need them.
+ * Check jobs and the start of deploy must not be able to reach Supabase.
+ * DATABASE_URL and DIRECT_URL stay on a loopback port with nothing
+ * listening. SUPABASE_DIRECT_URL and the Cloudflare deploy token are unset
+ * here; the production job passes the database URL only to the migrate step.
  */
 const STUB_HOSTS = new Set(["127.0.0.1", "localhost"]);
 
@@ -14,8 +14,8 @@ function fail(message) {
 
 const allowCloudflare = process.argv.includes("--allow-cloudflare");
 
-if (process.env.NEON_DIRECT_URL?.trim()) {
-  fail("NEON_DIRECT_URL is set. This step must not receive the production database URL.");
+if (process.env.SUPABASE_DIRECT_URL?.trim() || process.env.NEON_DIRECT_URL?.trim()) {
+  fail("SUPABASE_DIRECT_URL is set. This step must not receive the production database URL.");
 }
 if (!allowCloudflare && (process.env.CLOUDFLARE_API_TOKEN?.trim() || process.env.CLOUDFLARE_ACCOUNT_ID?.trim())) {
   fail("Cloudflare deploy credentials are set. This step must not receive them.");
@@ -40,5 +40,5 @@ for (const name of ["DATABASE_URL", "DIRECT_URL"]) {
 }
 
 console.log(allowCloudflare
-  ? "Database env is the loopback stub. NEON_DIRECT_URL is unset."
-  : "Database env is the loopback stub. NEON_DIRECT_URL and Cloudflare deploy credentials are unset.");
+  ? "Database env is the loopback stub. SUPABASE_DIRECT_URL is unset."
+  : "Database env is the loopback stub. SUPABASE_DIRECT_URL and Cloudflare deploy credentials are unset.");

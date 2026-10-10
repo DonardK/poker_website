@@ -1,10 +1,10 @@
 # Cloudflare deploy runbook
 
-This is the operator path for Neon and the two Cloudflare Workers (`poker-api`, `poker-web`). The workflow that checks pull requests and deploys the default branch is [`.github/workflows/cloudflare.yml`](../../.github/workflows/cloudflare.yml). Product behavior and the Wrangler shape are in [ARCHITECTURE.md](ARCHITECTURE.md). The `poker_app` role is in [apps/server/prisma/RUNTIME_ROLE.md](../../apps/server/prisma/RUNTIME_ROLE.md).
+This is the operator path for the Workers Free-plan demo: one `*.workers.dev` origin, the existing Supabase project, and the two Workers (`poker-web` public, `poker-api` private). The workflow that checks pull requests and deploys the default branch is [`.github/workflows/cloudflare.yml`](../../.github/workflows/cloudflare.yml). Product behavior is in [ARCHITECTURE.md](ARCHITECTURE.md) (section "Demo on the Workers Free plan"). Pending SQL is in [SUPABASE_MIGRATION_PLAN.md](./SUPABASE_MIGRATION_PLAN.md). Roles are in [apps/server/prisma/RUNTIME_ROLE.md](../../apps/server/prisma/RUNTIME_ROLE.md).
 
-The repo-root `.env` is the live Supabase database. Leave it there. Neon URLs go in the shell for a one-off migrate, in the Hyperdrive config, and in the GitHub environment secret `NEON_DIRECT_URL`. They do not go in `.env`, `wrangler.jsonc`, or a Worker secret.
+The repo-root `.env` is the live Supabase database. Leave it there. The migration URL goes in the shell for a one-off migrate and in the GitHub environment secret `SUPABASE_DIRECT_URL`. The runtime URL goes only into Hyperdrive. Neither goes in `.env`, `wrangler.jsonc`, or a Worker secret.
 
-Workers Paid is required. Free-plan CPU is too small for password hashing.
+The demo runs on the Free plan. Password hashing is PBKDF2 at `PASSWORD_PBKDF2_ITERATIONS=10000`. A later paid plan sets that var to `600000` and can add a custom domain; the service binding and Supabase settings stay.
 
 Use these commands:
 
@@ -16,82 +16,66 @@ Use these commands:
 | Production deploy | push to the default branch, or re-run that workflow |
 | Rollback | `npx wrangler rollback --message "restore previous version"` |
 
-Do not run `prisma migrate dev`, `prisma db push`, `prisma migrate reset`, `prisma db seed`, `npm run db:seed`, `npm run db:reset`, or `npm run dev` against Neon or while the root `.env` is the database you are touching. The dev server deals hands and moves chips. Seed writes fake users.
+Do not run `prisma migrate dev`, `prisma db push`, `prisma migrate reset`, `prisma db seed`, `npm run db:seed`, `npm run db:reset`, or `npm run dev` against Supabase or while the root `.env` is the database you are touching. The dev server deals hands and moves chips. Seed writes fake users.
 
 ## 1. Accounts
 
-Use one Cloudflare account for the zone, both Workers, Hyperdrive, Turnstile, and Access. Create a Neon account separate from the Supabase project. Create two GitHub environments named `production` and `preview` (Settings → Environments) before the first deploy. The workflow looks up those names exactly.
+Use one Cloudflare account for both Workers, Hyperdrive, Turnstile, and (later) Access. There is no custom domain on this demo, so there is no zone. The database is the existing Supabase project `tgfudufxslhrxbdxcnyl` in `eu-west-1`. Create two GitHub environments named `production` and `preview` (Settings → Environments) before the first deploy. The workflow looks up those names exactly.
 
 On `production`, turn on required reviewers if a push should wait for a person before it migrates.
 
-## 2. Create the Neon project
+## 2. Supabase connection
 
-Create a new Neon project in the region closest to the players. For a European audience that is **AWS eu-central-1** (Frankfurt). Do not reuse the Supabase instance.
+The database already exists: project ref `tgfudufxslhrxbdxcnyl`, region `eu-west-1`. Do not create a second database and do not run SQL from this step until [SUPABASE_MIGRATION_PLAN.md](./SUPABASE_MIGRATION_PLAN.md) says the history check passed.
 
-In the Neon SQL editor, create a database named `poker` so the name matches local Docker:
+Two URLs:
 
-```sql
-CREATE DATABASE poker;
-```
+| Use | User | Host | Port |
+| --- | --- | --- | --- |
+| Migrations (`SUPABASE_DIRECT_URL`) | `postgres.<ref>` | `aws-1-eu-west-1.pooler.supabase.com` (session pooler) | 5432 |
+| Migrations, alternative | `postgres` | `db.<ref>.supabase.co` | 5432 |
+| Hyperdrive runtime | `poker_server.<ref>` | the same session pooler | 5432 |
 
-Copy the **direct** connection string (the host has no `-pooler`). It looks like:
+Port **6543** is transaction mode. The workflow rejects it. Interactive transactions and migrations need session mode or the direct host.
 
-```text
-postgresql://neondb_owner:PASSWORD@ep-example.eu-central-1.aws.neon.tech/neondb?sslmode=require
-```
-
-Change the database name to `poker`, keep `sslmode=require`, and keep the user `neondb_owner` for migrations. URL-encode the password if it contains reserved characters. A hex password from the command below does not need encoding.
-
-Hyperdrive is the pooler. The origin hostname is this direct host. A second pooler (`-pooler` in the host, or `pooler.supabase.com`) breaks interactive transactions. [ARCHITECTURE.md](ARCHITECTURE.md) section 4.4 is the rule for this deploy. `RUNTIME_ROLE.md` shows a pooled app URL for the old process that pooled for itself.
-
-Set `apps/edge/wrangler.jsonc` `placement.region` to that same region, for example `aws:eu-central-1`. Set `TABLE_DO_LOCATION_HINT` to the Durable Object hint closest to it. For eu-central-1 use `weur`. The allowed hints are listed in `apps/edge/src/index.ts` (`wnam`, `enam`, `sam`, `weur`, `eeur`, `apac`, `apac-ne`, `apac-se`, `oc`, `afr`, `me`).
+`placement.region` is `aws:eu-west-1`. `TABLE_DO_LOCATION_HINT` is `weur`. A later region change is those two vars plus a new Hyperdrive config. The allowed hints are listed in `apps/edge/src/index.ts`.
 
 ## 3. Apply migrations
 
-Migrations live in `apps/server/prisma/migrations`. Apply them as `neondb_owner` on the direct host. `apps/server/prisma.config.ts` loads the repo-root `.env` and does not override variables that are already set, so set both URLs in the shell first.
+Run the read-only checks in [SUPABASE_MIGRATION_PLAN.md](./SUPABASE_MIGRATION_PLAN.md) first. Then apply as the Supabase admin on port 5432. `apps/server/prisma.config.ts` loads the repo-root `.env` and does not override variables that are already set, so set both URLs in the shell first. Do not print the URL.
 
-PowerShell, from the repo root:
+PowerShell, from the repo root, after the history check:
 
 ```powershell
-$env:DIRECT_URL = "postgresql://neondb_owner:PASSWORD@ep-example.eu-central-1.aws.neon.tech/poker?sslmode=require"
-$env:DATABASE_URL = $env:DIRECT_URL
-node -e "const u = new URL(process.env.DIRECT_URL); if (!u.hostname.endsWith('.neon.tech') || u.hostname.includes('pooler') || u.hostname.includes('supabase')) { console.error(u.hostname); process.exit(1) } console.log(u.hostname)"
+$env:SUPABASE_DIRECT_URL = "postgresql://postgres.<ref>:PASSWORD@aws-1-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=require"
+$env:DIRECT_URL = $env:SUPABASE_DIRECT_URL
+$env:DATABASE_URL = $env:SUPABASE_DIRECT_URL
+node .github/workflows/support/assert-supabase-direct-url.mjs
 npm run prisma:migrate -w @poker/server
+Remove-Item Env:SUPABASE_DIRECT_URL
 Remove-Item Env:DIRECT_URL
 Remove-Item Env:DATABASE_URL
 ```
 
-The `node` line prints only the host. Stop if it is not the Neon direct host.
+The assert script prints only the host and port. It refuses loopback, port 6543, a non-admin user, and a checkout that still contains `.env` (move that file aside for the command, then put it back). GitHub's production job is the only workflow job that reads `SUPABASE_DIRECT_URL`, and only on this step.
 
-That npm script is `prisma migrate deploy`. It applies pending SQL files and does not seed. Every later production deploy runs the same command from GitHub, with secret `NEON_DIRECT_URL` copied into `DIRECT_URL` and `DATABASE_URL` for that step only. The job refuses to start when the checkout contains `.env`, `apps/server/.env`, or `apps/edge/.dev.vars`, and it refuses a URL that is empty, not `postgresql://`, loopback, a Supabase host (`*.supabase.co`, `pooler.supabase.com`, or any host containing `supabase`), or a pooler host (any host containing `pooler`).
+That npm script is `prisma migrate deploy`. It applies pending SQL files and does not seed. On Supabase, `poker_server` stays the runtime login. The migration does not create `poker_app` when `poker_server` can already log in.
 
-If a migration says it cannot create `poker_app`, create the role in the Neon console (`LOGIN`, `NOSUPERUSER`, `NOBYPASSRLS`, `INHERIT`, no password in git) and run the migrate command again. The migration then grants `poker_server`. Details are in `RUNTIME_ROLE.md`.
+## 4. Runtime password
 
-## 4. Set the `poker_app` password
+The demo Hyperdrive user is the existing `poker_server` login. Do not create `poker_app` on this project and do not put a new password in a migration. If that login's password is already the one in the ignored root `.env`, reuse it only inside the Hyperdrive create command below. Local docker still uses `poker_app`; that password is not the Supabase password.
 
-The game connects as `poker_app`. Migrations do not set its password. In the Neon SQL editor, connected as `neondb_owner` to database `poker`:
-
-```sql
-ALTER ROLE poker_app PASSWORD 'choose-a-long-random-password';
-```
-
-Generate the password on your machine and do not commit it:
-
-```powershell
-node -e "console.log(require('node:crypto').randomBytes(24).toString('hex'))"
-```
-
-`poker_app` is `LOGIN`, `NOSUPERUSER`, `NOBYPASSRLS`, and a member of `poker_server`. `poker_server` stays `NOLOGIN`. The API refuses to boot in production if the login is a superuser, has `BYPASSRLS`, or can `UPDATE` or `DELETE` `"Hand"`.
+The API refuses a login that is a superuser, has `BYPASSRLS`, or can `UPDATE` or `DELETE` `"Hand"`. `poker_server` on this project is outside those three.
 
 ## 5. Create Hyperdrive
 
 From `apps/edge`, logged into this Cloudflare account (`npx wrangler login`, or `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the shell for this command only):
 
 ```powershell
-npx wrangler hyperdrive create poker-neon --connection-string="postgresql://poker_app:PASSWORD@ep-example.eu-central-1.aws.neon.tech/poker?sslmode=require" --caching-disabled
+npx wrangler hyperdrive create poker-supabase --connection-string="postgresql://poker_server.<ref>:PASSWORD@aws-1-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=require" --caching-disabled
 ```
 
-The user is `poker_app`. The host is the same direct Neon host as the migration URL, with no `-pooler`. `--caching-disabled` is required: chip moves and seats are read-after-write.
+The user is `poker_server.<ref>`. The port is 5432. `--caching-disabled` is required: chip moves and seats are read-after-write. Do not point Hyperdrive at the `postgres` admin user or at port 6543.
 
 The connection string contains the database password, so it will land in your PowerShell history. After the command succeeds, remove that line from `(Get-PSReadLineOption).HistorySavePath`. Do not commit the transcript.
 
@@ -99,7 +83,7 @@ The command prints a Hyperdrive `id` (32 hex characters). There is no `DATABASE_
 
 ## 6. Put the id in Wrangler
 
-In `apps/edge/wrangler.jsonc`, replace `<HYPERDRIVE_ID_CACHE_DISABLED>` with that id. Leave `localConnectionString` as the localhost placeholder. Do not put a Neon or Supabase URL in the file.
+In `apps/edge/wrangler.jsonc`, replace `<HYPERDRIVE_ID_CACHE_DISABLED>` with that id. Leave `localConnectionString` as the localhost placeholder. Do not put a database URL in the file. Replace `<subdomain>` in `CLIENT_ORIGIN` with the account's `workers.dev` subdomain (`https://poker-web.<subdomain>.workers.dev`).
 
 Leave `<PREVIEW_HYPERDRIVE_ID_CACHE_DISABLED>` until section 17. Preview must not use the production id.
 
@@ -109,7 +93,7 @@ Commit the id. It is an account identifier, not a password.
 
 In the Cloudflare dashboard, open Turnstile and add a widget.
 
-1. Hostname: the production domain.
+1. Hostname: `poker-web.<subdomain>.workers.dev` (the web Worker, after the first deploy shows the real host).
 2. Widget mode: Managed.
 3. Pre-clearance: off.
 
@@ -151,7 +135,7 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 | `GAME_ENCRYPTION_ACTIVE_KEY_ID` | `k1` |
 | `TURNSTILE_SECRET_KEY` | the Turnstile secret key |
 
-`k1` is a new ring for an empty Neon database. Names come from `apps/edge/src/env.ts` and [ARCHITECTURE.md](ARCHITECTURE.md) section 4.2. `secret put` creates a Worker version. On a brand-new script, run section 14's first deploy, then these six commands, then the smoke test. Later deploys keep the secrets.
+`k1` is a new ring for tables this Worker will encrypt. Existing Supabase rows that were sealed with the current game key must keep that key; do not invent a second ring for rows that are already encrypted. Names come from `apps/edge/src/env.ts`. `secret put` creates a Worker version. On a brand-new script, run section 14's first deploy, then these six commands, then the smoke test. Later deploys keep the secrets.
 
 Preview uses the same six names with `--env preview` and different values (section 17).
 
@@ -166,7 +150,7 @@ Local `wrangler dev` reads the same six names from `apps/edge/.dev.vars` (gitign
 | `HYPERDRIVE` | binding. Local URL is `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` in `.dev.vars`, host `127.0.0.1`, user `poker_app` |
 | `TABLES`, `LOBBY`, `USER_SESSIONS` | Durable Object bindings |
 | `RL_GENERAL`, `RL_CREDENTIALS`, `RL_REFRESH`, `RL_ADMIN`, `RL_WS` | rate-limit bindings |
-| `CLIENT_ORIGIN` | var. Production `https://<domain>`. Local `http://127.0.0.1:3000` when using the Next dev proxy |
+| `CLIENT_ORIGIN` | var. Demo `https://poker-web.<subdomain>.workers.dev`. Local `http://127.0.0.1:3000` when using the Next dev proxy |
 | `TERMS_VERSION` | var |
 | `JWT_ACCESS_TTL`, `JWT_REFRESH_TTL` | vars |
 | `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL` | vars |
@@ -174,30 +158,39 @@ Local `wrangler dev` reads the same six names from `apps/edge/.dev.vars` (gitign
 | `TURN_TIME_BANK_MS` | var |
 | `TIME_BANK_INITIAL_MS`, `TIME_BANK_MAX_MS`, `TIME_BANK_REFILL_MS`, `TIME_BANK_REFILL_EVERY_HANDS` | vars |
 | `ENABLE_LEGACY_BOTS` | var (`true` or `false`) |
+| `PASSWORD_PBKDF2_ITERATIONS` | var. `10000` on Free. `600000` on Paid |
+| `ENABLE_LEGACY_BCRYPT` | var. `false` on the demo. `true` only to accept old bcrypt hashes and rehash them |
+| `ADMIN_REQUIRE_CF_ACCESS` | var. `false` on the demo (skip the Access JWT when `CF_ACCESS_*` are unset). `true` for the strict check |
 | `TURNSTILE_SITE_KEY` | var. Not a secret. Local test site key `1x00000000000000000000AA` |
-| `TABLE_DO_LOCATION_HINT` | var |
-| `CF_ACCESS_AUD`, `CF_ACCESS_TEAM_DOMAIN` | vars. See section 12. Empty together only when `CLIENT_ORIGIN` is `http://` |
+| `TABLE_DO_LOCATION_HINT` | var. Demo `weur` |
+| `CF_ACCESS_AUD`, `CF_ACCESS_TEAM_DOMAIN` | vars. See section 12. With `ADMIN_REQUIRE_CF_ACCESS=false`, both empty does not 500 |
 | `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `WS_TICKET_SECRET` | secrets. At least 32 characters, all different |
 | `GAME_ENCRYPTION_KEYS`, `GAME_ENCRYPTION_ACTIVE_KEY_ID` | secrets |
 | `TURNSTILE_SECRET_KEY` | secret |
 
-`next dev` proxies `/api` and `/ws` to `http://127.0.0.1:8787` (`POKER_EDGE_ORIGIN` overrides the target). Point `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SOCKET_URL` at the Next origin (`http://127.0.0.1:3000`) so the browser stays same-origin with the refresh cookie (`Path=/api/auth`) and the WebSocket ticket cookie (`Path=/ws`).
+`next dev` proxies `/api` and `/ws` to `http://127.0.0.1:8787` (`POKER_EDGE_ORIGIN` overrides the target). Leave `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SOCKET_URL` empty so the browser calls the Next origin. Cookies stay host-only (`Path=/api/auth` and `Path=/ws`). Set both to `http://localhost:4000` only for the legacy `npm run dev` server.
+
+Local multi-config, after an OpenNext build, from the repo root:
+
+```powershell
+npx wrangler dev -c apps/web/wrangler.jsonc -c apps/edge/wrangler.jsonc
+```
+
+The first config is the web Worker. Its `API` binding calls `poker-api` in the same dev session. If that command cannot start because `.open-next/worker.js` is missing, run `npx opennextjs-cloudflare build` in `apps/web` first. `next dev` plus `wrangler dev` in `apps/edge` is the fallback and does not exercise the service binding.
 
 ## 9. Web environment variables
 
-`NEXT_PUBLIC_*` values are inlined when the web Worker is built. Production is one origin: the page, the API, and the WebSocket share `https://<domain>`. `example.com/api/*` and `example.com/ws/*` are more specific than `example.com/*`, so those requests reach `poker-api`.
-
-Set the same three values in `apps/web/wrangler.jsonc` and in the GitHub `production` environment variables:
+Leave `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SOCKET_URL` empty in `apps/web/wrangler.jsonc` and in the GitHub `production` environment. The client uses the page origin, so the `workers.dev` subdomain is not baked in at build time. `'self'` in the CSP covers that host, including `wss`.
 
 | Name | Production value |
 | --- | --- |
-| `NEXT_PUBLIC_API_URL` | `https://<domain>` |
-| `NEXT_PUBLIC_SOCKET_URL` | `https://<domain>` |
+| `NEXT_PUBLIC_API_URL` | empty |
+| `NEXT_PUBLIC_SOCKET_URL` | empty |
 | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | the Turnstile site key |
 
-Set `apps/edge/wrangler.jsonc` var `CLIENT_ORIGIN` to that same origin. Replace every `example.com` route pattern and `zone_name` in both Wrangler files with `<domain>`. Production `workers_dev` stays `false` on both Workers.
+`CLIENT_ORIGIN` on `poker-api` is `https://poker-web.<subdomain>.workers.dev`. `poker-web` has `workers_dev: true` and a service binding `API` → `poker-api`. `poker-api` has `workers_dev: false` and no routes. There is no zone.
 
-The deploy job checks that the file and the GitHub variables agree, use https, and are not `example.com`, `.invalid`, or `workers.dev`.
+The deploy job checks that an empty public URL stays empty, and that a non-empty one is https and matches `CLIENT_ORIGIN`. It rejects `example.com` and a host that still contains `<`.
 
 ## 10. Rate-limit namespaces
 
@@ -213,21 +206,13 @@ The namespaces are the `ratelimits` array in `apps/edge/wrangler.jsonc`. They ar
 
 If the first deploy reports that one of `1001`–`1005` is already used in this account, pick an unused positive integer, put it in the file, and keep it. Two bindings that share a namespace share counters. These limits are per Cloudflare location. Postgres lockout is the global control for passwords.
 
-## 11. Domain, DNS, and routes
+## 11. Hostname
 
-Add the domain to this Cloudflare account and finish the nameserver move.
+There is no custom domain. After the first deploy, the public URL is `https://poker-web.<subdomain>.workers.dev`. Find `<subdomain>` in the Cloudflare dashboard (Workers & Pages → your workers.dev subdomain) and put it in `CLIENT_ORIGIN` before that deploy if the placeholder is still in the file.
 
-Workers routes attach only when the hostname has a proxied DNS record. For an apex with no other origin, create a proxied AAAA record for `@` pointing at `100::`. Set SSL/TLS to Full.
+`poker-web` forwards `/api/*`, `/ws`, and `/ws/*` to `poker-api`. The API Worker is not on `workers.dev`. A later paid plan can add zone routes and set `workers_dev` back to false on the web Worker; until then, leave the routes out.
 
-| Worker | Route pattern | Zone |
-| --- | --- | --- |
-| `poker-api` | `<domain>/api/*` | `<domain>` |
-| `poker-api` | `<domain>/ws/*` | `<domain>` |
-| `poker-web` | `<domain>/*` | `<domain>` |
-
-Deploy writes these routes from the Wrangler files. The more specific `/api` and `/ws` patterns win over the site catch-all.
-
-Optional zone hardening from [ARCHITECTURE.md](ARCHITECTURE.md) section 10.4: a managed WAF ruleset, bot fight mode, a rate-limiting rule on `POST /api/auth/login`, `/api/auth/register`, and `/api/auth/guest`, and a cache bypass for `/api/*` and `/ws/*`.
+Zone WAF, bot fight mode, and cache rules need a domain. They are not part of this demo.
 
 ## 12. Cloudflare Access for `/api/admin`
 
@@ -235,11 +220,11 @@ Access is the outer gate. The Worker still requires a player session and `User.r
 
 1. Open **Zero Trust → Access controls → Applications → Create application → Self-hosted**.
 2. Name it `poker admin`.
-3. Public hostname: the production domain. Path: `/api/admin`. If the form does not include subpaths, add `/api/admin/*` as well.
+3. Public hostname: `poker-web.<subdomain>.workers.dev`. Path: `/api/admin`. If the form does not include subpaths, add `/api/admin/*` as well. Access on a `workers.dev` host may be unavailable on the Free plan; leave it off for the demo.
 4. Add an Allow policy whose Include rule is the operator emails, or a service token for a non-browser client. One-time PIN works when you have no other identity provider.
 5. Confirm `/`, `/api/auth/*`, `/api/health`, and `/ws/*` are outside this application.
 6. Do not enable "protect this Worker" on `poker-api` or `poker-web`. That would put a login wall in front of the whole site.
-7. Copy the application's AUD tag into the Wrangler var `CF_ACCESS_AUD`. Put the team name (the subdomain of `https://<team>.cloudflareaccess.com`, not the full host) into `CF_ACCESS_TEAM_DOMAIN`. Both are vars in `apps/edge/wrangler.jsonc`, not secrets. Set both, or leave both empty. An `https://` `CLIENT_ORIGIN` with either one missing makes `GET /api/admin/*` return 500. An `http://` origin with both empty skips the Access JWT; `User.role === ADMIN` is still required.
+7. Copy the application's AUD tag into the Wrangler var `CF_ACCESS_AUD`. Put the team name (the subdomain of `https://<team>.cloudflareaccess.com`, not the full host) into `CF_ACCESS_TEAM_DOMAIN`. Both are vars in `apps/edge/wrangler.jsonc`, not secrets. For the demo, leave both empty and leave `ADMIN_REQUIRE_CF_ACCESS` as `false`. The admin route then skips the Access JWT and still requires `User.role === ADMIN`. Set `ADMIN_REQUIRE_CF_ACCESS` to `true` only when both Access vars are set. With that flag, an `https://` origin and either var missing makes `GET /api/admin/*` return 500.
 
 Hostname-based Access is the path protection described in Cloudflare's Workers Access docs. A policy with no Allow rule denies every request.
 
@@ -249,7 +234,7 @@ Create the API token under My Profile → API Tokens. The GitHub token needs:
 
 - Account / Workers Scripts / Edit
 - Account / Account Settings / Read
-- Zone / Workers Routes / Edit, limited to this zone
+- Zone / Workers Routes / Edit is needed only after a custom domain is added. The workers.dev demo does not use it.
 
 The token you use on your machine for `wrangler hyperdrive create` also needs Account / Hyperdrive / Edit. The GitHub token does not. Continuous integration does not create Hyperdrive configs or change secrets.
 
@@ -259,16 +244,16 @@ Store the account id from the dashboard overview. Treat it as a secret in GitHub
 
 | Kind | Name | Value |
 | --- | --- | --- |
-| Secret | `NEON_DIRECT_URL` | `postgresql://neondb_owner:…@ep-….eu-central-1.aws.neon.tech/poker?sslmode=require` (direct host, not `poker_app`, not a pooler, not Supabase) |
+| Secret | `SUPABASE_DIRECT_URL` | `postgresql://postgres.<ref>:…@aws-1-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=require` (session pooler, port 5432, admin user, not `poker_server`, not port 6543). Direct `db.<ref>.supabase.co:5432` with user `postgres` is also accepted. |
 | Secret | `CLOUDFLARE_API_TOKEN` | the deploy token |
 | Secret | `CLOUDFLARE_ACCOUNT_ID` | this account |
-| Variable | `NEXT_PUBLIC_API_URL` | `https://<domain>` |
-| Variable | `NEXT_PUBLIC_SOCKET_URL` | `https://<domain>` |
+| Variable | `NEXT_PUBLIC_API_URL` | empty |
+| Variable | `NEXT_PUBLIC_SOCKET_URL` | empty |
 | Variable | `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | the site key |
 
 ### Environment `preview`
 
-Create this before enabling previews. Do not add `NEON_DIRECT_URL` to it.
+Create this before enabling previews. Do not add `SUPABASE_DIRECT_URL` to it.
 
 | Kind | Name |
 | --- | --- |
@@ -301,10 +286,10 @@ Suggested branch-protection checks. GitHub shows them as `Cloudflare / <job>`:
 
 ## 14. First deploy
 
-1. Finish sections 2–13. The top-level Wrangler files no longer contain `example.com`, `<HYPERDRIVE_ID_CACHE_DISABLED>`, or a Turnstile test key.
-2. Commit the Wrangler edits. Do not commit `.env`, `.dev.vars`, passwords, or `NEON_DIRECT_URL`.
+1. Finish sections 2–13. The top-level Wrangler files no longer contain `<HYPERDRIVE_ID_CACHE_DISABLED>`, `<subdomain>`, or a Turnstile test key.
+2. Commit the Wrangler edits. Do not commit `.env`, `.dev.vars`, passwords, or `SUPABASE_DIRECT_URL`.
 3. Push to `main` (the repository default branch). The workflow runs the checks, then the production job.
-4. The production job checks the Wrangler files and the GitHub variables, refuses a bad `NEON_DIRECT_URL`, runs `prisma migrate deploy`, deploys `poker-api` with `--env=""` (the top-level Worker, not `preview`), then runs `npm run deploy -w @poker/web` so the public URLs are inlined from the GitHub variables.
+4. The production job checks the Wrangler files and the GitHub variables, refuses a bad `SUPABASE_DIRECT_URL`, runs `prisma migrate deploy`, deploys `poker-api` with `--env=""` (the top-level Worker, not `preview`), then runs `npm run deploy -w @poker/web`. Empty `NEXT_PUBLIC_*` URLs stay empty so the browser uses the workers.dev origin.
 5. A second push waits. The deploy concurrency group is `cloudflare-production-deploy`. In-progress production deploys are not cancelled.
 6. If this is the first time the API Worker exists, run the six `wrangler secret put` commands from section 8 now.
 7. Smoke-test (section 15).
@@ -343,7 +328,7 @@ npx wrangler rollback --message "restore previous version"
 Rollback limits, from the Workers rollback docs:
 
 - It restores a Worker version (one of the 100 most recent) and sends traffic there.
-- It does not roll back Neon. Migrations stay applied. Ship a new forward migration if the schema has to change again.
+- It does not roll back Supabase. Migrations stay applied. Ship a new forward migration if the schema has to change again.
 - It does not roll back Durable Object storage or Hyperdrive's database.
 - It cannot cross a Durable Object `exports` lifecycle change.
 - Bindings to a resource that was deleted since that version cannot be rolled back onto.
@@ -356,39 +341,28 @@ Roll the API and the web Worker back as a pair when a release changed both.
 
 `wrangler versions upload` is the wrong tool here. The API config uses Durable Object `exports`, and that command fails on those configs and does not apply Durable Object lifecycle changes. A Version URL also runs with the production resources of that Worker, including the production Hyperdrive, and Version URLs are not issued for Workers that export Durable Objects. Preview has to be a separate Worker and a separate Hyperdrive id.
 
-The preview job runs on pull requests from this repository only when the repository variable `CLOUDFLARE_PREVIEW_ENABLED` is `true`. It uses the GitHub environment `preview`. It does not read `NEON_DIRECT_URL`. It deploys `poker-api-preview` and `poker-web-preview`, then comments the `workers.dev` URLs on the pull request.
+The preview job runs on pull requests from this repository only when the repository variable `CLOUDFLARE_PREVIEW_ENABLED` is `true`. It uses the GitHub environment `preview`. It does not read `SUPABASE_DIRECT_URL`. It deploys `poker-api-preview` (not public) and `poker-web-preview` (`workers.dev`), then comments the web URL on the pull request. The web Worker's preview service binding is `API` → `poker-api-preview`.
 
 Set it up in this order:
 
-1. Create a Neon branch (or a second project) that is not the production database. Apply migrations with that branch's direct `neondb_owner` URL, using the shell method in section 3. Do not store that URL in GitHub.
-2. Set a `poker_app` password on that branch (section 4).
-3. Create a second Hyperdrive config. Caching stays off. The connection string uses that branch's direct host and `poker_app`:
+1. Use a Supabase branch, or a second project, that is not the demo database. Apply migrations with that database's admin URL on port 5432, using the shell method in section 3. Do not store that URL in GitHub.
+2. Point preview Hyperdrive at that database's `poker_server` session-pooler URL (port 5432), caching disabled. If that database still has `poker_server` as `NOLOGIN`, use `poker_app` instead, the same rule as local docker.
+3. Create a second Hyperdrive config:
 
 ```powershell
-npx wrangler hyperdrive create poker-neon-preview --connection-string="postgresql://poker_app:PASSWORD@ep-preview.eu-central-1.aws.neon.tech/poker?sslmode=require" --caching-disabled
+npx wrangler hyperdrive create poker-supabase-preview --connection-string="postgresql://poker_server.<ref>:PASSWORD@aws-1-eu-west-1.pooler.supabase.com:5432/postgres?sslmode=require" --caching-disabled
 ```
 
-4. Put that id in `apps/edge/wrangler.jsonc` under `env.preview.hyperdrive`. It must differ from the production id. `routes` stays `[]` and `workers_dev` stays `true`.
-5. Add a preview environment to `apps/web/wrangler.jsonc` if it is not there yet. An omitted `routes` array inherits the production routes, so the array has to be present and empty:
-
-```jsonc
-"env": {
-  "preview": {
-    "name": "poker-web-preview",
-    "workers_dev": true,
-    "routes": []
-  }
-}
-```
-
+4. Put that id in `apps/edge/wrangler.jsonc` under `env.preview.hyperdrive`. It must differ from the production id. `routes` stays `[]` and `workers_dev` stays `false` (the API is only reached through the binding).
+5. `apps/web/wrangler.jsonc` `env.preview` is `poker-web-preview`, `workers_dev: true`, `routes: []`, service `API` → `poker-api-preview`.
 6. Find the account's `workers.dev` subdomain in the dashboard. Set the edge preview var `CLIENT_ORIGIN` to `https://poker-web-preview.<subdomain>.workers.dev`.
-7. Set the preview GitHub variables to the API origin, not the production domain:
+7. Leave the preview GitHub API and socket variables empty, same as production. Set the Turnstile site key to a real key whose widget allows the preview hostname:
 
 | Variable | Value |
 | --- | --- |
-| `NEXT_PUBLIC_API_URL` | `https://poker-api-preview.<subdomain>.workers.dev` |
-| `NEXT_PUBLIC_SOCKET_URL` | the same API origin |
-| `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | a real site key whose widget allows those hostnames |
+| `NEXT_PUBLIC_API_URL` | empty |
+| `NEXT_PUBLIC_SOCKET_URL` | empty |
+| `NEXT_PUBLIC_TURNSTILE_SITE_KEY` | a real site key whose widget allows the preview hostname |
 
 8. Put the six secrets on the preview Worker, with different values from production:
 
@@ -423,6 +397,6 @@ On pull requests, and again on a push to the default branch before deploy:
 
 `rng-nightly` runs the full shuffle certification on the nightly schedule and on manual runs. It is not part of deploy.
 
-Check jobs set `DATABASE_URL` and `DIRECT_URL` to `127.0.0.1:1` and a script fails the job if `NEON_DIRECT_URL` or the Cloudflare deploy token is present. Nothing there can open a socket to Neon or Supabase. `test:db` replaces that stub inside its own child process with the embedded cluster, then deletes the cluster.
+Check jobs set `DATABASE_URL` and `DIRECT_URL` to `127.0.0.1:1` and a script fails the job if `SUPABASE_DIRECT_URL` or the Cloudflare deploy token is present. Nothing there can open a socket to Supabase. `test:db` replaces that stub inside its own child process with the embedded cluster, then deletes the cluster.
 
-The production job is the only job that reads `NEON_DIRECT_URL`.
+The production job is the only job that reads `SUPABASE_DIRECT_URL`.

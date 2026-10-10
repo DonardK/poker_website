@@ -13,66 +13,75 @@
 --
 --   ALTER ROLE poker_app PASSWORD 'choose-a-long-random-password';
 --
--- Then point the game server (and Cloudflare Hyperdrive) at poker_app.
+-- Then point local docker / Neon Hyperdrive at poker_app.
+-- The Supabase demo keeps poker_server (see the role block below).
 -- Keep the administrator URL in DIRECT_URL for migrations only.
 -- =============================================================================
 --
--- Neon
--- ----
--- neondb_owner is not a true superuser. CREATE ROLE works for members of
--- neon_superuser (the role CI should use for DIRECT_URL). This migration does
--- not CREATE EVENT TRIGGER: Neon used to reject that for non-superusers, and
--- even after neon_superuser gained it, a lesser migration role still cannot.
+-- Two runtime logins, chosen from the role that already exists
+-- -------------------------------------------------------------
+-- Local docker and a fresh Neon-style database: poker_security created
+-- poker_server NOLOGIN. This migration creates poker_app LOGIN, INHERIT,
+-- member of poker_server. Hyperdrive (or DATABASE_URL) uses poker_app.
+-- The password is the ALTER ROLE above, never a statement in this file.
+-- GRANT ... WITH INHERIT TRUE, SET TRUE needs PostgreSQL 16 (local docker).
 --
--- 20260920141323_restrict_rls_event_trigger does not create an event trigger.
--- It only REVOKEs EXECUTE on public.rls_auto_enable() when that function
--- exists (Supabase). On Neon the function is absent, so the body is a no-op
--- and the migration succeeds. It cannot be edited after it has been applied;
--- no later migration can make an already-run file conditional. Nothing else
--- in the applied migrations requires a true superuser (no event triggers, no
--- untrusted extensions, no tablespaces).
+-- Supabase demo (project tgfudufxslhrxbdxcnyl): poker_server is already a
+-- LOGIN role and is the Hyperdrive user. Creating poker_app is not needed,
+-- and requiring poker_server to be NOLOGIN would abort the migration.
+-- This block leaves that LOGIN in place and does not create poker_app.
+-- poker_server must still be NOSUPERUSER and NOBYPASSRLS. A role is a member
+-- of itself, so the guards below match current_user = poker_server.
 --
--- If CREATE ROLE below fails with insufficient_privilege, create poker_app
--- once in the Neon console (LOGIN, NOSUPERUSER, NOBYPASSRLS, INHERIT, no
+-- The migration role is not a true superuser on Neon (neondb_owner) or on
+-- Supabase (postgres). This file does not CREATE EVENT TRIGGER. Extensions
+-- are not required. 20260920141323_restrict_rls_event_trigger only REVOKEs
+-- EXECUTE on public.rls_auto_enable() when that function exists.
+--
+-- If CREATE ROLE fails with insufficient_privilege on the NOLOGIN path,
+-- create poker_app once (LOGIN, NOSUPERUSER, NOBYPASSRLS, INHERIT, no
 -- password in git) and re-apply. The IF NOT EXISTS branch then only GRANTs.
--- Do not put the password in a migration. Set it with the ALTER ROLE above.
 
 -- ---------------------------------------------------------------------------
--- poker_app: the LOGIN role the game server uses. It inherits poker_server
--- (grants and RLS policies). poker_server stays NOLOGIN. No password here.
+-- poker_app only when poker_server cannot log in. Supabase keeps poker_server.
 -- ---------------------------------------------------------------------------
 DO $$
+DECLARE
+  srv record;
+  app record;
 BEGIN
+  SELECT rolsuper, rolbypassrls, rolcanlogin
+    INTO srv FROM pg_roles WHERE rolname = 'poker_server';
+  IF srv IS NULL THEN
+    RAISE EXCEPTION 'runtime login: poker_server must exist';
+  END IF;
+  IF srv.rolsuper OR srv.rolbypassrls THEN
+    RAISE EXCEPTION 'runtime login: poker_server must be NOSUPERUSER and NOBYPASSRLS';
+  END IF;
+
+  IF srv.rolcanlogin THEN
+    RAISE NOTICE 'runtime login: poker_server is LOGIN; keeping it as the runtime role';
+    RETURN;
+  END IF;
+
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'poker_app') THEN
     CREATE ROLE poker_app LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOBYPASSRLS NOREPLICATION;
   END IF;
-END
-$$;
--- Re-assert attributes if docker init (or an operator) created the role first.
--- This does not set or clear a password.
-ALTER ROLE poker_app WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOBYPASSRLS NOREPLICATION;
--- PG16+ grant options. INHERIT TRUE is what makes poker_app actually use
--- poker_server's table grants and match policies written TO poker_server.
--- SET TRUE lets a session SET ROLE poker_server (same privileges, no more).
-GRANT poker_server TO poker_app WITH INHERIT TRUE, SET TRUE;
-COMMENT ON ROLE poker_app IS 'Game-server login. Inherits poker_server. Password is set with ALTER ROLE, never in a migration.';
+  -- Re-assert attributes if docker init created the role first.
+  -- This does not set or clear a password.
+  ALTER ROLE poker_app WITH LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE INHERIT NOBYPASSRLS NOREPLICATION;
+  -- PG16+. INHERIT TRUE makes poker_app use poker_server's grants and policies.
+  -- SET TRUE lets a session SET ROLE poker_server (same privileges, no more).
+  GRANT poker_server TO poker_app WITH INHERIT TRUE, SET TRUE;
+  COMMENT ON ROLE poker_app IS 'Game-server login. Inherits poker_server. Password is set with ALTER ROLE, never in a migration.';
 
-DO $$
-DECLARE
-  app record;
-  srv record;
-BEGIN
   SELECT rolsuper, rolbypassrls, rolcanlogin, rolinherit, rolcreaterole, rolcreatedb
     INTO app FROM pg_roles WHERE rolname = 'poker_app';
-  SELECT rolsuper, rolbypassrls, rolcanlogin INTO srv FROM pg_roles WHERE rolname = 'poker_server';
-  IF app IS NULL OR srv IS NULL THEN
+  IF app IS NULL THEN
     RAISE EXCEPTION 'runtime login: poker_app and poker_server must both exist';
   END IF;
   IF app.rolsuper OR app.rolbypassrls OR NOT app.rolcanlogin OR NOT app.rolinherit OR app.rolcreaterole OR app.rolcreatedb THEN
     RAISE EXCEPTION 'runtime login: poker_app must be LOGIN, INHERIT, NOSUPERUSER, NOBYPASSRLS, NOCREATEDB, NOCREATEROLE';
-  END IF;
-  IF srv.rolsuper OR srv.rolbypassrls OR srv.rolcanlogin THEN
-    RAISE EXCEPTION 'runtime login: poker_server must stay NOLOGIN, NOSUPERUSER, NOBYPASSRLS';
   END IF;
   IF NOT pg_has_role('poker_app', 'poker_server', 'MEMBER') THEN
     RAISE EXCEPTION 'runtime login: poker_app is not a member of poker_server';
@@ -161,8 +170,41 @@ CREATE TRIGGER "HandPot_append_only" BEFORE UPDATE OR DELETE ON public."HandPot"
   FOR EACH ROW EXECUTE FUNCTION public.poker_refuse_history_mutation();
 
 -- DropForeignKey / AddForeignKey (matches schema.prisma onDelete: Restrict).
-ALTER TABLE "Hand" DROP CONSTRAINT "Hand_tableId_fkey";
-ALTER TABLE "HandPlayer" DROP CONSTRAINT "HandPlayer_userId_fkey";
+-- Look the constraint up by column so a differently named foreign key is
+-- still replaced. Existing rows must already satisfy RESTRICT (no dangling
+-- Hand.tableId or HandPlayer.userId). NULL userId stays allowed.
+DO $$
+DECLARE
+  con name;
+BEGIN
+  FOR con IN
+    SELECT c.conname
+    FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    WHERE n.nspname = 'public' AND t.relname = 'Hand' AND c.contype = 'f'
+      AND EXISTS (
+        SELECT 1 FROM pg_attribute a
+        WHERE a.attrelid = t.oid AND a.attnum = ANY (c.conkey) AND a.attname = 'tableId'
+      )
+  LOOP
+    EXECUTE format('ALTER TABLE public."Hand" DROP CONSTRAINT %I', con);
+  END LOOP;
+  FOR con IN
+    SELECT c.conname
+    FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    JOIN pg_namespace n ON n.oid = t.relnamespace
+    WHERE n.nspname = 'public' AND t.relname = 'HandPlayer' AND c.contype = 'f'
+      AND EXISTS (
+        SELECT 1 FROM pg_attribute a
+        WHERE a.attrelid = t.oid AND a.attnum = ANY (c.conkey) AND a.attname = 'userId'
+      )
+  LOOP
+    EXECUTE format('ALTER TABLE public."HandPlayer" DROP CONSTRAINT %I', con);
+  END LOOP;
+END
+$$;
 ALTER TABLE "Hand" ADD CONSTRAINT "Hand_tableId_fkey" FOREIGN KEY ("tableId") REFERENCES "Table"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 ALTER TABLE "HandPlayer" ADD CONSTRAINT "HandPlayer_userId_fkey" FOREIGN KEY ("userId") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
