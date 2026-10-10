@@ -41,6 +41,8 @@ const EXPECTED = {
   Table: ["SELECT", "INSERT", "UPDATE"],
   TableSeat: ALL,
   Hand: ["SELECT", "INSERT"],
+  // Idempotency rows. Append-only, same posture as hand history.
+  GameCommand: ["SELECT", "INSERT"],
   HandPlayer: ["SELECT", "INSERT"],
   HandAction: ["SELECT", "INSERT"],
   HandPot: ["SELECT", "INSERT"],
