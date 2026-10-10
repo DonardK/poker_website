@@ -1,0 +1,5 @@
+# Prisma checksums are SHA-256 of migration.sql bytes. eol=lf keeps the
+# working tree in LF even when core.autocrlf is true.
+.gitattributes text eol=lf
+apps/server/prisma/migrations/**/*.sql text eol=lf
+supabase/migrations/**/*.sql text eol=lf
