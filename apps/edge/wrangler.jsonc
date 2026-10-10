@@ -5,14 +5,14 @@
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
+  // Not public. poker-web reaches this Worker through the API service binding.
   "workers_dev": false,
-  "routes": [
-    { "pattern": "example.com/api/*", "zone_name": "example.com" },
-    { "pattern": "example.com/ws/*", "zone_name": "example.com" }
-  ],
-  "placement": { "region": "aws:eu-central-1" },
+  // Supabase project tgfudufxslhrxbdxcnyl is eu-west-1. Paid/other regions: change this and TABLE_DO_LOCATION_HINT together.
+  "placement": { "region": "aws:eu-west-1" },
   "vars": {
-    "CLIENT_ORIGIN": "https://example.com",
+    // DEPLOY: replace <subdomain> with the account workers.dev subdomain.
+    // Must be the web Worker origin (https://poker-web.<subdomain>.workers.dev).
+    "CLIENT_ORIGIN": "https://poker-web.<subdomain>.workers.dev",
     "TERMS_VERSION": "2026-10-01",
     "JWT_ACCESS_TTL": "15m",
     "JWT_REFRESH_TTL": "7d",
@@ -25,11 +25,16 @@
     "TIME_BANK_REFILL_MS": "5000",
     "TIME_BANK_REFILL_EVERY_HANDS": "10",
     "ENABLE_LEGACY_BOTS": "false",
+    // Free plan: 10000. Paid plan: 600000. Hard cap on stored hashes is 1000000.
+    "PASSWORD_PBKDF2_ITERATIONS": "10000",
+    "ENABLE_LEGACY_BCRYPT": "false",
+    // Demo: skip Access JWT when CF_ACCESS_* are unset. Role === ADMIN still required.
+    // Set to "true" for the strict https check.
+    "ADMIN_REQUIRE_CF_ACCESS": "false",
     "TURNSTILE_SITE_KEY": "",
     "TABLE_DO_LOCATION_HINT": "weur",
-    // Cloudflare Access for /api/admin. Both empty skips the JWT when
-    // CLIENT_ORIGIN is http:// (local). An https origin requires both.
-    // Team domain is the subdomain only, not the full cloudflareaccess.com host.
+    // Cloudflare Access for /api/admin. Team domain is the subdomain only.
+    // With ADMIN_REQUIRE_CF_ACCESS=false, both empty skips the JWT (no 500).
     "CF_ACCESS_AUD": "",
     "CF_ACCESS_TEAM_DOMAIN": ""
   },
@@ -41,7 +46,8 @@
       "binding": "HYPERDRIVE",
       "id": "<HYPERDRIVE_ID_CACHE_DISABLED>",
       // Local only. Not a real password. `.dev.vars` overrides this with the
-      // Docker poker_app URL (127.0.0.1). Never a remote database.
+      // Docker poker_app URL (127.0.0.1). The demo Hyperdrive uses the Supabase
+      // runtime login with caching disabled. Never put that URL in this file.
       "localConnectionString": "postgresql://poker_app:replace-with-local-password@127.0.0.1:5432/poker"
     }
   ],
@@ -67,10 +73,10 @@
   "env": {
     "preview": {
       "name": "poker-api-preview",
-      "workers_dev": true,
+      "workers_dev": false,
       "routes": [],
       "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "<PREVIEW_HYPERDRIVE_ID_CACHE_DISABLED>", "localConnectionString": "postgresql://poker_app:replace-with-local-password@127.0.0.1:5432/poker" }],
-      "vars": { "CLIENT_ORIGIN": "https://<preview-web-host>" }
+      "vars": { "CLIENT_ORIGIN": "https://poker-web-preview.<subdomain>.workers.dev" }
     }
   }
 }

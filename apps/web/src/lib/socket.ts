@@ -8,6 +8,7 @@ import {
 } from "@poker/shared";
 import { ApiError, refreshSession } from "@/lib/api";
 import { useAuthStore } from "@/stores/session";
+import { socketOrigin } from "@/lib/public-origin";
 import {
   WsConnection,
   httpOriginFromSocketUrl,
@@ -18,8 +19,9 @@ import {
   type ClientFrameType,
 } from "@/lib/ws-client";
 
-const SOCKET_URL = process.env.NEXT_PUBLIC_SOCKET_URL ?? "http://localhost:4000";
-const TICKET_URL = `${httpOriginFromSocketUrl(SOCKET_URL)}/api/ws-ticket`;
+function socketBase(): string {
+  return socketOrigin() || "http://127.0.0.1:3000";
+}
 
 /**
  * Frames that used a Socket.IO ack. They go out with an id and wait for ACK.
@@ -93,7 +95,7 @@ async function refreshAccessToken(): Promise<{ accessToken: string }> {
 function connectionOptions(url: string, lobbyHello: boolean) {
   return {
     url,
-    ticketUrl: TICKET_URL,
+    ticketUrl: `${httpOriginFromSocketUrl(url)}/api/ws-ticket`,
     getToken: () => socketToken,
     setToken: (token: string) => { socketToken = token; },
     refreshSession: refreshAccessToken,
@@ -120,7 +122,7 @@ class SessionSocket implements PokerSocket {
   private coalescedFatalError = false;
 
   constructor() {
-    this.lobby = new WsConnection(connectionOptions(lobbySocketUrl(SOCKET_URL), true));
+    this.lobby = new WsConnection(connectionOptions(lobbySocketUrl(socketBase()), true));
     this.bindLobby(this.lobby);
   }
 
@@ -271,7 +273,7 @@ class SessionSocket implements PokerSocket {
     }
     this.dropTable();
     this.tableId = tableId;
-    const table = new WsConnection(connectionOptions(tableSocketUrl(SOCKET_URL, tableId), false));
+    const table = new WsConnection(connectionOptions(tableSocketUrl(socketBase(), tableId), false));
     this.table = table;
     this.bindTable(table);
     table.connect();

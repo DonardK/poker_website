@@ -6,6 +6,10 @@ export function requestIsSecure(url: string): boolean {
   return new URL(url).protocol === "https:";
 }
 
+/**
+ * Host-only: no Domain attribute. On the workers.dev demo the browser talks
+ * only to the web Worker, so the cookie stays on that host.
+ */
 export function refreshCookie(token: string, expiresAt: Date, secure: boolean): string {
   const maxAge = Math.max(0, Math.floor((expiresAt.getTime() - Date.now()) / 1000));
   return `${REFRESH_COOKIE_NAME}=${encodeURIComponent(token)}; Max-Age=${maxAge}; Path=/api/auth; Expires=${expiresAt.toUTCString()}; HttpOnly; SameSite=${secure ? "Strict" : "Lax"}${secure ? "; Secure" : ""}`;

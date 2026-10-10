@@ -7,21 +7,20 @@
 # or in apps/web/.env.local. A value that exists only in .dev.vars is visible
 # to server code at preview time; it does not rewrite an already-built client.
 # Production and preview need separate builds if these origins differ.
-# Preferred production build: API and socket URLs are both the site origin
-# (https://example.com) so the browser calls same-origin /api and wss.
+# workers.dev demo: leave API and socket URLs empty. The client uses the
+# page origin, so the account subdomain is not baked into the bundle.
+# 'self' in the CSP covers that host, including wss.
 #
-# next dev (:3000) against the Node game server (:4000) — also the defaults
-# in the repo-root .env.example:
+# Legacy `npm run dev` (apps/server on :4000):
 # NEXT_PUBLIC_API_URL=http://localhost:4000
 # NEXT_PUBLIC_SOCKET_URL=http://localhost:4000
 #
-# next dev against `wrangler dev` for the API Worker (:8787):
-# NEXT_PUBLIC_API_URL=http://localhost:8787
-# NEXT_PUBLIC_SOCKET_URL=http://localhost:8787
+# next dev against wrangler can also leave these empty. The Next rewrites
+# proxy /api and /ws to 127.0.0.1:8787.
 
 NEXT_PUBLIC_SITE_URL=http://localhost:3000
-NEXT_PUBLIC_API_URL=http://localhost:4000
-NEXT_PUBLIC_SOCKET_URL=http://localhost:4000
+NEXT_PUBLIC_API_URL=
+NEXT_PUBLIC_SOCKET_URL=
 
 # Cloudflare's published dummy site key (always passes). Not a secret.
 # Pair the API Worker with secret 1x0000000000000000000000000000000AA.

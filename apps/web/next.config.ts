@@ -35,10 +35,12 @@ const nextConfig = (phase: string): NextConfig => ({
     return [{ source: "/:path*", headers: securityHeaders(phase) }];
   },
   /**
-   * Local `next dev` only. Production is one origin: Cloudflare routes
-   * `/api/*` and `/ws/*` to the API Worker. In development those paths are
-   * proxied to `wrangler dev` so cookies, CORP, and the WebSocket ticket
-   * stay same-origin (the API cookie paths are `/api/auth` and `/ws`).
+   * Local `next dev` only. Production is one workers.dev origin: worker.ts
+   * forwards `/api/*` and `/ws/*` to the API service binding. In development
+   * those paths are proxied to `wrangler dev` so cookies stay same-origin
+   * (the API cookie paths are `/api/auth` and `/ws`). Leave
+   * NEXT_PUBLIC_API_URL empty so the browser calls this origin. Set it to
+   * http://localhost:4000 only for the legacy `npm run dev` server.
    */
   async rewrites() {
     if (phase !== PHASE_DEVELOPMENT_SERVER) return [];

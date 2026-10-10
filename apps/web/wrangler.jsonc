@@ -1,21 +1,42 @@
 {
   "$schema": "../../node_modules/wrangler/config-schema.json",
   "name": "poker-web",
-  "main": ".open-next/worker.js",
+  // Custom entry forwards /api and /ws to the API service binding.
+  // `.open-next/worker.js` is produced by `opennextjs-cloudflare build`.
+  "main": "./worker.ts",
   "compatibility_date": "2026-10-01",
   "compatibility_flags": ["nodejs_compat"],
   "observability": { "enabled": true },
-  "workers_dev": false,
-  "routes": [
-    { "pattern": "example.com/*", "zone_name": "example.com" }
-  ],
+  // Demo: the only public hostname is this Worker's *.workers.dev host.
+  "workers_dev": true,
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"
   },
+  "services": [
+    { "binding": "API", "service": "poker-api" }
+  ],
+  // Empty on purpose. The browser uses window.location.origin so the
+  // workers.dev subdomain is not baked in at build time. Set both to an
+  // absolute origin only for a split-host deploy.
   "vars": {
-    "NEXT_PUBLIC_API_URL": "https://example.com",
-    "NEXT_PUBLIC_SOCKET_URL": "https://example.com",
+    "NEXT_PUBLIC_API_URL": "",
+    "NEXT_PUBLIC_SOCKET_URL": "",
     "NEXT_PUBLIC_TURNSTILE_SITE_KEY": ""
+  },
+  "env": {
+    "preview": {
+      "name": "poker-web-preview",
+      "workers_dev": true,
+      "routes": [],
+      "services": [
+        { "binding": "API", "service": "poker-api-preview" }
+      ],
+      "vars": {
+        "NEXT_PUBLIC_API_URL": "",
+        "NEXT_PUBLIC_SOCKET_URL": "",
+        "NEXT_PUBLIC_TURNSTILE_SITE_KEY": ""
+      }
+    }
   }
 }

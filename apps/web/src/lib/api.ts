@@ -1,11 +1,17 @@
 import type { AuthResponse, PublicUser } from "@poker/shared";
+import { apiOrigin, configuredOrigin } from "@/lib/public-origin";
 
-const API_URL = (process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:4000").replace(/\/+$/, "");
+const configuredApi = configuredOrigin(process.env.NEXT_PUBLIC_API_URL);
 
+// Stable across server and client renders: it does not read window.
 // In development the usual cause is a game server that stopped while the web
-// app kept running (npm run dev shows both); the reason is in its own output.
+// app kept running. Empty NEXT_PUBLIC_API_URL calls this page's origin
+// (next dev proxies /api to wrangler). The legacy `npm run dev` server is
+// http://localhost:4000 and needs that URL set.
 export const API_UNAVAILABLE_MESSAGE = process.env.NODE_ENV === "development"
-  ? `Game server unavailable: nothing answers at ${API_URL}. If npm run dev is already running, its game server has stopped; the reason is in that terminal's [server] lines. Fix it, then restart npm run dev.`
+  ? configuredApi
+    ? `Game server unavailable: nothing answers at ${configuredApi}. If npm run dev is already running, its game server has stopped; the reason is in that terminal's [server] lines. Fix it, then restart npm run dev.`
+    : "Game server unavailable: nothing answers on this page's origin. next dev proxies /api and /ws to wrangler (POKER_EDGE_ORIGIN, default http://127.0.0.1:8787). For the legacy server, set NEXT_PUBLIC_API_URL to http://localhost:4000."
   : "Game server unavailable. Check your connection and try again shortly.";
 
 export class ApiError extends Error {
@@ -41,7 +47,8 @@ export async function api<T>(
   const { token, headers, ...rest } = options;
   let res: Response;
   try {
-    res = await fetch(`${API_URL}${path}`, {
+    const base = apiOrigin();
+    res = await fetch(`${base}${path}`, {
       ...rest,
       signal: "signal" in rest ? rest.signal : AbortSignal.timeout(12_000),
       credentials: "include",
