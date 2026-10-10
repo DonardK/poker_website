@@ -1,6 +1,27 @@
 # Supabase migration plan
 
-Read this before the first `prisma migrate deploy` against project `tgfudufxslhrxbdxcnyl`. This file is reasoning from the repo only. It did not connect to Supabase.
+Applied on 2026-10-10 to project `tgfudufxslhrxbdxcnyl` (PostgreSQL 17.6, session pooler `aws-1-eu-west-1.pooler.supabase.com:5432`, admin `postgres`). `prisma migrate deploy` used `DATABASE_URL` and `DIRECT_URL` set in the process environment to that admin URL with `sslmode=require`, `sslaccept=strict`, and `sslcert` pointing at `apps/server/certs/supabase-pooler-root.pem`. The repo-root `.env` was left in place; dotenv does not override variables that are already set. `prisma.config.ts` prefers `DIRECT_URL`.
+
+Before that deploy, `_prisma_migrations` had five finished rows and six pending names. The plan below had expected only `runtime_hardening` and `game_command` to be pending. The live history was the source of truth.
+
+The five stored checksums did not all match the repo files. `core.autocrlf=true` had left the working tree CRLF while git stored LF. `.gitattributes` now forces LF for `apps/server/prisma/migrations/**/*.sql` and `supabase/migrations/**/*.sql`. Prisma's schema engine checksum is SHA-256 of the migration script (`schema-engine/connectors/schema-connector/src/checksum.rs` in the 6.19.3 engine). Comparison also accepts the other line ending; a content change does not. `20260920140611_poker_security` and `20260920165155_poker_history_integrity` differed in content from the stored checksums. The live catalog already matched what those current files do, so the files were not re-run. In one transaction, all five finished rows were updated to the SHA-256 of the LF file bytes (5 rows updated, then committed).
+
+`prisma migrate status` then listed exactly these six as pending, and `prisma migrate deploy` applied them in this order:
+
+1. `20261001100000_auth_hardening`
+2. `20261002200000_ledger_foundation`
+3. `20261003100000_game_reliability`
+4. `20261007200000_table_incident_column_grants`
+5. `20261010120000_runtime_hardening`
+6. `20261010130000_game_command`
+
+Post-check, as the admin in a read-only transaction and once as `poker_server`: 11 rows finished, none rolled back. `poker_app` is still absent. `poker_server` is `LOGIN`, not a superuser, and not `BYPASSRLS`. `public.poker_assert_rls()` succeeds. `GameCommand` exists with row-level security enabled and forced; `poker_server` has `SELECT` and `INSERT` only. Append-only triggers are on `Hand`, `HandPlayer`, `HandAction`, `HandPot`, and `GameCommand`. As `poker_server`, `has_table_privilege` for `UPDATE` and `DELETE` on `"Hand"` is false (the startup guard). A JSON backup of the public tables from before the checksum update and the deploy is outside the repo.
+
+Do not run `prisma migrate deploy` against this project expecting those six to be pending. A later migration is a new folder.
+
+## History this plan was written from
+
+The sections below were written from the repo before the deploy above. They are the pre-check record, not the current pending set.
 
 Prisma history (`_prisma_migrations`) is the only list `prisma migrate deploy` trusts. The copies in `supabase/migrations/` are the SQL that was prepared for Supabase. They are byte-identical to the Prisma files with the same purpose, including the compliance audit (Prisma name `20260924120000_compliance_audit_trail`, Supabase filename `20260927224842_compliance_audit_trail.sql`). `supabase/README.md` says both compliance ids are already marked applied in Prisma's history. Do not apply that SQL twice.
 
@@ -8,21 +29,21 @@ There is no `lifecycle` migration and no separate `terms` migration. Terms and a
 
 ## Migrations in `apps/server/prisma/migrations`
 
-| Prisma folder | Started | In `supabase/migrations/` | Likely state on Supabase |
+| Prisma folder | Started | In `supabase/migrations/` | State on Supabase after 2026-10-10 |
 | --- | --- | --- | --- |
-| `20240919190000_init` | 2024-09-19 | no copy | Applied earlier as the initial schema. Confirm the row. If the tables exist and this row is missing, baseline it. Do not re-run it. |
-| `20260920140611_poker_security` | 2026-09-20 | identical copy | Likely applied (creates `poker_server`, RLS). |
-| `20260920141323_restrict_rls_event_trigger` | 2026-09-20 | identical copy | Likely applied (revokes `EXECUTE` on `public.rls_auto_enable()` when that function exists). |
-| `20260920165155_poker_history_integrity` | 2026-09-20 | identical copy | Likely applied. |
-| `20260924120000_compliance_audit_trail` | 2026-09-24 | identical body, recorded as `20260927224842` | README: both ids marked applied. Confirm the Prisma name, not the Supabase filename. |
-| `20261001100000_auth_hardening` | 2026-10-01 | identical copy | Likely applied (usernames, lockout, terms/age columns, session columns). |
-| `20261002200000_ledger_foundation` | 2026-10-02 | identical copy | Likely applied. |
-| `20261003100000_game_reliability` | 2026-10-03 | identical copy | Likely applied (`TableIncident`). |
-| `20261007200000_table_incident_column_grants` | 2026-10-07 | identical copy | Likely applied. |
-| `20261010120000_runtime_hardening` | 2026-10-10 | no copy | **Pending.** Edited in this repo so a `LOGIN` `poker_server` does not fail the migration. |
-| `20261010130000_game_command` | 2026-10-10 | no copy | **Pending.** Depends on `poker_refuse_history_mutation()` from the row above. |
+| `20240919190000_init` | 2024-09-19 | no copy | Already finished. Checksum updated to the LF file. |
+| `20260920140611_poker_security` | 2026-09-20 | identical copy | Already finished. Stored checksum differed in content; updated, SQL not re-run. |
+| `20260920141323_restrict_rls_event_trigger` | 2026-09-20 | identical copy | Already finished. Checksum already matched the LF file. |
+| `20260920165155_poker_history_integrity` | 2026-09-20 | identical copy | Already finished. Stored checksum differed in content; updated, SQL not re-run. |
+| `20260924120000_compliance_audit_trail` | 2026-09-24 | identical body, recorded as `20260927224842` | Already finished under the Prisma name. Checksum already matched the LF file. |
+| `20261001100000_auth_hardening` | 2026-10-01 | identical copy | Applied 2026-10-10. It was not already finished. |
+| `20261002200000_ledger_foundation` | 2026-10-02 | identical copy | Applied 2026-10-10. |
+| `20261003100000_game_reliability` | 2026-10-03 | identical copy | Applied 2026-10-10 (`TableIncident`). |
+| `20261007200000_table_incident_column_grants` | 2026-10-07 | identical copy | Applied 2026-10-10. |
+| `20261010120000_runtime_hardening` | 2026-10-10 | no copy | Applied 2026-10-10. `poker_server` was `LOGIN`, so `poker_app` was not created. |
+| `20261010130000_game_command` | 2026-10-10 | no copy | Applied 2026-10-10. |
 
-Expected pending set, if the history check matches the table above: `20261010120000_runtime_hardening`, then `20261010130000_game_command`. Anything else in the `SELECT` below that is not finished is also pending. Stop and reconcile before deploy if that list is longer.
+There is no pending Prisma migration on this project after that deploy. The pre-check found no extra `public` tables, no failed or rolled-back rows, 17 guest users, 6 tables, 56 hands, and zero rows that would violate the new chip caps or the hand foreign keys.
 
 ## What would have failed, and what the pending SQL does instead
 
