@@ -15,7 +15,7 @@ export default defineConfig({
   timeout: 180_000,
   expect: { timeout: 20_000 },
   use: {
-    baseURL: "http://127.0.0.1:3000",
+    baseURL: process.env.POKER_LIVE_BASE_URL || "http://127.0.0.1:3000",
     trace: "retain-on-failure",
     channel: process.env.PLAYWRIGHT_CHANNEL || "msedge",
   },
