@@ -27,9 +27,16 @@ TURNSTILE_SECRET_KEY=
 # TIME_BANK_REFILL_MS=5000
 # TIME_BANK_REFILL_EVERY_HANDS=10
 # ENABLE_LEGACY_BOTS=false
+# Free plan. Paid plan: 600000. Stored hashes above 1000000 are refused.
+# PASSWORD_PBKDF2_ITERATIONS=10000
+# ENABLE_LEGACY_BCRYPT=false
+# false: skip the Access JWT when CF_ACCESS_* are unset. User.role === ADMIN still required.
+# ADMIN_REQUIRE_CF_ACCESS=false
 # TURNSTILE_SITE_KEY=1x00000000000000000000AA
 # TABLE_DO_LOCATION_HINT=weur
-# Cloudflare Access. Both empty (or omitted) skips the admin JWT when CLIENT_ORIGIN is http://.
+# Cloudflare Access. With ADMIN_REQUIRE_CF_ACCESS=false, both empty skips the JWT
+# even when CLIENT_ORIGIN is https (the workers.dev demo). true restores the
+# strict check: an https origin then requires both.
 # CF_ACCESS_AUD=
 # CF_ACCESS_TEAM_DOMAIN=
 

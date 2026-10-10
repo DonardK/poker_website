@@ -12,7 +12,7 @@ export type TurnstileResult =
   | { ok: false; status: 503 };
 
 /**
- * Verify `turnstileToken` before any user lookup or bcrypt.
+ * Verify `turnstileToken` before any user lookup or password hashing.
  * A siteverify outage is 503 (retryable), not a bad password.
  */
 export async function verifyTurnstile(secret: string, token: unknown, remoteIp: string | null): Promise<TurnstileResult> {

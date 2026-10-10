@@ -92,6 +92,32 @@ describe("tables and admin http", () => {
     });
     expect(refused.status).toBe(401);
     expect(refused.body).toEqual({ error: "Unauthorized" });
+
+    const demo = createHarness({ CLIENT_ORIGIN: "https://poker-web.demo.workers.dev", ADMIN_REQUIRE_CF_ACCESS: "false" });
+    const admin = demo.db.addUser({ username: "Demo_Admin", role: "ADMIN" });
+    const demoSession = await demo.db.addSession(admin.id);
+    const skipped = await demo.request(`/admin/hands/${crypto.randomUUID()}/audit`, {
+      method: "GET",
+      token: demoSession.accessToken,
+    });
+    expect(skipped.status).toBe(404);
+    expect(skipped.body).toEqual({ error: "Hand not found" });
+
+    expect(() => createHarness({
+      CLIENT_ORIGIN: "https://poker-web.demo.workers.dev",
+      ADMIN_REQUIRE_CF_ACCESS: "true",
+    })).not.toThrow();
+    const strict = createHarness({
+      CLIENT_ORIGIN: "https://poker-web.demo.workers.dev",
+      ADMIN_REQUIRE_CF_ACCESS: "true",
+    });
+    const strictAdmin = strict.db.addUser({ username: "Strict_Admin", role: "ADMIN" });
+    const strictSession = await strict.db.addSession(strictAdmin.id);
+    const misconfigured = await strict.request(`/admin/hands/${crypto.randomUUID()}/audit`, {
+      method: "GET",
+      token: strictSession.accessToken,
+    });
+    expect(misconfigured.status).toBe(500);
   }, SLOW);
 
   it("issues a short-lived poker_ws cookie", async () => {

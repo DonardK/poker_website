@@ -1,5 +1,5 @@
-import bcrypt from "bcryptjs";
 import type { AppDb } from "../src/http/db";
+import { passwords } from "../src/auth/password";
 import { hashRefresh } from "../src/auth/sessions";
 import { signAccessToken, signRefreshToken } from "../src/auth/tokens";
 
@@ -131,6 +131,7 @@ export interface MemorySecrets {
   accessSecret: string;
   refreshSecret: string;
   accessTtlSeconds: number;
+  passwordIterations: number;
 }
 
 export interface MemoryDb {
@@ -174,7 +175,7 @@ export function createMemoryDb(secrets: MemorySecrets): MemoryDb {
       const user: UserRow = {
         id: `user-${crypto.randomUUID()}`,
         email: null,
-        passwordHash: typeof password === "string" ? bcrypt.hashSync(password, 4) : null,
+        passwordHash: typeof password === "string" ? passwords.hashSync(password, secrets.passwordIterations) : null,
         isGuest: false,
         role: "PLAYER",
         kind: "HUMAN",

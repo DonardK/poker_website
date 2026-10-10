@@ -24,6 +24,19 @@ export interface Env {
   TIME_BANK_REFILL_MS: string;
   TIME_BANK_REFILL_EVERY_HANDS: string;
   ENABLE_LEGACY_BOTS: string;
+  /**
+   * PBKDF2-SHA256 iterations for new hashes. Free-plan default 10000.
+   * Paid plan: 600000. Stored hashes above 1_000_000 are not computed.
+   */
+  PASSWORD_PBKDF2_ITERATIONS?: string;
+  /** "true" compares leftover bcrypt hashes and rewrites them as PBKDF2. */
+  ENABLE_LEGACY_BCRYPT?: string;
+  /**
+   * "true" keeps the strict Cloudflare Access check on /api/admin.
+   * "false" (the workers.dev demo) skips the JWT when CF_ACCESS_* are unset
+   * and still requires User.role === ADMIN.
+   */
+  ADMIN_REQUIRE_CF_ACCESS?: string;
   TURNSTILE_SITE_KEY: string;
   TABLE_DO_LOCATION_HINT: string;
   /** Empty unless Cloudflare Access is configured for /api/admin. Not a secret. */
@@ -82,6 +95,18 @@ const bindingSchema = z.object({
   TIME_BANK_REFILL_MS: gameMs(120_000, 5_000),
   TIME_BANK_REFILL_EVERY_HANDS: z.preprocess(blankIsUnset, z.coerce.number().int().min(1).max(1_000).default(10)),
   ENABLE_LEGACY_BOTS: z.enum(["true", "false", "1", "0"]),
+  PASSWORD_PBKDF2_ITERATIONS: z.preprocess(
+    (value) => (value == null || (typeof value === "string" && value.trim() === "") ? 10_000 : value),
+    z.coerce.number().int().min(1).max(1_000_000),
+  ),
+  ENABLE_LEGACY_BCRYPT: z.preprocess(
+    (value) => (value == null || (typeof value === "string" && value.trim() === "") ? "false" : value),
+    z.enum(["true", "false", "1", "0"]),
+  ),
+  ADMIN_REQUIRE_CF_ACCESS: z.preprocess(
+    (value) => (value == null || (typeof value === "string" && value.trim() === "") ? "false" : value),
+    z.enum(["true", "false", "1", "0"]),
+  ),
   TURNSTILE_SITE_KEY: z.string(),
   TABLE_DO_LOCATION_HINT: z.string().trim().min(1).max(16),
   JWT_ACCESS_SECRET: secret("JWT_ACCESS_SECRET"),
@@ -104,6 +129,9 @@ export interface EdgeConfig {
   defaultStartingBankroll: number;
   turnTimeBankMs: number;
   enableLegacyBots: boolean;
+  passwordPbkdf2Iterations: number;
+  enableLegacyBcrypt: boolean;
+  adminRequireCfAccess: boolean;
   timeBankInitialMs: number;
   timeBankMaxMs: number;
   timeBankRefillMs: number;
@@ -154,6 +182,9 @@ export function readEdgeConfig(env: Env): EdgeConfig {
     defaultStartingBankroll: raw.DEFAULT_STARTING_BANKROLL,
     turnTimeBankMs: raw.TURN_TIME_BANK_MS,
     enableLegacyBots: raw.ENABLE_LEGACY_BOTS === "true" || raw.ENABLE_LEGACY_BOTS === "1",
+    passwordPbkdf2Iterations: raw.PASSWORD_PBKDF2_ITERATIONS,
+    enableLegacyBcrypt: raw.ENABLE_LEGACY_BCRYPT === "true" || raw.ENABLE_LEGACY_BCRYPT === "1",
+    adminRequireCfAccess: raw.ADMIN_REQUIRE_CF_ACCESS === "true" || raw.ADMIN_REQUIRE_CF_ACCESS === "1",
     timeBankInitialMs: raw.TIME_BANK_INITIAL_MS,
     timeBankMaxMs: raw.TIME_BANK_MAX_MS,
     timeBankRefillMs: raw.TIME_BANK_REFILL_MS,

@@ -41,6 +41,8 @@ export interface Harness {
     token?: string;
     headers?: Record<string, string>;
     ip?: string;
+    /** Request origin. Defaults to http://example.com. Use the CLIENT_ORIGIN host to imitate the service binding. */
+    baseUrl?: string;
   }): Promise<ApiResult>;
 }
 
@@ -100,6 +102,7 @@ export function createHarness(extra: Record<string, string> = {}): Harness {
     accessSecret: config.jwtAccessSecret,
     refreshSecret: config.jwtRefreshSecret,
     accessTtlSeconds: Math.floor(config.jwtAccessTtlMs / 1000),
+    passwordIterations: config.passwordPbkdf2Iterations,
   });
   const app = new Hono<{ Bindings: Env }>();
   mountHttp(app);
@@ -131,7 +134,8 @@ export function createHarness(extra: Record<string, string> = {}): Harness {
       }
       const env = { ...bindings, ...extra } as unknown as Env;
       attachTestDatabase(env, db.api);
-      const res = await app.request(`http://example.com/api${path}`, { method, headers, body }, env);
+      const base = (opts.baseUrl ?? "http://example.com").replace(/\/+$/, "");
+      const res = await app.request(`${base}/api${path}`, { method, headers, body }, env);
       const text = await res.text();
       const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
       const setCookie = setCookies.find((cookie) => cookie.startsWith(`${REFRESH_COOKIE_NAME}=`)) ?? null;

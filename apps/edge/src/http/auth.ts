@@ -6,7 +6,7 @@ import type { EdgeConfig, Env } from "../env";
 import { AuthError, isAuthError, uniqueViolation } from "../auth/errors";
 import { coarseIp } from "../auth/ip";
 import { clearFamiliarFailures, familiarLockedUntil, isFamiliarAddress, loginLockMs, recordFamiliarFailure } from "../auth/lockout";
-import { BCRYPT_COST, DUMMY_PASSWORD_HASH, passwords } from "../auth/password";
+import { passwords } from "../auth/password";
 import { hashRefresh, newSessionLifetime, REFRESH_GRACE_MS, revokeSession, revokeUserSessions, sessionExpiry } from "../auth/sessions";
 import { signAccessToken, signRefreshToken, verifyRefreshToken } from "../auth/tokens";
 import { canonicalUsername, checkChosenUsername } from "../auth/usernames";
@@ -174,7 +174,7 @@ export function registerAuth(app: Hono<{ Bindings: Env }>): void {
     if (!parsed.success) return c.json({ error: "Invalid registration payload" }, 400);
     const name = checkChosenUsername(parsed.data.username);
     if (!name.ok) return c.json({ error: name.error }, name.error === USERNAME_UNAVAILABLE ? 409 : 400);
-    const passwordHash = await passwords.hash(parsed.data.password, BCRYPT_COST);
+    const passwordHash = await passwords.hash(parsed.data.password, config.passwordPbkdf2Iterations);
     const now = Date.now();
     const db = c.get("db")!;
     try {
@@ -218,8 +218,12 @@ export function registerAuth(app: Hono<{ Bindings: Env }>): void {
     const locked = usable != null && (familiar
       ? familiarLockedUntil(usable.id, ip) > now
       : usable.lockedUntil != null && new Date(usable.lockedUntil).getTime() > now);
-    const matches = await passwords.compare(parsed.data.password, usable && !locked ? usable.passwordHash! : DUMMY_PASSWORD_HASH);
-    if (!usable || locked || !matches) {
+    const verdict = await passwords.verify(
+      parsed.data.password,
+      usable && !locked ? usable.passwordHash : null,
+      { iterations: config.passwordPbkdf2Iterations, legacyBcrypt: config.enableLegacyBcrypt },
+    );
+    if (!usable || locked || !verdict.matches) {
       if (usable && !locked) {
         if (!familiar) await recordFailedLogin(db, usable.id, now);
         else {
@@ -235,7 +239,12 @@ export function registerAuth(app: Hono<{ Bindings: Env }>): void {
     clearFamiliarFailures(usable.id, ip);
     const fresh = await db.user.update({
       where: { id: usable.id },
-      data: { lastSeenAt: new Date(now), failedLoginCount: 0, lockedUntil: null },
+      data: {
+        lastSeenAt: new Date(now),
+        failedLoginCount: 0,
+        lockedUntil: null,
+        ...(verdict.rehash ? { passwordHash: verdict.rehash } : {}),
+      },
     }) as AccountUser;
     return sendSession(c, config, 200, fresh, await createSession(c, db, config, fresh.id, now));
   }));

@@ -3,6 +3,7 @@
  * The in-memory database is the same strategy as auth-fake-db.mjs. There is
  * no session-row cache, so a later database failure is not served from one.
  */
+import bcrypt from "bcryptjs";
 import { decodeJwt } from "jose";
 import { describe, expect, it, vi } from "vitest";
 import { authenticate } from "../src/auth/authenticate";
@@ -233,26 +234,95 @@ describe("auth http", () => {
     expect(db.session(other.id)?.revokeReason).toBe("LOGOUT_ALL");
   });
 
-  it("login: unknown users, guests and bots do one bcrypt compare and the same 401", async () => {
+  it("login: unknown users, guests and bots do one PBKDF2 verify and the same 401", async () => {
     const { db, request } = createHarness();
     db.addUser({ username: "RealOne", password: PASSWORD });
     db.addUser({ username: "Guest_0123456789", isGuest: true });
     db.addUser({ username: "Bot_Alice", kind: "BOT", password: PASSWORD });
-    const compare = vi.spyOn(passwords, "compare");
+    const verify = vi.spyOn(passwords, "verify");
     try {
       const answers = [];
       for (const username of ["nobody_here", "Guest_0123456789", "Bot_Alice", "RealOne"]) {
-        const before = compare.mock.calls.length;
+        const before = verify.mock.calls.length;
         const response = await request("/auth/login", {
           body: { username, password: username === "Bot_Alice" ? PASSWORD : "wrong password!!" },
         });
-        expect(compare.mock.calls.length - before, username).toBe(1);
+        expect(verify.mock.calls.length - before, username).toBe(1);
         answers.push([response.status, response.body]);
       }
       for (const answer of answers) expect(answer).toEqual([401, { error: "Invalid credentials" }]);
     } finally {
-      compare.mockRestore();
+      verify.mockRestore();
     }
+  }, SLOW);
+
+  it("register stores PBKDF2 and login rehashes when the stored iteration count is lower", async () => {
+    const current = createHarness();
+    expect(current.config.passwordPbkdf2Iterations).toBe(10_000);
+    const registered = await current.request("/auth/register", {
+      body: { ...TERMS, username: "Hash_Format", email: "hash@example.com", password: PASSWORD },
+    });
+    expect(registered.status).toBe(201);
+    const stored = current.db.user(registered.body.user.id)!.passwordHash ?? "";
+    expect(stored).toMatch(/^pbkdf2-sha256\$v1\$10000\$[A-Za-z0-9_-]+\$[A-Za-z0-9_-]+$/);
+
+    const low = createHarness({ PASSWORD_PBKDF2_ITERATIONS: "1000" });
+    const user = low.db.addUser({
+      username: "Raised",
+      passwordHash: passwords.hashSync(PASSWORD, 500),
+    });
+    const response = await low.request("/auth/login", { body: { username: "Raised", password: PASSWORD } });
+    expect(response.status).toBe(200);
+    expect(low.db.user(user.id)!.passwordHash).toMatch(/^pbkdf2-sha256\$v1\$1000\$/);
+  }, SLOW);
+
+  it("login does the PBKDF2 dummy check for a bcrypt hash unless legacy bcrypt is enabled", async () => {
+    const off = createHarness({ ENABLE_LEGACY_BCRYPT: "false" });
+    const legacy = bcrypt.hashSync(PASSWORD, 4);
+    const user = off.db.addUser({ username: "Bcrypt_Off", passwordHash: legacy });
+    const refused = await off.request("/auth/login", { body: { username: "Bcrypt_Off", password: PASSWORD } });
+    expect(refused.status).toBe(401);
+    expect(off.db.user(user.id)!.passwordHash).toBe(legacy);
+
+    const on = createHarness({ ENABLE_LEGACY_BCRYPT: "true", PASSWORD_PBKDF2_ITERATIONS: "1000" });
+    const kept = on.db.addUser({ username: "Bcrypt_On", passwordHash: bcrypt.hashSync(PASSWORD, 4) });
+    const accepted = await on.request("/auth/login", { body: { username: "Bcrypt_On", password: PASSWORD } });
+    expect(accepted.status).toBe(200);
+    expect(on.db.user(kept.id)!.passwordHash).toMatch(/^pbkdf2-sha256\$v1\$1000\$/);
+  }, SLOW);
+
+  it("a stored iteration count above the cap does not run that count", async () => {
+    const poisoned = "pbkdf2-sha256$v1$1000001$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    const started = Date.now();
+    const verdict = await passwords.verify("not-the-password!!", poisoned, { iterations: 1000, legacyBcrypt: false });
+    expect(verdict).toEqual({ matches: false, rehash: null });
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it("a forwarded workers.dev origin is accepted and the refresh cookie stays host-only", async () => {
+    const origin = "https://poker-web.demo.workers.dev";
+    const { request } = createHarness({ CLIENT_ORIGIN: origin });
+    const ok = await request("/auth/login", {
+      baseUrl: origin,
+      headers: { origin },
+      body: { username: "nobody_here", password: "wrong password!!" },
+    });
+    expect(ok.status).toBe(401);
+    const registered = await request("/auth/register", {
+      baseUrl: origin,
+      headers: { origin },
+      body: { ...TERMS, username: "Cookie_Host", email: "cookie@example.com", password: PASSWORD },
+    });
+    expect(registered.status).toBe(201);
+    expect(registered.setCookie).toMatch(/Secure/);
+    expect(registered.setCookie).toMatch(/SameSite=Strict/);
+    expect(registered.setCookie).not.toMatch(/Domain=/i);
+    const foreign = await request("/auth/login", {
+      baseUrl: origin,
+      headers: { origin: "https://evil.example" },
+      body: { username: "Cookie_Host", password: PASSWORD },
+    });
+    expect(foreign.status).toBe(403);
   }, SLOW);
 
   it("login: 5 failures lock the account; a correct password during the lock does not extend it", async () => {

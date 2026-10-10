@@ -19,4 +19,20 @@ declare module "node:crypto" {
   export function createCipheriv(algorithm: string, key: Uint8Array, iv: Uint8Array): Cipher;
   export function createDecipheriv(algorithm: string, key: Uint8Array, iv: Uint8Array): Decipher;
   export function randomBytes(size: number): Bytes;
+  export function pbkdf2(
+    password: Uint8Array | string,
+    salt: Uint8Array,
+    iterations: number,
+    keylen: number,
+    digest: string,
+    callback: (err: Error | null, derivedKey: Bytes) => void,
+  ): void;
+  export function pbkdf2Sync(
+    password: Uint8Array | string,
+    salt: Uint8Array,
+    iterations: number,
+    keylen: number,
+    digest: string,
+  ): Bytes;
+  export function timingSafeEqual(a: Uint8Array, b: Uint8Array): boolean;
 }

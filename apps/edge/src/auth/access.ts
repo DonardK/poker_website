@@ -6,17 +6,29 @@ export interface AccessSettings { aud: string; team: string }
 const TEAM_NAME = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
 const jwksByTeam = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
+function accessRequired(env: Env): boolean {
+  const raw = (env.ADMIN_REQUIRE_CF_ACCESS ?? "").trim().toLowerCase();
+  if (raw === "" || raw === "false" || raw === "0") return false;
+  if (raw === "true" || raw === "1") return true;
+  throw new Error("ADMIN_REQUIRE_CF_ACCESS must be true or false");
+}
+
 /**
- * Production sets both Worker vars. When neither is set (tests, local),
- * Access is not enforced; the database role check still is.
- * Setting only one is a misconfiguration.
+ * `ADMIN_REQUIRE_CF_ACCESS=false` (the workers.dev demo) skips the Access JWT
+ * when both CF_ACCESS vars are unset. An https CLIENT_ORIGIN does not 500.
+ * The database role check still runs.
+ *
+ * `ADMIN_REQUIRE_CF_ACCESS=true` is the strict check: an https origin with
+ * neither var set is a misconfiguration. Setting only one var always is.
  */
 export function accessSettings(env: Env): AccessSettings | null {
   const aud = env.CF_ACCESS_AUD?.trim() ?? "";
   const team = env.CF_ACCESS_TEAM_DOMAIN?.trim().toLowerCase() ?? "";
   const production = env.CLIENT_ORIGIN.trim().startsWith("https://");
   if (!aud && !team) {
-    if (production) throw new Error("Cloudflare Access requires both CF_ACCESS_AUD and CF_ACCESS_TEAM_DOMAIN");
+    if (accessRequired(env) && production) {
+      throw new Error("Cloudflare Access requires both CF_ACCESS_AUD and CF_ACCESS_TEAM_DOMAIN");
+    }
     return null;
   }
   if (!aud || !team || !TEAM_NAME.test(team) || aud.length > 256) {

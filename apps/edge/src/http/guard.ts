@@ -44,7 +44,7 @@ export async function authed(c: Ctx): Promise<Gate> {
   }
 }
 
-/** Runs before user lookup and bcrypt. 403 does not change any cookie. */
+/** Runs before user lookup and password hashing. 403 does not change any cookie. */
 export async function turnstileGate(c: Ctx): Promise<Response | null> {
   const body = c.get("jsonBody");
   const token = body && typeof body === "object" ? (body as { turnstileToken?: unknown }).turnstileToken : undefined;
