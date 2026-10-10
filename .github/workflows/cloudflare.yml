@@ -167,7 +167,10 @@ jobs:
       - name: Generate Prisma client (edge)
         run: npm run prisma:generate -w @poker/edge
       - name: Edge Vitest
-        run: npm test -w @poker/edge
+        # TableActor fixtures write rows. Nothing is listening on the workflow's
+        # loopback stub, so start the same disposable cluster test:db uses and
+        # point Hyperdrive at its poker_app URL. That URL is loopback-only.
+        run: node apps/server/test/support/pg.mjs --exec "npm test -w @poker/edge"
       - name: Edge schema parity
         run: npm run check:schema -w @poker/edge
       # Top-level worker. env.preview is also in the file; --env="" keeps dry-run off that environment.
@@ -276,6 +279,8 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           # Required only when the repository belongs to a GitHub organization.
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+          # Extends the default rules and allowlists one test fixture. See .gitleaks.toml.
+          GITLEAKS_CONFIG: .gitleaks.toml
 
   rng-nightly:
     name: RNG certification suite (full, nightly)

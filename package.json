@@ -37,7 +37,11 @@
   },
   "overrides": {
     "postcss": "8.5.28",
-    "deepmerge-ts": "8.0.2"
+    "deepmerge-ts": "8.0.2",
+    "source-map-js": "1.2.2",
+    "@node-minify/core": {
+      "glob": "10.5.0"
+    }
   },
   "allowScripts": {
     "@embedded-postgres/linux-x64@18.4.0-beta.17": true,

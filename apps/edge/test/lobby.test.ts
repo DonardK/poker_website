@@ -367,7 +367,7 @@ describe("lobby upgrade", () => {
     const worker = await (exports as unknown as { default: { fetch(input: string, init?: RequestInit): Promise<Response> } }).default.fetch("http://example.com/ws/lobby", { headers: { Upgrade: "websocket" } });
     expect(worker.status).toBe(401);
 
-    const wrongKey = await signTicket({ sub: "u", sid: "s", username: "ada" }, { secret: "wrong-ws-ticket-secret-32-characters" });
+    const wrongKey = await signTicket({ sub: "u", sid: "s", username: "ada" }, { secret: "wrong-ws-ticket-secret-32-characters" }); // gitleaks:allow
     const bad = await openUpgrade(`poker_ws=${wrongKey}`);
     expect(bad.status).toBe(401);
     expect(bad.webSocket).toBeFalsy();

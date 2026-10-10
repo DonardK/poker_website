@@ -16,8 +16,8 @@
   "dependencies": {
     "@poker/engine": "*",
     "@poker/shared": "*",
-    "@prisma/adapter-pg": "6.16.1",
-    "@prisma/client": "6.16.1",
+    "@prisma/adapter-pg": "6.19.3",
+    "@prisma/client": "6.19.3",
     "bcryptjs": "^3.0.3",
     "hono": "^4.13.13",
     "jose": "^6.2.12",
@@ -27,7 +27,7 @@
   "devDependencies": {
     "@cloudflare/vitest-plugin": "^1.4.0",
     "@cloudflare/workers-types": "^5.20261010.1",
-    "prisma": "6.16.1",
+    "prisma": "6.19.3",
     "typescript": "^5.9.2",
     "vitest": "^5.0.3",
     "wrangler": "^4.149.0"

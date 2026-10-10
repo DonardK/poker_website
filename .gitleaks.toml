@@ -1,0 +1,11 @@
+title = "Poker gitleaks"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "Lobby test fixture: a wrong WS ticket key, not a credential"
+regexes = ['''wrong-ws-ticket-secret-32-characters''']

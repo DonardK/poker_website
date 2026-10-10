@@ -303,6 +303,7 @@ async function main(argv) {
     ...process.env, ...testSecrets(),
     POKER_TEST_DATABASE_URL: db.runtimeUrl, POKER_TEST_ADMIN_DATABASE_URL: db.adminUrl,
     DATABASE_URL: db.runtimeUrl, DIRECT_URL: db.adminUrl,
+    CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE: db.runtimeUrl,
   };
   const code = await new Promise((resolveCode) => {
     const child = spawn(command, { stdio: "inherit", env, shell: true, cwd: process.cwd() });
