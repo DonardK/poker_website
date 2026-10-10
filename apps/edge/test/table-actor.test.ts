@@ -1,5 +1,5 @@
 import { evictDurableObject, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import type { PublicTableState } from "@poker/shared";
 import { workerEnv, workerFetch } from "./worker-bindings";
 
@@ -15,9 +15,44 @@ interface Prepared {
   players: { userId: string; sessionId: string; username: string; ticket: string }[];
 }
 
+const openSockets: WebSocket[] = [];
+const liveTables = new Set<string>();
+
 function tableStub(tableId: string) {
+  liveTables.add(tableId);
   return workerEnv().TABLES.getByName(tableId, { locationHint: "weur" });
 }
+
+/** The workers pool fails the run if a socket close or a scheduled alarm is still in flight when the file worker shuts down. */
+function closeAndWait(ws: WebSocket): Promise<void> {
+  if (ws.readyState === WebSocket.CLOSED) return Promise.resolve();
+  return new Promise((resolve) => {
+    const timer = setTimeout(resolve, 1_000);
+    ws.addEventListener("close", () => {
+      clearTimeout(timer);
+      resolve();
+    });
+    try {
+      ws.close(1000, "test");
+    } catch {
+      clearTimeout(timer);
+      resolve();
+    }
+  });
+}
+
+afterEach(async () => {
+  const sockets = openSockets.splice(0);
+  await Promise.all(sockets.map((ws) => closeAndWait(ws)));
+  const ids = [...liveTables];
+  liveTables.clear();
+  for (const tableId of ids) {
+    const stub = workerEnv().TABLES.getByName(tableId, { locationHint: "weur" });
+    await runInDurableObject(stub, async (_instance, state) => {
+      await state.storage.deleteAlarm();
+    }).catch(() => undefined);
+  }
+});
 
 async function prepare(label: string, count: number, hostIndex = 0): Promise<Prepared> {
   const tableId = `t${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`;
@@ -76,6 +111,7 @@ function connect(tableId: string, ticket: string) {
       closeCode = event.code;
     });
     ws.accept();
+    openSockets.push(ws);
     return {
       ws,
       frames,
@@ -98,6 +134,7 @@ function connectLobby(ticket: string) {
       frames.push(JSON.parse(event.data) as Frame);
     });
     ws.accept();
+    openSockets.push(ws);
     return { ws, frames };
   })();
 }
