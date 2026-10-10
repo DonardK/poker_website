@@ -410,6 +410,29 @@ jobs:
         run: |
           set -euo pipefail
           node .github/workflows/support/assert-supabase-direct-url.mjs
+          # The secret is the admin URL with no TLS query. Prisma's engine is not
+          # Node, so NODE_EXTRA_CA_CERTS does not apply. Append the pooler CA the
+          # same way a local migrate does (sslmode, sslaccept, sslcert).
+          cert="${GITHUB_WORKSPACE}/apps/server/certs/supabase-pooler-root.pem"
+          if [ ! -f "$cert" ]; then
+            echo "Missing Supabase pooler CA at apps/server/certs/supabase-pooler-root.pem"
+            exit 1
+          fi
+          case "$SUPABASE_DIRECT_URL" in
+            *sslcert=*)
+              echo "SUPABASE_DIRECT_URL already includes sslcert."
+              ;;
+            *)
+              encoded=$(node -e 'process.stdout.write(encodeURIComponent(process.argv[1]))' "$cert")
+              case "$SUPABASE_DIRECT_URL" in
+                *'?'*) sep='&' ;;
+                *) sep='?' ;;
+              esac
+              export DATABASE_URL="${SUPABASE_DIRECT_URL}${sep}sslmode=require&sslaccept=strict&sslcert=${encoded}"
+              export DIRECT_URL="$DATABASE_URL"
+              echo "Appended sslmode=require, sslaccept=strict, and sslcert for the pooler CA."
+              ;;
+          esac
           npm run prisma:migrate -w @poker/server
       - name: Deploy API Worker
         env:
@@ -430,7 +453,21 @@ jobs:
           NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
           NEXT_PUBLIC_SOCKET_URL: ${{ vars.NEXT_PUBLIC_SOCKET_URL }}
           NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+          NEXT_PUBLIC_SITE_URL: ${{ vars.NEXT_PUBLIC_SITE_URL }}
         run: |
           set -euo pipefail
           node .github/workflows/support/assert-ci-offline.mjs --allow-cloudflare
+          if [ -z "${NEXT_PUBLIC_SITE_URL:-}" ]; then
+            echo "Set the production environment variable NEXT_PUBLIC_SITE_URL (https://poker-web.<subdomain>.workers.dev)."
+            exit 1
+          fi
+          case "$NEXT_PUBLIC_SITE_URL" in
+            https://*) ;;
+            *)
+              echo "NEXT_PUBLIC_SITE_URL must be an https origin."
+              exit 1
+              ;;
+          esac
+          # Unset GitHub variables arrive as empty strings, which is same-origin.
+          # opennextjs-cloudflare deploy uses apps/web/wrangler.jsonc (main worker.ts, API service binding).
           npm run deploy -w @poker/web

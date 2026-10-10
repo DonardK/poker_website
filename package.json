@@ -40,6 +40,7 @@
     "deepmerge-ts": "8.0.2"
   },
   "allowScripts": {
+    "@embedded-postgres/linux-x64@18.4.0-beta.17": true,
     "@embedded-postgres/windows-x64@18.4.0-beta.17": true,
     "@prisma/client@6.16.1": true,
     "@prisma/client@6.19.3": true,

@@ -199,6 +199,10 @@ export function configErrors(edge, web, mode) {
   }
 
   if (mode === "production") {
+    const webMain = String(web.main ?? "");
+    if (webMain !== "./worker.ts" && webMain !== "worker.ts") {
+      errors.push(`Web production main must be worker.ts so /api and /ws reach the API binding (found ${webMain || "(missing)"}).`);
+    }
     if (edge.workers_dev !== false) errors.push("Edge production workers_dev must be false.");
     if (web.workers_dev !== true) errors.push("Web production workers_dev must be true for the workers.dev demo.");
     const edgeRoutes = noCustomDomain(edge.routes, "Edge production", { requireExplicitEmpty: false });
