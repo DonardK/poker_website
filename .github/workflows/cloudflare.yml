@@ -439,6 +439,9 @@ jobs:
               ;;
           esac
           npm run prisma:migrate -w @poker/server
+      # apps/edge/src/generated is gitignored. The edge job generates it before tests; deploy must too.
+      - name: Generate Prisma client (edge)
+        run: npm run prisma:generate -w @poker/edge
       - name: Deploy API Worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
