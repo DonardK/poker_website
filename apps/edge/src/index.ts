@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import type { Env } from "./env";
 import { health, ready } from "./health";
+import { mountHttp } from "./http/app";
 
 const LOCATION_HINTS = ["wnam", "enam", "sam", "weur", "eeur", "apac", "apac-ne", "apac-se", "oc", "afr", "me"] as const;
 
@@ -10,6 +11,8 @@ function locationHint(value: string): DurableObjectLocationHint {
 }
 
 const app = new Hono<{ Bindings: Env }>();
+
+mountHttp(app);
 
 app.get("/api/health", health);
 app.get("/api/ready", ready);

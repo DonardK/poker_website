@@ -1,3 +1,4 @@
+import type { TableListItem } from "./api.js";
 import type { ActionType, BotProfile, HandPhase, PlayerKind, PlayerStatus, TableCloseReason, TableStatus } from "./constants.js";
 import type { Card } from "./poker.js";
 
@@ -21,6 +22,10 @@ export const SOCKET_EVENTS = {
   SESSION_RENEW: "SESSION_RENEW",
   /** Server -> client: this socket's session was revoked or expired; the socket is disconnected right after. */
   SESSION_REVOKED: "SESSION_REVOKED",
+  /** Server -> client: full public table list for this socket. */
+  LOBBY_SNAPSHOT: "LOBBY_SNAPSHOT",
+  /** Server -> client: one table added, updated, or removed from this socket's list. */
+  LOBBY_PATCH: "LOBBY_PATCH",
 } as const;
 
 export type SocketEventName = (typeof SOCKET_EVENTS)[keyof typeof SOCKET_EVENTS];
@@ -254,6 +259,8 @@ export interface ServerToClientEvents {
   [SOCKET_EVENTS.USER_PATCH]: (payload: UserPatchPayload) => void;
   [SOCKET_EVENTS.TABLE_IDLE_NOTICE]: (payload: TableIdleNoticePayload) => void;
   [SOCKET_EVENTS.SESSION_REVOKED]: (payload: SessionRevokedPayload) => void;
+  [SOCKET_EVENTS.LOBBY_SNAPSHOT]: (payload: { tables: TableListItem[] }) => void;
+  [SOCKET_EVENTS.LOBBY_PATCH]: (payload: { removed?: boolean; table?: TableListItem }) => void;
 }
 
 export interface ClientToServerEvents {
