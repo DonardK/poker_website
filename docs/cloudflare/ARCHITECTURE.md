@@ -179,7 +179,8 @@ Compatibility date `2026-10-01` or newer. From that line, `nodejs_compat` is alr
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
-      "id": "<HYPERDRIVE_ID_CACHE_DISABLED>"
+      "id": "<HYPERDRIVE_ID_CACHE_DISABLED>",
+      "localConnectionString": "postgresql://poker_app:replace-with-local-password@127.0.0.1:5432/poker"
     }
   ],
   "durable_objects": {
@@ -218,7 +219,7 @@ Preview (non-production Neon branch, its own Hyperdrive, no production routes):
     "name": "poker-api-preview",
     "workers_dev": true,
     "routes": [],
-    "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "<PREVIEW_HYPERDRIVE_ID_CACHE_DISABLED>" }],
+    "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "<PREVIEW_HYPERDRIVE_ID_CACHE_DISABLED>", "localConnectionString": "postgresql://poker_app:replace-with-local-password@127.0.0.1:5432/poker" }],
     "vars": { "CLIENT_ORIGIN": "https://<preview-web-host>" }
   }
 }
@@ -244,10 +245,10 @@ The database password lives only in the Hyperdrive configuration, not in a Worke
 Local development puts the same names in `apps/edge/.dev.vars`. Hyperdrive local override:
 
 ```
-CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE=postgres://poker:poker@127.0.0.1:5432/poker
+CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE=postgresql://poker_app:<POKER_APP_PASSWORD>@127.0.0.1:5432/poker
 ```
 
-That variable overrides `localConnectionString` and must target the Docker Postgres from `docker-compose.yml`, never the live Supabase URL. Caching does not apply locally.
+That variable overrides `localConnectionString` and must target the Docker Postgres from `docker-compose.yml` on `127.0.0.1`, using the `poker_app` password from `.env.compose` (see `docker-compose.yml`; there is no default password). Never the live Supabase URL and never a Neon production URL. The `localConnectionString` in `wrangler.jsonc` is a localhost placeholder with a non-secret password so `vitest` and `wrangler dev` can boot without a remote database. Replace it via the environment variable before any query. Caching does not apply locally.
 
 ### 4.3 `apps/web/wrangler.jsonc` (OpenNext)
 
@@ -322,8 +323,8 @@ Errors: `EngineError` → 409 and `{ error: message }` as today. Auth credential
 
 | Method | Path | Auth | Hono | Notes |
 |---|---|---|---|---|
-| GET | `/api/health` | none | `http/health.ts` | `{ ok, service: "poker-edge", timestamp }`. No database. `redis` field omitted. |
-| GET | `/api/ready` | none | `http/health.ts` | `SELECT 1` through Hyperdrive. 200 `{ ready: true }` or 503 `{ ready: false, reasons }`. |
+| GET | `/api/health` | none | `src/health.ts` | `{ ok, service: "poker-edge", timestamp }`. No database. `redis` field omitted. |
+| GET | `/api/ready` | none | `src/health.ts` | `SELECT 1` through Hyperdrive. 200 `{ ready: true }` or 503 `{ ready: false, reasons }`. |
 | POST | `/api/auth/register` | Turnstile + credential limit | `http/auth.ts` | Port `auth/routes.ts`. 201 `{ user, accessToken }` + `Set-Cookie`. |
 | POST | `/api/auth/login` | Turnstile + credential limit | `http/auth.ts` | Same dummy-bcrypt and lockout behavior. |
 | POST | `/api/auth/guest` | Turnstile + credential limit | `http/auth.ts` | |
@@ -428,6 +429,8 @@ export function createPrisma(connectionString: string): PrismaClient {
 ```
 
 Call `createPrisma(env.HYPERDRIVE.connectionString)` inside `fetch`, inside each DO event that touches Postgres, and inside `alarm()`. Do not store the client on `globalThis`. A client kept on `this` inside a DO dies on hibernation, which is correct; the next event constructs a new one. After the Worker responds, `ctx.waitUntil(prisma.$disconnect())`. Inside a DO, `await prisma.$disconnect()` at the end of the event.
+
+`GET /api/health` must not import `pg`. The Workers Vitest evaluator (Vite) loads `pg/lib/connection.js` as CommonJS and throws `Cannot use import statement outside a module` if that module is in the static graph of the fetch handler. `src/health.ts` therefore dynamic-imports `createPrisma` only from `GET /api/ready`. `wrangler deploy` bundles `pg` with esbuild, which is the path Hyperdrive documents; the failure is the test evaluator, not workerd.
 
 Hyperdrive's own guidance is the same: create the client inside the handler, not in global scope. A global `pg` pool pins connections incorrectly across isolate reuse.
 
@@ -870,6 +873,8 @@ Files owned:
 
 - `apps/edge/**` except `src/http/**`, `src/table/**`, `src/lobby/**`, `src/session/user-sessions.ts`, `src/auth/**`, `src/game/**`
 - `apps/edge/src/index.ts` may route `/api/*` to a router WP2 will fill, and `/ws/*` to the DO stubs
+- `apps/edge/src/health.ts` — `GET /api/health` and `GET /api/ready`. Not under `src/http/`, which WP2 owns.
+- `apps/edge/src/actors/table-actor.ts`, `lobby-actor.ts`, `user-sessions.ts` — hibernating class stubs exported from `src/index.ts`. WP3 replaces the `TableActor` and `UserSessions` bodies. WP4 replaces the `LobbyActor` body. Those three files are added to those packages' ownership. Do not create a second class with the same name.
 - `apps/edge/src/session/contract.ts` (RPC method types only)
 - `apps/edge/scripts/check-schema-parity.mjs`
 - `apps/server/prisma/schema.prisma` — **only** the `GameCommand` model
@@ -881,9 +886,9 @@ Acceptance:
 
 - `prisma generate` in `apps/edge` succeeds with `runtime = "cloudflare"` (or `workerd` fallback).
 - Parity script passes.
-- `wrangler deploy --dry-run` from `apps/edge` succeeds.
-- Vitest boots the Worker and `GET /api/health` returns 200.
-- Migration SQL is additive (`CREATE TABLE` only) and applies to Docker Postgres.
+- `wrangler deploy --dry-run` from `apps/edge` succeeds. With a `preview` env in the same file, pass `--env=""` if Wrangler asks for an explicit environment. Exit 0 with the warning is enough.
+- Vitest (`@cloudflare/vitest-plugin`, not `@cloudflare/vitest-pool-workers`) boots the Worker and `GET /api/health` returns 200.
+- Migration SQL is additive: `CREATE TABLE`, its index, the RLS boilerplate from `20261010120000_runtime_hardening` (required or `poker_assert_rls()` fails closed), `SELECT`+`INSERT` for `poker_server`, and the append-only trigger. No existing row is read or changed. It applies to Docker Postgres.
 
 ### WP2 — HTTP auth, tables, admin
 
@@ -911,6 +916,8 @@ Outputs: section 8.3–8.6 and 8.8.
 Files owned:
 
 - `apps/edge/src/table/**`
+- `apps/edge/src/actors/table-actor.ts` — replace the WP1 stub body
+- `apps/edge/src/actors/user-sessions.ts` — replace the WP1 stub body
 - `apps/edge/src/session/user-sessions.ts`
 - `apps/edge/src/game/**`
 - `apps/edge/test/table-actor.test.ts`
@@ -924,6 +931,7 @@ Inputs: WP1 lobby export, WP3 `patch` RPC if merged; until then, implement `patc
 Files owned:
 
 - `apps/edge/src/lobby/**`
+- `apps/edge/src/actors/lobby-actor.ts` — replace the WP1 stub body
 - `apps/edge/test/lobby.test.ts`
 
 Acceptance: snapshot matches `GET /api/tables` for the same fixture. A patch updates seated counts. `isSeated` is per connection. Keep-alive RPC is invoked for a seated user and refused for a spectator.

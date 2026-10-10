@@ -1,0 +1,68 @@
+{
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "poker-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "workers_dev": false,
+  "routes": [
+    { "pattern": "example.com/api/*", "zone_name": "example.com" },
+    { "pattern": "example.com/ws/*", "zone_name": "example.com" }
+  ],
+  "placement": { "region": "aws:eu-central-1" },
+  "vars": {
+    "CLIENT_ORIGIN": "https://example.com",
+    "TERMS_VERSION": "2026-10-01",
+    "JWT_ACCESS_TTL": "15m",
+    "JWT_REFRESH_TTL": "7d",
+    "SESSION_IDLE_TTL": "7d",
+    "SESSION_ABSOLUTE_TTL": "30d",
+    "DEFAULT_STARTING_BANKROLL": "10000",
+    "TURN_TIME_BANK_MS": "20000",
+    "TIME_BANK_INITIAL_MS": "30000",
+    "TIME_BANK_MAX_MS": "60000",
+    "TIME_BANK_REFILL_MS": "5000",
+    "TIME_BANK_REFILL_EVERY_HANDS": "10",
+    "ENABLE_LEGACY_BOTS": "false",
+    "TURNSTILE_SITE_KEY": "",
+    "TABLE_DO_LOCATION_HINT": "weur"
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE",
+      "id": "<HYPERDRIVE_ID_CACHE_DISABLED>",
+      // Local only. Not a real password. `.dev.vars` overrides this with the
+      // Docker poker_app URL (127.0.0.1). Never a remote database.
+      "localConnectionString": "postgresql://poker_app:replace-with-local-password@127.0.0.1:5432/poker"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "TABLES", "class_name": "TableActor" },
+      { "name": "LOBBY", "class_name": "LobbyActor" },
+      { "name": "USER_SESSIONS", "class_name": "UserSessions" }
+    ]
+  },
+  "exports": {
+    "TableActor": { "type": "durable-object", "storage": "sqlite" },
+    "LobbyActor": { "type": "durable-object", "storage": "sqlite" },
+    "UserSessions": { "type": "durable-object", "storage": "sqlite" }
+  },
+  "ratelimits": [
+    { "name": "RL_GENERAL", "namespace_id": "1001", "simple": { "limit": 120, "period": 60 } },
+    { "name": "RL_CREDENTIALS", "namespace_id": "1002", "simple": { "limit": 15, "period": 60 } },
+    { "name": "RL_REFRESH", "namespace_id": "1003", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RL_ADMIN", "namespace_id": "1004", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RL_WS", "namespace_id": "1005", "simple": { "limit": 30, "period": 60 } }
+  ],
+  "env": {
+    "preview": {
+      "name": "poker-api-preview",
+      "workers_dev": true,
+      "routes": [],
+      "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "<PREVIEW_HYPERDRIVE_ID_CACHE_DISABLED>", "localConnectionString": "postgresql://poker_app:replace-with-local-password@127.0.0.1:5432/poker" }],
+      "vars": { "CLIENT_ORIGIN": "https://<preview-web-host>" }
+    }
+  }
+}

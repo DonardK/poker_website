@@ -1,0 +1,13 @@
+# Copy to apps/edge/.dev.vars (gitignored). Leave values empty in this example.
+# Never put the repo-root .env, a Supabase URL, or a Neon production URL here.
+JWT_ACCESS_SECRET=
+JWT_REFRESH_SECRET=
+WS_TICKET_SECRET=
+GAME_ENCRYPTION_KEYS=
+GAME_ENCRYPTION_ACTIVE_KEY_ID=
+TURNSTILE_SECRET_KEY=
+# Local Docker Postgres only. Host must be 127.0.0.1. Password is the local
+# poker_app password (POKER_APP_PASSWORD / ALTER ROLE), not a committed secret.
+# Example shape, do not commit a real password:
+# CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE=postgresql://poker_app:PASSWORD@127.0.0.1:5432/poker
+CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE=

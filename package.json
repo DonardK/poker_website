@@ -38,5 +38,16 @@
   "overrides": {
     "postcss": "8.5.28",
     "deepmerge-ts": "8.0.2"
+  },
+  "allowScripts": {
+    "@embedded-postgres/windows-x64@18.4.0-beta.17": true,
+    "@prisma/client@6.16.1": true,
+    "@prisma/client@6.19.3": true,
+    "@prisma/engines@6.16.1": true,
+    "@prisma/engines@6.19.3": true,
+    "esbuild@0.28.2": true,
+    "prisma@6.16.1": true,
+    "prisma@6.19.3": true,
+    "workerd@1.20261006.1": true
   }
 }

@@ -1,0 +1,454 @@
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  runtime      = "cloudflare"
+  engineType   = "client"
+  moduleFormat = "esm"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum UserRole {
+  PLAYER
+  ADMIN
+}
+
+enum PlayerKind {
+  HUMAN
+  BOT
+}
+
+enum BotProfile {
+  TAG
+  LOOSE_PASSIVE
+  MANIAC
+  GTO
+}
+
+enum TableStatus {
+  WAITING
+  IN_HAND
+  PAUSED
+  CLOSED
+}
+
+enum SeatStatus {
+  EMPTY
+  OCCUPIED
+  SIT_OUT
+}
+
+enum HandPhase {
+  WAITING
+  PREFLOP
+  FLOP
+  TURN
+  RIVER
+  SHOWDOWN
+  COMPLETE
+}
+
+enum PokerAction {
+  POST_SB
+  POST_BB
+  POST_DEAD
+  FOLD
+  CHECK
+  CALL
+  BET
+  RAISE
+  ALL_IN
+  TIMEOUT_FOLD
+  TIMEOUT_CHECK
+}
+
+model User {
+  id           String      @id @default(cuid())
+  email        String?     @unique
+  username     String      @unique
+  passwordHash String?
+  isGuest      Boolean     @default(false)
+  role         UserRole    @default(PLAYER)
+  kind         PlayerKind  @default(HUMAN)
+  botProfile   BotProfile?
+  /// Play-money chips. Stays a 32-bit Int (Prisma BigInt becomes a TS bigint
+  /// and breaks JSON across the server and shared packages). Migration
+  /// 20261010120000_runtime_hardening caps it, and the other chip columns,
+  /// safely below 2^31.
+  bankroll     Int         @default(10000)
+  avatarHue    Int         @default(210)
+  createdAt    DateTime    @default(now())
+  updatedAt    DateTime    @updatedAt
+  lastSeenAt   DateTime?
+  /// Auth hardening (migration 20261001100000_auth_hardening).
+  /// lower(username), a STORED generated column: usernames are unique
+  /// case-insensitively and every lookup/login goes through this column. The
+  /// database computes it, so no writer can ever store a mismatching value;
+  /// the application never writes it.
+  usernameCanonical String    @unique @default(dbgenerated("lower(username)"))
+  /// Consecutive failed password logins (reset on success) and the per-account
+  /// lockout they trigger, independent of the client IP.
+  failedLoginCount  Int       @default(0)
+  lockedUntil       DateTime?
+  /// Terms version accepted at sign-up and when; when 18+ was confirmed.
+  termsVersion      String?
+  termsAcceptedAt   DateTime?
+  ageConfirmedAt    DateTime?
+
+  sessions    Session[]
+  seats       TableSeat[]
+  hostedTables Table[]      @relation("TableHost")
+  handPlayers HandPlayer[]
+  botStats    BotStatistic?
+  /// Money ledger (migration 20261002200000_ledger_foundation).
+  ledgerAccounts LedgerAccount[]
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// SHA-256 of the CURRENT refresh token.
+  refreshToken String   @unique
+  /// min(last refresh + idle TTL, absoluteExpiresAt): the cookie, this row and
+  /// the refresh JWT all expire at this instant.
+  expiresAt    DateTime
+  createdAt    DateTime @default(now())
+  userAgent    String?
+  ip           String?
+  /// Auth hardening (migration 20261001100000_auth_hardening).
+  lastUsedAt        DateTime  @default(now())
+  /// Hard end of the session however often it is refreshed.
+  absoluteExpiresAt DateTime @default(dbgenerated("(CURRENT_TIMESTAMP + '30 days'::interval)"))
+  /// SHA-256 of the token replaced by the last rotation, and when: presenting
+  /// it within the grace window is an honest concurrent refresh; later, reuse.
+  previousTokenHash String?
+  rotatedAt         DateTime?
+  /// Revoked sessions are kept (audit trail); a revoked row never authenticates.
+  revokedAt         DateTime?
+  revokeReason      String?
+
+  @@index([userId])
+  /// Expiry sweeps and "is this session still live" lookups.
+  @@index([expiresAt])
+}
+
+model Table {
+  id         String      @id @default(cuid())
+  name       String
+  hostId     String?
+  host       User?       @relation("TableHost", fields: [hostId], references: [id])
+  status     TableStatus @default(WAITING)
+  maxSeats   Int         @default(6)
+  smallBlind Int
+  bigBlind   Int
+  minBuyIn   Int
+  maxBuyIn   Int
+  timeBankMs Int         @default(15000)
+  isPrivate  Boolean     @default(false)
+  createdAt  DateTime    @default(now())
+  updatedAt  DateTime    @updatedAt
+  closedAt   DateTime?
+  /// Set with status PAUSED when the server stops running the table after
+  /// repeated failures (migration 20261003100000_game_reliability); see TableIncident.
+  pausedAt     DateTime?
+  pausedReason String?
+
+  stateCiphertext String?
+
+  seats TableSeat[]
+  hands Hand[]
+  /// Money ledger (migration 20261002200000_ledger_foundation).
+  ledgerAccounts LedgerAccount[]
+  incidents      TableIncident[]
+
+  @@index([status])
+  @@index([hostId])
+  /// Lobby (GET /api/tables): public tables that are not CLOSED, newest first.
+  /// Composite rather than partial: Prisma 6 cannot model a WHERE index, and
+  /// migrate diff must match this file. (isPrivate, status, createdAt DESC)
+  /// is the prefix of that filter and sort.
+  @@index([isPrivate, status, createdAt(sort: Desc)])
+}
+
+/// An operator incident at a table (migration 20261003100000_game_reliability):
+/// written when the server pauses a table it can no longer run. The runtime
+/// role may insert and resolve incidents but never delete them.
+model TableIncident {
+  id         String    @id @default(cuid())
+  tableId    String
+  table      Table     @relation(fields: [tableId], references: [id], onDelete: Restrict)
+  /// What happened, e.g. TIMER_FAILURES.
+  kind       String
+  reason     String
+  createdAt  DateTime  @default(now())
+  resolvedAt DateTime?
+  resolvedBy String?
+
+  @@index([tableId, createdAt])
+}
+
+/// One committed table mutation (migration 20261010130000_game_command).
+/// Inserted in the same Postgres transaction as the bankroll change. A unique
+/// conflict means the mutation already committed. The runtime role may
+/// SELECT and INSERT this table, never UPDATE or DELETE.
+model GameCommand {
+  id              String   @id
+  tableId         String
+  userId          String?
+  kind            String
+  appliedRevision Int
+  createdAt       DateTime @default(now())
+
+  @@index([tableId, createdAt])
+}
+
+model TableSeat {
+  id         String      @id @default(cuid())
+  tableId    String
+  table      Table       @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  seatIndex  Int
+  userId     String?     @unique
+  user       User?       @relation(fields: [userId], references: [id])
+  playerKind PlayerKind  @default(HUMAN)
+  botProfile BotProfile?
+  stack      Int         @default(0)
+  status     SeatStatus  @default(EMPTY)
+  sittingOut Boolean     @default(false)
+  joinedAt   DateTime    @default(now())
+
+  @@unique([tableId, seatIndex])
+}
+
+model Hand {
+  id         String    @id @default(cuid())
+  tableId    String
+  /// Deleting a table must not cascade-delete hand history (migration
+  /// 20261010120000_runtime_hardening). Append-only triggers block UPDATE
+  /// and DELETE unless poker.break_glass is on.
+  table      Table     @relation(fields: [tableId], references: [id], onDelete: Restrict)
+  handNumber Int
+  phase      HandPhase @default(COMPLETE)
+  dealerSeat Int
+  sbSeat     Int?
+  bbSeat     Int?
+  board      String[]
+  potTotal   Int       @default(0)
+  rake       Int       @default(0)
+  startedAt  DateTime  @default(now())
+  endedAt    DateTime?
+  snapshot   Json?
+  fairnessRoot String?
+  /// Legacy (pre-audit-trail) encrypted commitment; null for audited hands.
+  fairnessAudit String?
+  /// Compliance audit trail (migration 20260924120000_compliance_audit_trail).
+  /// UUID v4 hand id from the engine; unique across all tables.
+  handUuid       String? @unique @db.Uuid
+  /// SHA-256 commitment to the shuffled deck, made before dealing.
+  deckCommitment String?
+  /// Post-hand verification hash over the whole hash-chained record.
+  finalStateHash String?
+  /// Public hash-chained HandAuditRecord (no hidden cards).
+  auditRecord    Json?
+  /// AES-256-GCM SealedHandAudit (deck order and salts); regulator only.
+  auditSealed    String?
+
+  players HandPlayer[]
+  actions HandAction[]
+  pots    HandPot[]
+
+  @@unique([tableId, handNumber])
+}
+
+model HandPlayer {
+  id            String      @id @default(cuid())
+  handId        String
+  hand          Hand        @relation(fields: [handId], references: [id], onDelete: Cascade)
+  userId        String?
+  /// Deleting a user must not drop or null out their hand history.
+  user          User?       @relation(fields: [userId], references: [id], onDelete: Restrict)
+  seatIndex     Int
+  playerKind    PlayerKind
+  botProfile    BotProfile?
+  holeCards     String[]
+  encryptedHoleCards String?
+  startingStack Int
+  endingStack   Int
+  net           Int
+  showedCards   Boolean     @default(false)
+  won           Boolean     @default(false)
+  handRankName  String?
+  handRankValue BigInt?
+
+  @@unique([handId, seatIndex])
+  @@index([userId])
+}
+
+model HandAction {
+  id        String      @id @default(cuid())
+  handId    String
+  hand      Hand        @relation(fields: [handId], references: [id], onDelete: Cascade)
+  seq       Int
+  seatIndex Int
+  street    HandPhase
+  action    PokerAction
+  amount    Int         @default(0)
+  toAmount  Int?
+  createdAt DateTime    @default(now())
+
+  @@unique([handId, seq])
+}
+
+model HandPot {
+  id             String @id @default(cuid())
+  handId         String
+  hand           Hand   @relation(fields: [handId], references: [id], onDelete: Cascade)
+  potIndex       Int
+  amount         Int
+  eligibleSeats  Int[]
+  winnerSeats    Int[]
+  oddChipSeat    Int?
+
+  @@unique([handId, potIndex])
+}
+
+model BotStatistic {
+  id              String     @id @default(cuid())
+  userId          String     @unique
+  user            User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  profile         BotProfile
+  handsPlayed     Int        @default(0)
+  vpipHands       Int        @default(0)
+  pfrHands        Int        @default(0)
+  aggressionBets  Int        @default(0)
+  aggressionCalls Int        @default(0)
+  showdowns       Int        @default(0)
+  showdownsWon    Int        @default(0)
+  chipsWon        Int        @default(0)
+  updatedAt       DateTime   @updatedAt
+}
+
+// ---------------------------------------------------------------------------
+// Money ledger (migration 20261002200000_ledger_foundation, docs/money/LEDGER.md).
+// The runtime role can only SELECT these tables; every write goes through the
+// SECURITY DEFINER functions ledger_ensure_account / ledger_post, called with
+// $queryRaw from src/money/ledger.ts. Never create/update these rows through
+// the Prisma model API (it would be refused anyway).
+// Not expressible here (declared in the migration): the owner uniqueness index
+// over COALESCE(userId/tableId/providerKey, ''), the CHECKs, the append-only
+// triggers and the ledger functions.
+// ---------------------------------------------------------------------------
+
+enum AssetKind {
+  PLAY
+  FIAT
+  CRYPTO
+}
+
+enum LedgerAccountType {
+  USER_AVAILABLE
+  USER_WITHDRAWAL_HOLD
+  TABLE_ESCROW
+  PLAY_ISSUANCE
+  RAKE_REVENUE
+  DEPOSIT_CLEARING
+  WITHDRAWAL_CLEARING
+  PROVIDER_FEES
+  ADJUSTMENTS
+  CHARGEBACK_LOSSES
+}
+
+enum LedgerTransactionType {
+  PLAY_GRANT
+  BUY_IN
+  CASH_OUT
+  RAKE
+  DEPOSIT_CREDIT
+  DEPOSIT_REVERSAL
+  WITHDRAWAL_HOLD
+  WITHDRAWAL_RELEASE
+  WITHDRAWAL_SETTLE
+  PROVIDER_FEE
+  ADJUSTMENT
+}
+
+model Asset {
+  code          String    @id
+  kind          AssetKind
+  /// Precision of the ledger minor unit (PLAY 0, EUR 2, BTC 8, ETH 9 = gwei, stablecoins 6).
+  decimals      Int       @db.SmallInt
+  /// On-chain precision (ETH 18); null for PLAY and fiat.
+  chainDecimals Int?      @db.SmallInt
+  network       String?
+  /// Real assets ship disabled; both ledger functions refuse a disabled asset.
+  enabled       Boolean   @default(false)
+  /// Largest magnitude of a single entry, in minor units.
+  maxAmount     BigInt
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @default(now()) @updatedAt
+
+  accounts LedgerAccount[]
+}
+
+model LedgerAccount {
+  id            BigInt            @id @default(autoincrement())
+  assetCode     String
+  asset         Asset             @relation(fields: [assetCode], references: [code], onDelete: Restrict, onUpdate: Restrict)
+  type          LedgerAccountType
+  userId        String?
+  user          User?             @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  tableId       String?
+  table         Table?            @relation(fields: [tableId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  providerKey   String?
+  /// Fixed by the type (PLAY_ISSUANCE, DEPOSIT_CLEARING, ADJUSTMENTS, CHARGEBACK_LOSSES).
+  allowNegative Boolean           @default(false)
+  /// Cached sum of this account's entries (minor units).
+  balance       BigInt            @default(0)
+  /// Number of entries ever posted; entries carry their 1-based accountVersion.
+  version       BigInt            @default(0)
+  createdAt     DateTime          @default(now())
+  updatedAt     DateTime          @default(now()) @updatedAt
+
+  entries LedgerEntry[]
+
+  @@unique([id, assetCode])
+  @@index([userId])
+  @@index([tableId])
+}
+
+model LedgerTransaction {
+  id             String                @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// Global posting order.
+  seq            BigInt                @unique @default(autoincrement())
+  /// Caller-supplied deterministic key; a replay with the same payload returns this row.
+  idempotencyKey String                @unique
+  type           LedgerTransactionType
+  reference      Json                  @default("{}")
+  /// SHA-256 of the canonical payload (type, reference, sorted entries).
+  payloadHash    String
+  createdBy      String?
+  createdAt      DateTime              @default(now())
+
+  entries LedgerEntry[]
+}
+
+model LedgerEntry {
+  id             BigInt            @id @default(autoincrement())
+  transactionId  String            @db.Uuid
+  transaction    LedgerTransaction @relation(fields: [transactionId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  accountId      BigInt
+  /// Always the account's asset (composite foreign key).
+  assetCode      String
+  account        LedgerAccount     @relation(fields: [accountId, assetCode], references: [id, assetCode], onDelete: Restrict, onUpdate: Restrict)
+  /// Signed, non-zero, minor units.
+  amount         BigInt
+  balanceAfter   BigInt
+  accountVersion BigInt
+  createdAt      DateTime          @default(now())
+
+  @@unique([accountId, accountVersion])
+  @@index([transactionId])
+}
