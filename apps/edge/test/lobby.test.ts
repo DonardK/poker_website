@@ -430,10 +430,12 @@ describe("lobby snapshot against Postgres", () => {
     const closed = `${prefix}_closed`;
     const bot = `${prefix}_bot`;
     const oldPublic = `${prefix}_old`;
-    const origin = Date.now() - 86_400_000;
+    const origin = Date.now() + 86_400_000;
     try {
       // Earlier runs cannot DELETE Table rows. A public leftover crowds the
-      // newest-50 lobby window this fixture asserts.
+      // newest-50 lobby window this fixture asserts. The rows below are dated
+      // ahead of any real local table so a shared Docker database does not
+      // push the fixture out of that window. afterAll closes them.
       await db.table.updateMany({
         where: { id: { startsWith: "wp4" }, NOT: { status: TableStatus.CLOSED } },
         data: { status: TableStatus.CLOSED, isPrivate: true },
