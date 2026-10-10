@@ -31,6 +31,21 @@ Canonical migrations are in `apps/server/prisma/migrations`. OnlinePoker has alr
 
 For a new local database, start `docker compose up -d`, provide an administrator connection through `DIRECT_URL`, then run `npm run db:migrate`. Use a restricted `poker_server` login in `DATABASE_URL` for the application. The security migration creates that role without a password or LOGIN; an administrator must provision it separately. Never run a reset against OnlinePoker or a database containing real data.
 
+## Automatic deploys
+
+A push to `main` runs the checks in [`.github/workflows/cloudflare.yml`](.github/workflows/cloudflare.yml), applies pending Prisma migrations, then deploys the `poker-api` and `poker-web` Workers. Secrets (`CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, `SUPABASE_DIRECT_URL`) and the public site variables live on the GitHub environment `production`, not in the repo. Pull requests do not deploy while `CLOUDFLARE_PREVIEW_ENABLED` is unset. `wrangler deploy` keeps Worker secrets; this workflow never runs `wrangler secret put`.
+
+Rollback restores the previous Worker version and does not undo a Supabase migration. From the repo root, with a Cloudflare login or `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in the shell:
+
+```powershell
+cd apps\edge
+npx wrangler rollback --message "restore previous version" --env=""
+cd ..\web
+npx wrangler rollback --message "restore previous version"
+```
+
+The operator runbook is [docs/cloudflare/DEPLOY.md](docs/cloudflare/DEPLOY.md).
+
 ## Verification
 
 ```sh
