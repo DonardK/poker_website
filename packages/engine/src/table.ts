@@ -1106,21 +1106,24 @@ function raiseTo(table: EngineTable, player: EnginePlayer, toAmount: number, all
   const putting = target - player.committedThisStreet;
   if (putting < 0) throw new EngineError("ILLEGAL", "Cannot decrease bet");
   const opening = table.currentBet === 0;
+  // currentBet below the big blind means every wager so far was an incomplete
+  // opening all-in. Those chips are not a full bet, so the first wager that
+  // reaches the big blind is an opening bet of that whole amount — not a
+  // raise of (target − short all-in).
+  const noFullBet = table.currentBet < table.bigBlind;
   const raiseSize = target - table.currentBet;
   const isRaise = target > table.currentBet;
-  const full = opening
-    ? target >= table.bigBlind
-    : raiseSize >= table.lastFullRaiseSize;
+  const full = noFullBet ? target >= table.bigBlind : raiseSize >= table.lastFullRaiseSize;
 
   player.stack -= putting;
   player.committedThisStreet = target;
   player.committedThisHand += putting;
   if (player.stack === 0) player.status = "ALL_IN";
 
+  if (isRaise && full) table.lastFullRaiseSize = noFullBet ? target : raiseSize;
+  // A short opening all-in still reopens action. A later all-in reopens only
+  // when it is a full bet or a full raise.
   if (isRaise && (opening || full)) {
-    table.lastFullRaiseSize = opening ? Math.max(target, table.bigBlind) : raiseSize;
-    if (opening && target < table.bigBlind) table.lastFullRaiseSize = table.bigBlind;
-    else if (opening) table.lastFullRaiseSize = target;
     table.actedThisStreet = table.actedThisStreet.map(() => false);
   }
   table.actedThisStreet[player.seatIndex] = true;

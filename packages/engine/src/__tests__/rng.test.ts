@@ -50,7 +50,6 @@
  *  any sample, so they fail both stages. Every other assertion, including the
  *  negative controls and the two-stage unit tests, is deterministic.
  */
-import * as nodeCrypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { performance } from "node:perf_hooks";
@@ -1042,36 +1041,40 @@ describe("CsprngWordStream on the real OS CSPRNG", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Continuous health test, fault injection. node:crypto is replaced inside an
-// isolated module registry, so these tests are deterministic and cannot fail
-// for a healthy source. The statically imported modules above are untouched.
+// Continuous health test, fault injection. getRandomValues is replaced on
+// globalThis.crypto, and each case loads a fresh engine module so the
+// in-isolate health window starts empty. The statically imported modules
+// above keep the real CSPRNG. These tests are deterministic.
 // ---------------------------------------------------------------------------
 describe("continuous RNG health test (fault injection)", () => {
   type Fill = (block: Uint32Array) => void;
-  const realFill: Fill = (block) => { nodeCrypto.randomFillSync(block); };
-  let activeFill: Fill = realFill;
+  let activeFill: Fill = (block) => { block.fill(0); };
   const filledBuffers: Uint32Array[] = [];
+  let restore: (() => void) | null = null;
 
   async function loadWithEntropy(fill: Fill) {
     activeFill = fill;
+    const webCrypto = globalThis.crypto;
+    const original = webCrypto.getRandomValues.bind(webCrypto);
+    const spy = jest.spyOn(webCrypto, "getRandomValues").mockImplementation((array: ArrayBufferView) => {
+      if (array instanceof Uint32Array && array.length === 64) {
+        filledBuffers.push(array);
+        activeFill(array);
+        return array;
+      }
+      return original(array);
+    });
+    restore = () => spy.mockRestore();
     let loaded: { rng: typeof import("../rng.js"); deck: typeof import("../deck.js"); table: typeof import("../table.js") } | undefined;
     await jest.isolateModulesAsync(async () => {
-      jest.unstable_mockModule("node:crypto", () => ({
-        ...nodeCrypto,
-        randomFillSync: <T>(buffer: T): T => {
-          const block = buffer as unknown as Uint32Array;
-          filledBuffers.push(block);
-          activeFill(block);
-          return buffer;
-        },
-      }));
       loaded = { rng: await import("../rng.js"), deck: await import("../deck.js"), table: await import("../table.js") };
     });
     return loaded!;
   }
 
   afterEach(() => {
-    activeFill = realFill;
+    restore?.();
+    restore = null;
     filledBuffers.length = 0;
   });
 
@@ -1258,23 +1261,47 @@ describe("static compliance scan", () => {
     expect(offenders).toEqual([]);
   });
 
-  it("rng.ts imports randomFillSync from node:crypto and calls it", () => {
-    const { sf } = parse(path.join(engineSrc, "rng.ts"));
-    let local: string | undefined;
-    for (const statement of sf.statements) {
-      if (!ts.isImportDeclaration(statement) || stringValue(statement.moduleSpecifier) !== "node:crypto") continue;
-      const clause = statement.importClause;
-      if (!clause || clause.isTypeOnly || !clause.namedBindings || !ts.isNamedImports(clause.namedBindings)) continue;
-      for (const element of clause.namedBindings.elements) {
-        if (!element.isTypeOnly && (element.propertyName ?? element.name).text === "randomFillSync") local = element.name.text;
-      }
-    }
-    expect(local).toBeDefined();
+  it("rng.ts draws entropy with globalThis.crypto.getRandomValues", () => {
+    const { sf, code } = parse(path.join(engineSrc, "rng.ts"));
     let calls = 0;
     walk(sf, (node) => {
-      if (ts.isCallExpression(node) && ts.isIdentifier(node.expression) && node.expression.text === local) calls++;
+      if (
+        ts.isCallExpression(node) &&
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === "getRandomValues"
+      ) calls++;
     });
     expect(calls).toBeGreaterThanOrEqual(1);
+    expect(code).not.toContain("randomFillSync");
+    expect(code).not.toContain("randomBytes");
+  });
+
+  it("runtime engine sources import no Node builtin except node:crypto createHash", () => {
+    const offenders: string[] = [];
+    for (const file of sources(engineSrc)) {
+      const { sf } = parse(file);
+      const name = path.basename(file);
+      for (const statement of sf.statements) {
+        if (!ts.isImportDeclaration(statement) || statement.importClause?.isTypeOnly) continue;
+        const spec = stringValue(statement.moduleSpecifier);
+        if (spec == null || !spec.startsWith("node:")) continue;
+        if (spec !== "node:crypto") {
+          offenders.push(`${name}: ${spec}`);
+          continue;
+        }
+        const bindings = statement.importClause?.namedBindings;
+        if (!bindings || !ts.isNamedImports(bindings)) {
+          offenders.push(`${name}: non-named node:crypto import`);
+          continue;
+        }
+        for (const element of bindings.elements) {
+          if (element.isTypeOnly) continue;
+          const imported = (element.propertyName ?? element.name).text;
+          if (imported !== "createHash") offenders.push(`${name}: node:crypto ${imported}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
   });
 
   it("table.ts obtains its deck only through shuffledDeck()", () => {

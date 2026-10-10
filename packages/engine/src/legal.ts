@@ -11,8 +11,13 @@ export function legalActions(table: EngineTable, seatIndex: number): LegalAction
   const toCall = Math.max(0, table.currentBet - player.committedThisStreet);
   const maxRaiseTo = player.stack + player.committedThisStreet;
   const minBet = table.bigBlind;
-  const minRaiseTo =
-    table.currentBet === 0 ? minBet : table.currentBet + table.lastFullRaiseSize;
+  // An all-in below the big blind on a street with no full bet is not itself
+  // a full bet. The facing player may complete to the big blind:
+  // min raise-to = max(BB, countedBet + lastFullRaiseSize), and those short
+  // chips are not counted. Once a full bet exists, one full increment is
+  // added on top of every chip already in the bet.
+  const countedBet = table.currentBet < minBet ? 0 : table.currentBet;
+  const minRaiseTo = Math.max(minBet, countedBet + table.lastFullRaiseSize);
   const lastBet = table.lastActedBet[seatIndex];
   const opponentCanBet = table.players.some((p) => p && p.seatIndex !== seatIndex && canAct(p));
   const mayRaise = opponentCanBet && (!table.actedThisStreet[seatIndex] || lastBet == null || lastBet === 0 || table.currentBet - lastBet >= table.lastFullRaiseSize);

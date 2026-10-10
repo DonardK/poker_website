@@ -2,28 +2,41 @@
  * Random number generation for all game outcomes.
  *
  * COMPLIANCE NOTES (GLI-19 RNG requirements)
- * - Entropy source: every random word comes from `crypto.randomFillSync`.
- *   Node implements it with OpenSSL's CSPRNG, a NIST SP 800-90A DRBG that
- *   the OS entropy source (getrandom(2) or BCryptGenRandom) seeds and reseeds.
+ * - Entropy source: every random word comes from `globalThis.crypto.getRandomValues`.
+ *   That is the host CSPRNG, called synchronously: Node 20+ (OpenSSL's NIST
+ *   SP 800-90A DRBG, seeded by the OS) and Cloudflare workerd (Workers CSPRNG).
  *   This module has no seeding API and no replay mode. It never uses a
  *   non-cryptographic generator such as Math.random() or a seeded PRNG.
+ *   `node:crypto` `randomFillSync` / `randomBytes` are not used. Shuffle
+ *   indexes do not depend on anything stored between calls.
  * - Scaling: `uniformFromWords` maps 32-bit words to [0, range) by explicit
  *   rejection sampling. Words at or above the largest multiple of `range` that
  *   fits in 2^32 are discarded. Every accepted residue therefore has exactly
  *   the same number of preimages, so the result has zero modulo bias.
  * - Consumed randomness is zeroed immediately. A block is also wiped when its
  *   stream is disposed, so a shuffle's inputs do not stay in memory.
- * - Continuous health test: each 256-byte block drawn from the OS is checked
- *   for being all-zero or identical to the previous block. The previous block
- *   is compared through its SHA-256 digest and is not retained. For a healthy
- *   source, the chance of a false alarm is negligible (below 2^-256 per
- *   block). On failure, `RngFailure` is thrown and no hand can start.
+ * - Continuous health test: each 256-byte block drawn from the CSPRNG is
+ *   checked for being all-zero or identical to the previous block. The
+ *   previous block is compared through its SHA-256 digest and is not retained.
+ *   SHA-256 here is `node:crypto` `createHash`, which workerd's `nodejs_compat`
+ *   provides synchronously. `crypto.subtle.digest` is asynchronous and would
+ *   force the deal path to await; a second SHA-256 implementation could also
+ *   drift from the audit verifier, which already treats this `createHash`
+ *   output as the commitment hash.
+ * - The digest is isolate-local health state, not a seed. It is never mixed
+ *   into a draw, never persisted, and never required for a correct shuffle.
+ *   A Durable Object or workerd isolate restart clears this module scope and
+ *   simply opens a new comparison window. Do not store the digest in DO
+ *   storage: that would couple later hands to a previous isolate's output
+ *   without improving the shuffle.
+ *   For a healthy source, the chance of a false alarm is negligible (below
+ *   2^-256 per block). On failure, `RngFailure` is thrown and no hand can start.
  */
-import { createHash, randomBytes, randomFillSync } from "node:crypto";
+import { createHash } from "node:crypto";
 
 /** 2^32: the number of distinct values of one random word. */
 export const U32_SPAN = 0x1_0000_0000;
-const WORDS_PER_BLOCK = 64; // 256 bytes per OS request
+const WORDS_PER_BLOCK = 64; // 256 bytes per CSPRNG request
 /** Consecutive rejections before the source is declared broken (p <= 2^-128 for a healthy source). */
 const MAX_CONSECUTIVE_REJECTIONS = 128;
 
@@ -64,18 +77,48 @@ export function uniformFromWords(range: number, nextWord: () => number): number 
   throw new RngFailure("Random source failed the rejection-sampling health limit");
 }
 
-let previousBlockDigest: Buffer | null = null;
+function hostCrypto(): NonNullable<typeof globalThis.crypto> {
+  const webCrypto = globalThis.crypto;
+  if (webCrypto == null || typeof webCrypto.getRandomValues !== "function") {
+    throw new RngFailure("CSPRNG is unavailable");
+  }
+  return webCrypto;
+}
 
-/** Continuous health test for one block drawn from the OS CSPRNG. */
-function assertHealthyBlock(block: Uint32Array): void {
-  if (block.every((word) => word === 0)) throw new RngFailure("CSPRNG returned an all-zero block");
-  const digest = createHash("sha256").update(new Uint8Array(block.buffer, block.byteOffset, block.byteLength)).digest();
-  if (previousBlockDigest?.equals(digest)) throw new RngFailure("CSPRNG repeated its previous output block");
-  previousBlockDigest = digest;
+type RandomView = Parameters<NonNullable<typeof globalThis.crypto>["getRandomValues"]>[0];
+
+/** Fill `target` in place from the host CSPRNG. The same view is passed through so callers can wipe it. */
+function fillRandom<T extends RandomView>(target: T): T {
+  return hostCrypto().getRandomValues(target);
 }
 
 /**
- * Stream of 32-bit words from the OS CSPRNG, refilled in 256-byte blocks.
+ * In-isolate continuous health window. Not entropy. See the module notes:
+ * an isolate restart clears it, and that must stay true.
+ */
+const rngHealth: { previousBlockDigest: Uint8Array | null } = {
+  previousBlockDigest: null,
+};
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  let diff = 0;
+  for (let i = 0; i < left.byteLength; i++) diff |= left[i]! ^ right[i]!;
+  return diff === 0;
+}
+
+/** Continuous health test for one block drawn from the host CSPRNG. */
+function assertHealthyBlock(block: Uint32Array): void {
+  if (block.every((word) => word === 0)) throw new RngFailure("CSPRNG returned an all-zero block");
+  const bytes = new Uint8Array(block.buffer, block.byteOffset, block.byteLength);
+  const digest = new Uint8Array(createHash("sha256").update(bytes).digest());
+  const previous = rngHealth.previousBlockDigest;
+  if (previous !== null && sameBytes(previous, digest)) throw new RngFailure("CSPRNG repeated its previous output block");
+  rngHealth.previousBlockDigest = digest;
+}
+
+/**
+ * Stream of 32-bit words from the host CSPRNG, refilled in 256-byte blocks.
  * Each word is zeroed when consumed; dispose() wipes the rest.
  */
 export class CsprngWordStream {
@@ -84,7 +127,7 @@ export class CsprngWordStream {
 
   next(): number {
     if (this.#position >= this.#block.length) {
-      randomFillSync(this.#block);
+      fillRandom(this.#block);
       assertHealthyBlock(this.#block);
       this.#position = 0;
     }
@@ -99,7 +142,7 @@ export class CsprngWordStream {
   }
 }
 
-/** Uniform integer in [0, maxExclusive) from the OS CSPRNG, without modulo bias. */
+/** Uniform integer in [0, maxExclusive) from the host CSPRNG, without modulo bias. */
 export function secureRandomInt(maxExclusive: number): number {
   const stream = new CsprngWordStream();
   try {
@@ -111,9 +154,28 @@ export function secureRandomInt(maxExclusive: number): number {
 
 /** Uniform float in [0, 1) on a 2^-32 grid. Used only for bot pacing and strategy, never for cards. */
 export function secureRandomFloat(): number {
-  return randomBytes(4).readUInt32BE(0) / U32_SPAN;
+  const word = new Uint32Array(1);
+  fillRandom(word);
+  return word[0]! / U32_SPAN;
 }
 
 export function randIntInclusive(min: number, max: number): number {
   return min + secureRandomInt(max - min + 1);
+}
+
+/** Host CSPRNG bytes for salts and other non-shuffle draws. At most one `getRandomValues` quota (65,536). */
+export function csprngBytes(byteLength: number): Uint8Array {
+  if (!Number.isInteger(byteLength) || byteLength < 1 || byteLength > 65_536) {
+    throw new RangeError("CSPRNG byte length must be an integer from 1 to 65536");
+  }
+  const bytes = new Uint8Array(byteLength);
+  fillRandom(bytes);
+  return bytes;
+}
+
+/** UUID from the host CSPRNG (`crypto.randomUUID`). */
+export function csprngUuid(): string {
+  const webCrypto = hostCrypto();
+  if (typeof webCrypto.randomUUID !== "function") throw new RngFailure("CSPRNG is unavailable");
+  return webCrypto.randomUUID();
 }

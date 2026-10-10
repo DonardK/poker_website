@@ -120,6 +120,9 @@ export function splitOddChips(
   let rem = amount % winnerSeats.length;
   for (const seat of winnerSeats) payouts.set(seat, base);
   const order = seatingOrderFromBlinds(dealerSeat, maxSeats);
+  // The first extra chip's seat only. Later extras are already in `payouts`
+  // (same clockwise order). The field stays a single seat: PotShare, the hand
+  // audit, and the server's pot row all store number | null.
   let oddChipSeatIndex: number | null = null;
   for (const seat of order) {
     if (rem <= 0) break;

@@ -30,6 +30,7 @@ import {
   type ObservedHandEvidence,
 } from "@poker/shared";
 import { participantAudit, participantPositions, sealedAudit } from "../audit.js";
+import { forge } from "./helpers/forge.js";
 import { legalActions } from "../legal.js";
 import { projectTableState } from "../public.js";
 import { applyAction, applyTimeout, completeHand, createTable, leaveSeat, sitDown, sitOut, startHand } from "../table.js";
@@ -72,6 +73,7 @@ describe("hand audit record", () => {
     expect(record.startedAt).toBe(new Date(T0).toISOString());
     expect(record.startedAt).toMatch(UTC_ISO);
     expect(record.rng).toEqual(RNG_DESCRIPTOR);
+    expect(record.rng.source).toBe("crypto.getRandomValues");
 
     // Event order proves the commitment precedes every deal: HAND_STARTED
     // (which the genesis hash binds to the commitment), then blinds, then the deal.
@@ -88,6 +90,10 @@ describe("hand audit record", () => {
     });
     // Live, unsettled record verifies as a chain but carries no final hash yet.
     expect(await verifyAuditRecord(record)).toEqual({ ok: true });
+    const legacy = forge(record, (copy) => {
+      copy.rng = { ...copy.rng, source: "node:crypto.randomFillSync" };
+    });
+    expect(await verifyAuditRecord(legacy)).toEqual({ ok: true });
     expect(record.finalStateHash).toBeNull();
     expect((await verifyAuditRecord(record, { requireSettled: true })).ok).toBe(false);
   });

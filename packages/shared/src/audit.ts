@@ -92,17 +92,27 @@ export function canonicalJson(value: unknown): string {
   }
 }
 
-/** The single RNG configuration an audit record may declare. */
+/**
+ * Shuffle entropy an audit record may declare. New hands use Web Crypto
+ * `crypto.getRandomValues`. Hands dealt before that move declared
+ * `node:crypto.randomFillSync`. Both are the host CSPRNG with the same
+ * Fisher-Yates rejection sampling, so either descriptor verifies.
+ */
+export const RNG_SOURCES = ["crypto.getRandomValues", "node:crypto.randomFillSync"] as const;
+export type RngSource = (typeof RNG_SOURCES)[number];
 export interface RngDescriptor {
-  source: "node:crypto.randomFillSync";
+  source: RngSource;
   algorithm: "fisher-yates-durstenfeld";
   scaling: "uint32-rejection-sampling";
 }
 export const RNG_DESCRIPTOR: RngDescriptor = Object.freeze({
-  source: "node:crypto.randomFillSync",
+  source: "crypto.getRandomValues",
   algorithm: "fisher-yates-durstenfeld",
   scaling: "uint32-rejection-sampling",
 });
+const ACCEPTED_RNG_JSON: ReadonlySet<string> = new Set(
+  RNG_SOURCES.map((source) => canonicalJson({ ...RNG_DESCRIPTOR, source })),
+);
 
 export type AuditEventType =
   | "HAND_STARTED"
@@ -482,7 +492,7 @@ export async function verifyAuditRecord(record: HandAuditRecord, opts: { require
     if (!Number.isSafeInteger(record.handNumber) || record.handNumber < 1) return fail("Invalid hand number");
     if (typeof record.startedAt !== "string" || !UTC_ISO.test(record.startedAt)) return fail("Start time is not UTC ISO-8601");
     if (record.previousHandHash !== null && (typeof record.previousHandHash !== "string" || !HEX_64.test(record.previousHandHash))) return fail("Invalid previous hand hash");
-    if (canonicalJson(record.rng) !== canonicalJson(RNG_DESCRIPTOR)) return fail("Unexpected RNG descriptor");
+    if (!ACCEPTED_RNG_JSON.has(canonicalJson(record.rng))) return fail("Unexpected RNG descriptor");
     if (typeof record.deckCommitment !== "string" || !HEX_64.test(record.deckCommitment) ||
         typeof record.merkleRoot !== "string" || !HEX_64.test(record.merkleRoot)) return fail("Invalid commitment format");
     if (!Array.isArray(record.events) || record.events.length === 0) return fail("Audit has no events");

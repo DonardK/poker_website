@@ -10,12 +10,14 @@
  *     * `root`: a salted Merkle root over the same 52 positions. It lets a
  *       player verify each card they are shown without learning any other
  *       card.
- * - Salts come from the OS CSPRNG. They make both commitments hiding, so a
- *   published commitment reveals nothing about undealt cards. The deck,
- *   salts and tree stay in server memory and the regulator's sealed record.
- *   They are never serialized to a client.
+ * - Salts come from the host CSPRNG (`crypto.getRandomValues`). They make
+ *   both commitments hiding, so a published commitment reveals nothing about
+ *   undealt cards. The deck, salts and tree stay in server memory and the
+ *   regulator's sealed record. They are never serialized to a client.
+ * - SHA-256 is `node:crypto` `createHash` (synchronous; the same primitive
+ *   the audit hash chain uses). workerd exposes it under `nodejs_compat`.
  */
-import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import {
   deckCommitmentPreimage,
   MERKLE_LEAVES,
@@ -27,6 +29,7 @@ import {
   type CardProof,
 } from "@poker/shared";
 import { fullDeck } from "./cards.js";
+import { csprngBytes, csprngUuid } from "./rng.js";
 
 export interface DeckCommitment {
   handId: string;
@@ -43,10 +46,16 @@ export interface DeckCommitment {
 }
 
 export const sha256Hex = (text: string): string => createHash("sha256").update(text, "utf8").digest("hex");
-const salt = (): string => randomBytes(32).toString("hex");
+
+const salt = (): string => {
+  const bytes = csprngBytes(32);
+  let hex = "";
+  for (let i = 0; i < bytes.length; i++) hex += bytes[i]!.toString(16).padStart(2, "0");
+  return hex;
+};
 
 export function newHandId(): string {
-  const id = randomUUID();
+  const id = csprngUuid();
   if (!UUID_V4.test(id)) throw new Error("randomUUID did not return a UUID v4");
   return id;
 }
