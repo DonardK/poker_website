@@ -109,15 +109,16 @@ test("a token refresh on a seated table keeps the socket, the action bar and a t
   const bet = page.locator("#bet-amount");
   await bet.fill("40");
   const before = await sessionStats(request);
-  expect(before.sockets).toHaveLength(1);
+  // Lobby socket plus the table socket. SESSION_RENEW must not replace either.
+  expect(before.sockets).toHaveLength(2);
 
   await refreshNow(page);
-  await expect.poll(async () => (await sessionStats(request)).renewals).toEqual(["browser-fixture-token-2"]);
+  await expect.poll(async () => (await sessionStats(request)).renewals.slice().sort()).toEqual(["browser-fixture-token-2", "browser-fixture-token-2"]);
   await settle(page);
 
   const after = await sessionStats(request);
   expect(after.sockets).toEqual(before.sockets);
-  expect(after.handshakeTokens).toHaveLength(1);
+  expect(after.handshakeTokens).toHaveLength(2);
   await expect(call).toBeEnabled();
   await expect(bet).toHaveValue("40");
 });
@@ -132,9 +133,14 @@ test("a server without SESSION_RENEW gets the same socket reconnected with the n
   await bet.fill("40");
 
   await refreshNow(page);
-  // No answer within 5 s: the socket reconnects, presenting the refreshed token.
-  await expect.poll(async () => (await sessionStats(request)).handshakeTokens, { timeout: 10_000 })
-    .toEqual(["browser-fixture-token-1", "browser-fixture-token-2"]);
+  // No answer within 5 s: both sockets reconnect, presenting the refreshed token on each new ticket.
+  await expect.poll(async () => {
+    const tokens = (await sessionStats(request)).handshakeTokens;
+    return [
+      tokens.filter((token) => token === "browser-fixture-token-1").length,
+      tokens.filter((token) => token === "browser-fixture-token-2").length,
+    ];
+  }, { timeout: 15_000 }).toEqual([2, 2]);
   await expect(call).toBeEnabled();
   await expect(bet).toHaveValue("40");
 });
@@ -157,8 +163,13 @@ test("a server-initiated disconnect refreshes the session and reconnects", async
   await request.post(`${fixture}/__test/disconnect`);
   await expect(call).toBeDisabled();
   // Refreshed (a new token) and reconnected with it; the table is live again.
-  await expect.poll(async () => (await sessionStats(request)).handshakeTokens, { timeout: 10_000 })
-    .toEqual(["browser-fixture-token-1", "browser-fixture-token-2"]);
+  await expect.poll(async () => {
+    const tokens = (await sessionStats(request)).handshakeTokens;
+    return [
+      tokens.filter((token) => token === "browser-fixture-token-1").length,
+      tokens.filter((token) => token === "browser-fixture-token-2").length,
+    ];
+  }, { timeout: 15_000 }).toEqual([2, 2]);
   await expect(call).toBeEnabled();
 });
 

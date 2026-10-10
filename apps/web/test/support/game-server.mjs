@@ -1,11 +1,11 @@
-// Browser-only fixtures: real engine, HTTP and sockets; no database or .env import.
+// Browser-only fixtures: real engine, HTTP and the PROTOCOL.md WebSocket. No database or .env import.
 import { createServer } from 'node:http';
 import express from 'express';
 import cors from 'cors';
-import { Server } from 'socket.io';
+import { WebSocketServer } from 'ws';
 import {
   applyAction, beginIdleWarning, closeIfEmpty, closeTable, completeHand, createTable, keepTableOpen, leaveSeat, legalActions,
-  projectTableState, recordActivity, sitDown, startHand,
+  projectTableState, recordActivity, sitDown, sitIn, sitOut, startHand,
 } from '@poker/engine';
 import { SOCKET_EVENTS as E, TABLE_IDLE_WARNING_MS } from '@poker/shared';
 
@@ -13,10 +13,8 @@ const app = express();
 app.use(cors({ origin: 'http://127.0.0.1:3107', credentials: true }));
 app.use(express.json());
 const server = createServer(app);
-const io = new Server(server, { cors: { origin: 'http://127.0.0.1:3107', credentials: true } });
+const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 const hero = 'fixture-player-0';
-/** The table's socket room; the fixture holds one table at a time, whose id a reset may choose. */
-const room = () => `table:${table.tableId}`;
 let table;
 let bankroll;
 let rejectNext = false;
@@ -38,6 +36,12 @@ let snapshotPatch = null;
 let lastAction = null;
 let seatClaims = [];
 let rejectNextSeat = false;
+/** Opaque poker_ws cookie → the bearer token that bought it. The token is never on the socket URL. */
+const tickets = new Map();
+/** @type {Map<string, { ws: import('ws').WebSocket, joined: boolean, kind: 'lobby' | 'table' }>} */
+const clients = new Map();
+let nextSocketId = 1;
+
 /**
  * Modes: 'active' (three seated, a hand running, the hero to act), 'waiting' (three seated, no hand), 'unseated'
  * (no one seated), 'spectator' (two others seated with a hand running, the hero watching with seats free),
@@ -72,12 +76,22 @@ function project() {
   }));
   return { ...state, ...(state.toActSeat != null ? snapshotPatch.turn ?? {} : {}), ...(snapshotPatch.state ?? {}), players };
 }
-function publish() { io.to(room()).emit(E.STATE_SNAPSHOT, project()); }
+function send(ws, type, payload, id) {
+  if (ws.readyState !== 1) return;
+  ws.send(JSON.stringify({ v: 1, ...(id ? { id } : {}), type, payload }));
+}
+function publish() {
+  const payload = project();
+  for (const client of clients.values()) if (client.joined) send(client.ws, E.STATE_SNAPSHOT, payload);
+}
+function broadcast(type, payload) {
+  for (const client of clients.values()) send(client.ws, type, payload);
+}
 function pay() {
   for (const cash of table.cashOuts) if (cash.userId === hero) {
     bankroll += cash.stack;
     // As the server does: a cash-out caused by an idle closure says so, for the lobby notice.
-    io.emit(E.USER_PATCH, { bankroll, cashOutTableId: table.tableId, ...(table.closeReason === 'IDLE' ? { tableClosedReason: 'IDLE' } : {}) });
+    broadcast(E.USER_PATCH, { bankroll, cashOutTableId: table.tableId, ...(table.closeReason === 'IDLE' ? { tableClosedReason: 'IDLE' } : {}) });
   }
   table.cashOuts = [];
 }
@@ -86,12 +100,12 @@ function commit(next) {
   const before = table;
   table = closeIfEmpty(next); table.revision++; pay(); idleNotices(before, table); publish();
   // A closed table sends its final snapshot, then every socket leaves its room.
-  if (table.status === 'CLOSED') io.in(room()).socketsLeave(room());
+  if (table.status === 'CLOSED') for (const client of clients.values()) client.joined = false;
 }
 /**
  * TABLE_IDLE_NOTICE as the server's TableManager.idleNotices sends it: when the warning starts, to every seated human not
  * leaving; when it ends without closure, to every human seated before or after. Only the hero has a browser here, and every
- * connected socket is the hero's (user:<hero>), so the fixture emits to all sockets when the hero is a recipient.
+ * connected socket is the hero's, so the fixture emits to all sockets when the hero is a recipient.
  */
 function idleNotices(before, next) {
   const humans = (t, staying) => t.players.flatMap((p) => p && p.kind === 'HUMAN' && !(staying && p.pendingLeave) ? [p.userId] : []);
@@ -99,7 +113,7 @@ function idleNotices(before, next) {
   if (before.closingAt == null && next.closingAt != null) { to = humans(next, true); closingInMs = Math.max(0, next.closingAt - Date.now()); }
   else if (before.closingAt != null && next.closingAt == null && next.closeReason == null) { to = [...humans(before, false), ...humans(next, false)]; closingInMs = null; }
   else return;
-  if (to.includes(hero)) io.emit(E.TABLE_IDLE_NOTICE, { tableId: next.tableId, tableName: next.name, closingInMs });
+  if (to.includes(hero)) broadcast(E.TABLE_IDLE_NOTICE, { tableId: next.tableId, tableName: next.name, closingInMs });
 }
 /** As the server's failure(): the refused request's table id, when it named one, rides on SERVER_ERROR. */
 function namedTable(payload) {
@@ -113,6 +127,22 @@ function closeIdleNow() {
   commit(closeTable(table, 'IDLE'));
   if (table.status !== 'CLOSED') commit(completeHand(table));
 }
+function listItem() {
+  return {
+    id: table.tableId, name: table.name, status: table.status, maxSeats: 6, occupiedSeats: table.players.filter(Boolean).length,
+    smallBlind: 5, bigBlind: 10, minBuyIn: 200, maxBuyIn: 2000, botCount: 0, isSeated: table.players.some((p) => p?.userId === hero),
+  };
+}
+function cookie(req, name) {
+  const raw = req.headers.cookie ?? '';
+  for (const part of raw.split(';')) {
+    const eq = part.indexOf('=');
+    if (eq === -1) continue;
+    if (part.slice(0, eq).trim() === name) return decodeURIComponent(part.slice(eq + 1).trim());
+  }
+  return null;
+}
+
 app.get('/health', (_req, res) => res.json({ ok: true }));
 app.post('/__test/reset', (req, res) => { reset(req.body.mode, req.body.tableId); resetSession(); res.json({ ok: true }); });
 app.post('/__test/settle', (_req, res) => {
@@ -134,9 +164,9 @@ app.post('/__test/close-idle', (_req, res) => { commit(closeTable(table, 'IDLE')
 app.post('/__test/finish-close', (_req, res) => { commit(completeHand(table)); res.json({ status: table.status, bankroll }); });
 // The connection drops mid-hand and the idle closure settles that hand and closes the table before the page is back: it
 // still holds its mid-hand snapshot and learns of the closure only when its re-join is refused. The transport is closed
-// (no disconnect packet), so the client reconnects by itself, as after a network drop.
+// abruptly (1006), so the client reconnects by itself, as after a network drop.
 app.post('/__test/close-while-away', (_req, res) => {
-  for (const socket of [...io.sockets.sockets.values()]) socket.conn.close();
+  for (const client of [...clients.values()]) client.ws.terminate();
   closeIdleNow();
   res.json({ status: table.status, handNumber: table.handNumber });
 });
@@ -144,7 +174,7 @@ app.post('/__test/close-while-away', (_req, res) => {
 app.post('/__test/keep-alive-as', (req, res) => { commit(keepTableOpen(table, req.body.userId)); res.json({ closingAt: table.closingAt }); });
 app.post('/__test/close-before-next-leave', (_req, res) => { closeBeforeNextLeave = true; res.json({ ok: true }); });
 // A refusal as the server sends it, e.g. for a request about another table.
-app.post('/__test/server-error', (req, res) => { io.emit(E.SERVER_ERROR, req.body); res.json({ ok: true }); });
+app.post('/__test/server-error', (req, res) => { broadcast(E.SERVER_ERROR, req.body); res.json({ ok: true }); });
 app.post('/__test/keep-alive-mode', (req, res) => { keepAliveMode = req.body.mode; res.json({ ok: true }); });
 app.get('/__test/keep-alive', (_req, res) => res.json({ count: keepAliveCount, waiting: waitingKeepAlive.length, closingAt: table.closingAt }));
 app.post('/__test/release-keep-alive', (_req, res) => {
@@ -153,7 +183,11 @@ app.post('/__test/release-keep-alive', (_req, res) => {
   waitingKeepAlive = [];
   res.json({ ok: true });
 });
-app.post('/__test/disconnect', (_req, res) => { io.disconnectSockets(true); res.json({ ok: true }); });
+// Server-initiated close with code 1000: the client must not retry by itself. The session hydrator refreshes, then resumes.
+app.post('/__test/disconnect', (_req, res) => {
+  for (const client of [...clients.values()]) client.ws.close(1000, 'server');
+  res.json({ ok: true });
+});
 app.post('/__test/hold-me', (_req, res) => { holdMe = true; res.json({ ok: true }); });
 app.get('/__test/created', (_req, res) => res.json({ body: createdBody }));
 app.get('/__test/actions', (_req, res) => res.json({ actionCount, lastAction }));
@@ -171,14 +205,14 @@ app.post('/__test/play-others', (_req, res) => {
   commit(next);
   res.json({ phase: table.phase, board: table.board.length });
 });
-// The next SEAT_CLAIM is refused (SERVER_ERROR naming the table, as the server sends it; no ack, as today).
+// The next SEAT_CLAIM is refused (SERVER_ERROR naming the table, plus ACK, as the protocol requires when id is set).
 app.post('/__test/reject-next-seat', (_req, res) => { rejectNextSeat = true; res.json({ ok: true }); });
 // The wallet changed elsewhere (another tab, a cash-out): the new balance arrives as USER_PATCH.
-app.post('/__test/bankroll', (req, res) => { bankroll = req.body.bankroll; io.emit(E.USER_PATCH, { bankroll }); res.json({ bankroll }); });
+app.post('/__test/bankroll', (req, res) => { bankroll = req.body.bankroll; broadcast(E.USER_PATCH, { bankroll }); res.json({ bankroll }); });
 app.get('/__test/waiting-me', (_req, res) => res.json({ count: waitingMe.length }));
 app.post('/__test/release-me', (_req, res) => {
   holdMe = false;
-  for (const send of waitingMe) send();
+  for (const sendReply of waitingMe) sendReply();
   waitingMe = [];
   res.json({ ok: true });
 });
@@ -186,7 +220,7 @@ app.post('/__test/hold-refresh', (_req, res) => { holdRefresh = true; res.json({
 app.get('/__test/waiting-refresh', (_req, res) => res.json({ count: waitingRefresh.length }));
 app.post('/__test/release-refresh', (_req, res) => {
   holdRefresh = false;
-  for (const send of waitingRefresh) send();
+  for (const sendReply of waitingRefresh) sendReply();
   waitingRefresh = [];
   res.json({ ok: true });
 });
@@ -203,10 +237,7 @@ app.get('/api/auth/me', (_req, res) => {
   else res.json(captured);
 });
 // The lobby lists open tables only, as the server does.
-app.get('/api/tables', (_req, res) => res.json({ tables: table.status === 'CLOSED' ? [] : [{
-  id: table.tableId, name: table.name, status: table.status, maxSeats: 6, occupiedSeats: table.players.filter(Boolean).length,
-  smallBlind: 5, bigBlind: 10, minBuyIn: 200, maxBuyIn: 2000, botCount: 0, isSeated: table.players.some((p) => p?.userId === hero),
-}] }));
+app.get('/api/tables', (_req, res) => res.json({ tables: table.status === 'CLOSED' ? [] : [listItem()] }));
 app.post('/api/tables', (req, res) => {
   if (req.body.botCount !== 0 || table.players.some((player) => player?.userId === hero)) { res.status(400).json({ error: 'Human-only table could not be opened' }); return; }
   createdBody = req.body;
@@ -215,85 +246,18 @@ app.post('/api/tables', (req, res) => {
   table = sitDown(table, 0, { userId: hero, username: 'Player-0', kind: 'HUMAN', botProfile: null, buyIn: req.body.buyIn, avatarHue: 0 });
   res.status(201).json({ tableId: table.tableId });
 });
-io.on('connection', (socket) => {
-  socket.emit(E.AUTH_OK, { userId: hero, username: 'Player-0', activeTableId: table.tableId, ...authOkExtras() });
-  // SERVER_ERROR (naming the request's table, as the server does) and the ack, if one was asked for.
-  const refuse = (error, payload, ack) => {
-    socket.emit(E.SERVER_ERROR, { ...error, ...namedTable(payload) });
-    if (typeof ack === 'function') ack({ ok: false, ...error });
-  };
-  const refuseClosed = (payload, ack) => {
-    if (table.status !== 'CLOSED') return false;
-    refuse({ code: 'TABLE_CLOSED', message: 'This table has closed' }, payload, ack);
-    return true;
-  };
-  const join = (payload) => {
-    if (refuseClosed(payload)) return;
-    socket.join(room()); socket.emit(E.STATE_SNAPSHOT, project());
-  };
-  socket.on(E.TABLE_JOIN, join); socket.on(E.REHYDRATE, join);
-  socket.on(E.TABLE_LEAVE, () => socket.leave(room()));
-  socket.on(E.STAND_UP, (payload, ack) => {
-    if (closeBeforeNextLeave) { closeBeforeNextLeave = false; closeIdleNow(); }
-    if (refuseClosed(payload, ack)) return;
-    const seatedBefore = table.players.some((p) => p?.userId === hero);
-    if (seatedBefore) commit(leaveSeat(table, hero)); else { pay(); publish(); }
-    ack({ ok: true, pendingLeave: table.players.some((p) => p?.userId === hero && p.pendingLeave) });
-  });
-  // Taking a seat is activity: it cancels an idle warning (as long as the new player stays).
-  socket.on(E.SEAT_CLAIM, (payload) => {
-    seatClaims.push(payload);
-    if (rejectNextSeat) {
-      rejectNextSeat = false;
-      refuse({ code: 'SEAT_TAKEN', message: 'That seat was just taken. Choose another seat.' }, payload);
-      return;
-    }
-    if (refuseClosed(payload)) return;
-    try {
-      if (payload.buyIn > bankroll) throw Object.assign(new Error('Not enough bankroll'), { code: 'BANKROLL' });
-      const now = Date.now();
-      const next = recordActivity(sitDown(table, payload.seatIndex, {
-        userId: hero, username: 'Player-0', kind: 'HUMAN', botProfile: null, buyIn: payload.buyIn, avatarHue: 0,
-      }, now), now, hero);
-      bankroll -= payload.buyIn;
-      commit(next);
-      io.emit(E.USER_PATCH, { bankroll });
-    } catch (err) {
-      refuse(engineFailure(err), payload);
-    }
-  });
-  socket.on(E.ACTION_INTENT, (payload, ack) => {
-    actionCount++;
-    lastAction = { action: payload.action, amount: payload.amount };
-    if (rejectNext) {
-      rejectNext = false;
-      refuse({ code: 'ILLEGAL', message: 'Fixture rejected this action; try again.' }, payload, ack); return;
-    }
-    // A player's own action is activity: it cancels an idle warning.
-    commit(recordActivity(applyAction(table, hero, { action: payload.action, amount: payload.amount }), Date.now(), hero));
-    ack({ ok: true });
-  });
-  socket.on(E.TABLE_KEEP_ALIVE, (payload, ack) => {
-    keepAliveCount++;
-    const run = () => {
-      if (refuseClosed(payload, ack)) return;
-      try {
-        if (keepAliveMode === 'reject') {
-          keepAliveMode = 'ok';
-          throw Object.assign(new Error('Too many requests'), { code: 'RATE_LIMITED' });
-        }
-        const next = keepTableOpen(table, hero);
-        // No warning to cancel: nothing changed, so no new revision.
-        if (next !== table) commit(next);
-        ack({ ok: true });
-      } catch (err) {
-        refuse(engineFailure(err), payload, ack);
-      }
-    };
-    if (keepAliveMode === 'hold') waitingKeepAlive.push(run);
-    else run();
-  });
+// Sets poker_ws for the upgrade. Development (plain HTTP): SameSite=Lax, no Secure. The token stays out of the URL.
+app.post('/api/ws-ticket', (req, res) => {
+  const header = req.headers.authorization ?? '';
+  const match = /^Bearer (\S+)$/.exec(header);
+  const token = match ? match[1] : '';
+  if (!token || token.length > 4096) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  const id = crypto.randomUUID();
+  tickets.set(id, token);
+  res.setHeader('Set-Cookie', `poker_ws=${id}; Path=/ws; Max-Age=60; HttpOnly; SameSite=Lax`);
+  res.status(204).end();
 });
+
 // ---------------------------------------------------------------------------
 // Session fixtures (session.spec.ts): refresh outcomes, refresh-cookie rotation, SESSION_RENEW, SESSION_REVOKED,
 // AUTH_OK.idleNotice and wallet patches. Every test's /__test/reset also resets these.
@@ -328,28 +292,28 @@ function presentedCookie(req) {
 /** Answers POST /api/auth/refresh unless the mode is 'default'. Outcomes are decided on arrival; 'hold-refresh' delays only the reply. */
 function sessionRefresh(req, res) {
   if (refreshMode === 'default') return false;
-  let send;
+  let sendReply;
   if (refreshMode === 'unavailable') {
     refreshStats.unavailable++;
     res.setHeader('Retry-After', '1');
-    send = () => res.status(503).json({ error: 'Service temporarily unavailable', retryable: true });
+    sendReply = () => res.status(503).json({ error: 'Service temporarily unavailable', retryable: true });
   } else if (refreshMode === 'unauthorized' || refreshMode === 'unauthorized-once' ||
       (refreshCookie !== null && presentedCookie(req) !== null && presentedCookie(req) !== refreshCookie)) {
     if (refreshMode === 'unauthorized-once') refreshMode = 'rotate';
     refreshStats.refused++;
-    send = () => res.status(401).json({ error: 'Invalid refresh session' });
+    sendReply = () => res.status(401).json({ error: 'Invalid refresh session' });
   } else {
     refreshStats.ok++;
     refreshCookie = globalThis.crypto.randomUUID();
     res.setHeader('Set-Cookie', `fixture_refresh=${refreshCookie}; Path=/; HttpOnly; SameSite=Lax`);
     const captured = { user: user(), accessToken: `browser-fixture-token-${++tokenSerial}` };
-    send = () => res.json(captured);
+    sendReply = () => res.json(captured);
   }
-  if (holdRefresh) waitingRefresh.push(send); else send();
+  if (holdRefresh) waitingRefresh.push(sendReply); else sendReply();
   return true;
 }
 app.get('/__test/session', (_req, res) => res.json({
-  refreshMode, renewMode, refreshStats, renewals, handshakeTokens, sockets: [...io.sockets.sockets.keys()],
+  refreshMode, renewMode, refreshStats, renewals, handshakeTokens, sockets: [...clients.keys()],
 }));
 app.post('/__test/session', (req, res) => {
   if (typeof req.body?.refreshMode === 'string') refreshMode = req.body.refreshMode;
@@ -361,9 +325,10 @@ app.post('/__test/session', (req, res) => {
 // refresh cookie is dead too.
 app.post('/__test/revoke', (req, res) => {
   refreshMode = 'unauthorized';
-  for (const socket of [...io.sockets.sockets.values()]) {
-    socket.emit(E.SESSION_REVOKED, { reason: req.body?.reason ?? 'SESSION_REVOKED' });
-    socket.disconnect(true);
+  const reason = req.body?.reason ?? 'SESSION_REVOKED';
+  for (const client of [...clients.values()]) {
+    send(client.ws, E.SESSION_REVOKED, { reason });
+    client.ws.close(4001, 'session');
   }
   res.json({ ok: true });
 });
@@ -371,17 +336,169 @@ app.post('/__test/revoke', (req, res) => {
 app.post('/__test/user-patch', (req, res) => {
   const { persist, ...patch } = req.body ?? {};
   if (persist) bankroll = patch.bankroll;
-  io.emit(E.USER_PATCH, patch);
+  broadcast(E.USER_PATCH, patch);
   res.json({ ok: true });
 });
-app.post('/__test/idle-notice', (req, res) => { io.emit(E.TABLE_IDLE_NOTICE, req.body); res.json({ ok: true }); });
-io.on('connection', (socket) => {
-  handshakeTokens.push(socket.handshake.auth?.token ?? null);
-  socket.on(E.SESSION_RENEW, (payload, ack) => {
+app.post('/__test/idle-notice', (req, res) => { broadcast(E.TABLE_IDLE_NOTICE, req.body); res.json({ ok: true }); });
+
+function refuse(ws, error, payload, id) {
+  send(ws, E.SERVER_ERROR, { ...error, ...namedTable(payload) }, id);
+  if (id) send(ws, 'ACK', { ok: false, ...error }, id);
+}
+function refuseClosed(ws, payload, id) {
+  if (table.status !== 'CLOSED') return false;
+  refuse(ws, { code: 'TABLE_CLOSED', message: 'This table has closed' }, payload, id);
+  return true;
+}
+function onFrame(client, frame) {
+  const ws = client.ws;
+  if (!frame || typeof frame !== 'object' || frame.v !== 1) {
+    refuse(ws, { code: 'BAD_VERSION', message: 'Request could not be completed' }, frame?.payload, frame?.id);
+    return;
+  }
+  const type = frame.type;
+  const payload = frame.payload ?? {};
+  const id = typeof frame.id === 'string' ? frame.id : undefined;
+  if (type === E.SESSION_RENEW) {
     renewals.push(payload?.token ?? null);
-    if (renewMode === 'ignore' || typeof ack !== 'function') return;
-    if (renewMode === 'unauthorized') ack({ ok: false, code: 'UNAUTHORIZED', message: 'Session expired' });
-    else ack({ ok: true });
+    if (renewMode === 'ignore') return;
+    if (renewMode === 'unauthorized') {
+      refuse(ws, { code: 'UNAUTHORIZED', message: 'Session expired' }, payload, id);
+      ws.close(4002, 'unauthorized');
+      return;
+    }
+    send(ws, 'ACK', { ok: true }, id);
+    return;
+  }
+  if (type === 'LOBBY_HELLO') {
+    if (client.kind !== 'lobby') { refuse(ws, { code: 'UNKNOWN_TYPE', message: 'Request could not be completed' }, payload, id); return; }
+    send(ws, 'LOBBY_SNAPSHOT', { tables: table.status === 'CLOSED' ? [] : [listItem()] });
+    return;
+  }
+  if (type === E.TABLE_JOIN || type === E.REHYDRATE) {
+    if (client.kind !== 'table') { refuse(ws, { code: 'UNKNOWN_TYPE', message: 'Request could not be completed' }, payload, id); return; }
+    if (refuseClosed(ws, payload, id)) return;
+    client.joined = true;
+    send(ws, E.STATE_SNAPSHOT, project());
+    return;
+  }
+  if (type === E.TABLE_LEAVE) { client.joined = false; return; }
+  if (type === E.STAND_UP) {
+    if (client.kind !== 'table') { refuse(ws, { code: 'UNKNOWN_TYPE', message: 'Request could not be completed' }, payload, id); return; }
+    if (closeBeforeNextLeave) { closeBeforeNextLeave = false; closeIdleNow(); }
+    if (refuseClosed(ws, payload, id)) return;
+    const seatedBefore = table.players.some((p) => p?.userId === hero);
+    if (seatedBefore) commit(leaveSeat(table, hero)); else { pay(); publish(); }
+    send(ws, 'ACK', { ok: true, pendingLeave: table.players.some((p) => p?.userId === hero && p.pendingLeave) }, id);
+    return;
+  }
+  if (type === E.SEAT_CLAIM) {
+    if (client.kind !== 'table') { refuse(ws, { code: 'UNKNOWN_TYPE', message: 'Request could not be completed' }, payload, id); return; }
+    seatClaims.push(payload);
+    if (rejectNextSeat) {
+      rejectNextSeat = false;
+      refuse(ws, { code: 'SEAT_TAKEN', message: 'That seat was just taken. Choose another seat.' }, payload, id);
+      return;
+    }
+    if (refuseClosed(ws, payload, id)) return;
+    try {
+      if (payload.buyIn > bankroll) throw Object.assign(new Error('Not enough bankroll'), { code: 'BANKROLL' });
+      const now = Date.now();
+      const next = recordActivity(sitDown(table, payload.seatIndex, {
+        userId: hero, username: 'Player-0', kind: 'HUMAN', botProfile: null, buyIn: payload.buyIn, avatarHue: 0,
+      }, now), now, hero);
+      bankroll -= payload.buyIn;
+      commit(next);
+      broadcast(E.USER_PATCH, { bankroll });
+      send(ws, 'ACK', { ok: true }, id);
+    } catch (err) {
+      refuse(ws, engineFailure(err), payload, id);
+    }
+    return;
+  }
+  if (type === E.ACTION_INTENT) {
+    if (client.kind !== 'table') { refuse(ws, { code: 'UNKNOWN_TYPE', message: 'Request could not be completed' }, payload, id); return; }
+    actionCount++;
+    lastAction = { action: payload.action, amount: payload.amount };
+    if (rejectNext) {
+      rejectNext = false;
+      refuse(ws, { code: 'ILLEGAL', message: 'Fixture rejected this action; try again.' }, payload, id);
+      return;
+    }
+    // A player's own action is activity: it cancels an idle warning.
+    commit(recordActivity(applyAction(table, hero, { action: payload.action, amount: payload.amount }), Date.now(), hero));
+    send(ws, 'ACK', { ok: true }, id);
+    return;
+  }
+  if (type === E.SIT_OUT || type === E.SIT_IN) {
+    if (client.kind !== 'table') { refuse(ws, { code: 'UNKNOWN_TYPE', message: 'Request could not be completed' }, payload, id); return; }
+    if (refuseClosed(ws, payload, id)) return;
+    try {
+      const next = type === E.SIT_OUT ? sitOut(table, hero) : sitIn(table, hero);
+      if (next !== table) commit(recordActivity(next, Date.now(), hero));
+      send(ws, 'ACK', { ok: true }, id);
+    } catch (err) {
+      refuse(ws, engineFailure(err), payload, id);
+    }
+    return;
+  }
+  if (type === E.TABLE_KEEP_ALIVE) {
+    keepAliveCount++;
+    const run = () => {
+      if (refuseClosed(ws, payload, id)) return;
+      try {
+        if (keepAliveMode === 'reject') {
+          keepAliveMode = 'ok';
+          throw Object.assign(new Error('Too many requests'), { code: 'RATE_LIMITED' });
+        }
+        const next = keepTableOpen(table, hero);
+        // No warning to cancel: nothing changed, so no new revision.
+        if (next !== table) commit(next);
+        send(ws, 'ACK', { ok: true }, id);
+      } catch (err) {
+        refuse(ws, engineFailure(err), payload, id);
+      }
+    };
+    if (keepAliveMode === 'hold') waitingKeepAlive.push(run);
+    else run();
+    return;
+  }
+  refuse(ws, { code: 'UNKNOWN_TYPE', message: 'Request could not be completed' }, payload, id);
+}
+
+function attach(ws, kind, token) {
+  const id = `s${nextSocketId++}`;
+  const client = { ws, joined: false, kind };
+  clients.set(id, client);
+  handshakeTokens.push(token);
+  send(ws, E.AUTH_OK, { userId: hero, username: 'Player-0', activeTableId: table.tableId, ...authOkExtras() });
+  ws.on('message', (data, isBinary) => {
+    if (isBinary) { ws.close(1003, 'binary'); return; }
+    const text = typeof data === 'string' ? data : data.toString('utf8');
+    if (text === 'ping') { if (ws.readyState === 1) ws.send('pong'); return; }
+    if (text.length > 8192) { ws.close(1009, 'too-large'); return; }
+    let frame;
+    try { frame = JSON.parse(text); } catch { return; }
+    onFrame(client, frame);
   });
+  ws.on('close', () => { clients.delete(id); });
+}
+
+server.on('upgrade', (request, socket, head) => {
+  let url;
+  try { url = new URL(request.url ?? '/', 'http://127.0.0.1:4107'); } catch { socket.destroy(); return; }
+  const lobby = url.pathname === '/ws/lobby';
+  const tablePath = url.pathname.startsWith('/ws/table/');
+  if (!lobby && !tablePath) { socket.destroy(); return; }
+  if (url.search) { socket.destroy(); return; }
+  const ticket = cookie(request, 'poker_ws');
+  const token = ticket ? tickets.get(ticket) : undefined;
+  if (!token) {
+    socket.write('HTTP/1.1 401 Unauthorized\r\nConnection: close\r\nContent-Length: 0\r\n\r\n');
+    socket.destroy();
+    return;
+  }
+  wss.handleUpgrade(request, socket, head, (ws) => attach(ws, lobby ? 'lobby' : 'table', token));
 });
+
 server.listen(4107, '127.0.0.1');
