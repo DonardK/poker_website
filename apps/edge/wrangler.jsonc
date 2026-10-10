@@ -26,8 +26,16 @@
     "TIME_BANK_REFILL_EVERY_HANDS": "10",
     "ENABLE_LEGACY_BOTS": "false",
     "TURNSTILE_SITE_KEY": "",
-    "TABLE_DO_LOCATION_HINT": "weur"
+    "TABLE_DO_LOCATION_HINT": "weur",
+    // Cloudflare Access for /api/admin. Both empty skips the JWT when
+    // CLIENT_ORIGIN is http:// (local). An https origin requires both.
+    // Team domain is the subdomain only, not the full cloudflareaccess.com host.
+    "CF_ACCESS_AUD": "",
+    "CF_ACCESS_TEAM_DOMAIN": ""
   },
+  // Secrets are not vars. Set them with `wrangler secret put` or .dev.vars:
+  // JWT_ACCESS_SECRET, JWT_REFRESH_SECRET, WS_TICKET_SECRET,
+  // GAME_ENCRYPTION_KEYS, GAME_ENCRYPTION_ACTIVE_KEY_ID, TURNSTILE_SECRET_KEY.
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",

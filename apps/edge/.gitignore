@@ -1,4 +1,5 @@
 src/generated/
+.tmp/
 .dev.vars
 .wrangler/
 worker-configuration.d.ts

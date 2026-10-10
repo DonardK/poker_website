@@ -298,3 +298,15 @@ A replay of the same `commandId` after a lost ACK:
 ```
 
 `revision` stays 4. Bankroll is not debited again.
+
+## 12. WP5 notes
+
+Adapter choices where this document does not specify client behavior. Not a wire-format change.
+
+- **Reconnect closes.** `1006`, `1001`, `1011`, `1012`, `1013`, and `1014` use the backoff in ARCHITECTURE.md §9.1. `1000` from the server, `1008`, `1009`, `4001`, `4002`, and `4003` do not auto-retry. A server `1000` is reported to existing listeners as disconnect reason `io server disconnect`, so the session hydrator can refresh and then resume. `4001` / `4002` use that same reason; `SESSION_REVOKED`, or a `SESSION_RENEW` ack of `UNAUTHORIZED`, still signs the user out.
+- **AUTH_OK deadline.** If the socket is open and `AUTH_OK` has not arrived within 10s, the client closes and reconnects with backoff.
+- **Full jitter.** Delay is `round(random() * step)` with `random()` in `[0, 1]`. Steps are `500, 1000, 2000, 4000, 8000`, then `15000`.
+- **Ticket URL.** `POST {origin of NEXT_PUBLIC_SOCKET_URL}/api/ws-ticket` (http or https). The `poker_ws` cookie has to be stored for the host that receives the upgrade. The access token is not placed on the WebSocket URL.
+- **SESSION_RENEW** is sent on each socket that is currently authenticated (lobby and the open table). A `retryable` failure leaves those sockets up. A missing ack uses the existing 5s renew timeout and then reconnects them.
+- **commandId.** The adapter adds a UUID v4 when `SIT_IN`, `SIT_OUT`, `STAND_UP`, or `TABLE_KEEP_ALIVE` omits `commandId`.
+- **Table path.** `tableId` is `encodeURIComponent`'d in `/ws/table/:id`. Ids without reserved characters are unchanged. The server should decode the path segment.

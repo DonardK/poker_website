@@ -2,7 +2,7 @@
 
 Every automated suite in this repository: what it proves, how to run it, how
 long it takes, and the rules that keep tests away from the live database.
-Continuous integration runs all of them (`.github/workflows/ci.yml`, table at
+Continuous integration runs all of them (`.github/workflows/cloudflare.yml`, table at
 the end).
 
 ## Live-database safety rules (read first)
@@ -179,16 +179,22 @@ configs (Caddy, nginx), the Dockerfiles, `.dockerignore` and
 `docker-compose.yml` for the security properties described in
 `deploy/README.md`.
 
-## Continuous integration (`.github/workflows/ci.yml`)
+## Continuous integration (`.github/workflows/cloudflare.yml`)
 
 Node 24, `npm ci`, on every push to `main`, every pull request, nightly and on
-demand. Jobs: **typecheck** (`npm run typecheck`); **engine** (Jest without
-`rng.test.ts`); **server** (`npm test -w @poker/server` plus the ledger unit
-tests, with random throwaway secrets because there is no `.env` in CI);
-**test-db** (`npm run test:db`); **build** (`npm run build`); **playwright**;
-**audit** (`npm audit --omit=dev --audit-level=high`); **secrets** (gitleaks
-over the full history); **rng-nightly** (the full RNG suite, scheduled and
-manual runs only).
+demand. Check jobs set `DATABASE_URL` and `DIRECT_URL` to a loopback port with
+nothing listening, and they do not receive `NEON_DIRECT_URL`. Jobs: **typecheck**
+(`npm run typecheck`, including `apps/edge` source and tests); **engine** (Jest
+without `rng.test.ts`); **server** (`npm test -w @poker/server` plus the ledger
+unit tests, with random throwaway secrets because there is no `.env` in CI);
+**test-db** (`npm run test:db`); **edge** (Vitest, schema parity, and a Wrangler
+dry-run); **web** (Next.js production build and the OpenNext build);
+**playwright**; **audit** (`npm audit --omit=dev
+--audit-level=high`); **secrets** (gitleaks over the full history); **rng-nightly**
+(the full RNG suite, scheduled and manual runs only). The default-branch deploy
+job is the only one that reads `NEON_DIRECT_URL`, and only for `prisma migrate
+deploy`. The workflow does not run `prisma migrate dev`, `prisma db push`,
+`prisma db seed`, or `npm run dev`.
 
 Known CI gap: `package-lock.json` was generated on Windows and lacks the
 linux-x64 native packages of lightningcss, `@tailwindcss/oxide`, esbuild and

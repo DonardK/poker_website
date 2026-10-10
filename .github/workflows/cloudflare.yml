@@ -1,0 +1,436 @@
+# Cloudflare CI and production deploy.
+#
+# Supersedes .github/workflows/ci.yml. Those check jobs live here, with the
+# edge Worker, OpenNext, and the production deploy added. docs/TESTING.md
+# names this file.
+#
+# Check jobs receive no NEON_DIRECT_URL and no Cloudflare API token. Their
+# DATABASE_URL and DIRECT_URL are a loopback port with nothing listening
+# (support/assert-ci-offline.mjs). Server tests keep that stub. test-db
+# starts embedded Postgres on 127.0.0.1. The production job is the only one
+# that reads NEON_DIRECT_URL, and only on its migrate step.
+#
+# This workflow does not run prisma migrate dev, prisma db push, prisma db
+# seed, prisma migrate reset, or npm run dev.
+#
+# Operator steps: docs/cloudflare/DEPLOY.md
+
+name: Cloudflare
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Nightly: the jobs below, plus the full RNG certification suite.
+    - cron: "17 2 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  # package.json engines.node is >=20.11.0. Node 24 satisfies that and matches
+  # the previous CI pin (@types/node 24).
+  NODE_VERSION: "24"
+  NEXT_TELEMETRY_DISABLED: "1"
+  CHECKPOINT_DISABLE: "1"
+  PRISMA_HIDE_UPDATE_MESSAGE: "1"
+  npm_config_fund: "false"
+  CI: "true"
+  # Nothing listens here. Prisma generate only needs a syntactically valid URL.
+  DATABASE_URL: postgresql://ci:ci@127.0.0.1:1/none?sslmode=disable
+  DIRECT_URL: postgresql://ci:ci@127.0.0.1:1/none?sslmode=disable
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Refuse remote database credentials
+        run: node .github/workflows/support/assert-ci-offline.mjs
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      - name: Generate Prisma client (server)
+        run: npm run prisma:generate -w @poker/server
+      - name: Generate Prisma client (edge)
+        run: npm run prisma:generate -w @poker/edge
+      - run: npm run typecheck
+
+  engine:
+    name: Engine tests (Jest, without the RNG suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Refuse remote database credentials
+        run: node .github/workflows/support/assert-ci-offline.mjs
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      # npm test -w @poker/engine, minus rng.test.ts. The 1M-shuffle
+      # certification runs in rng-nightly.
+      - working-directory: packages/engine
+        run: node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config jest.config.cjs --runInBand --testPathIgnorePatterns "/node_modules/" "rng\.test\.ts$"
+
+  server:
+    name: Server tests (node:test, no database)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Refuse remote database credentials
+        run: node .github/workflows/support/assert-ci-offline.mjs
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      - name: Random test-only secrets (config.ts requires them; there is no .env in CI)
+        run: |
+          set -euo pipefail
+          for name in JWT_ACCESS_SECRET JWT_REFRESH_SECRET GAME_ENCRYPTION_KEY; do
+            value=$(openssl rand -hex 32)
+            echo "::add-mask::$value"
+            echo "$name=$value" >> "$GITHUB_ENV"
+          done
+      - run: npm run build:core
+      # run-tests.mjs points DATABASE_URL/DIRECT_URL at a dead loopback port and empties REDIS_URL.
+      - run: npm test -w @poker/server
+      - name: Ledger unit tests (amount parsing and money flows, no database)
+        working-directory: apps/server
+        run: node test/support/run-tests.mjs --import tsx test/money-amounts.test.mjs test/money-flows.test.mjs
+
+  test-db:
+    name: Real-PostgreSQL tests (test:db, embedded PostgreSQL 18)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Refuse remote database credentials
+        run: node .github/workflows/support/assert-ci-offline.mjs
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      # embedded-postgres resolves @embedded-postgres/linux-x64 (listed in package-lock.json with os/cpu, so npm ci installs it).
+      - name: Check the embedded PostgreSQL binaries for this runner
+        run: |
+          set -euo pipefail
+          ls node_modules/@embedded-postgres/
+          test -d node_modules/@embedded-postgres/linux-x64/native/bin
+          node_modules/@embedded-postgres/linux-x64/native/bin/postgres --version
+      # Disposable cluster on 127.0.0.1, prisma migrate deploy, test/db/*.test.mjs, then the cluster is deleted.
+      - run: npm run test:db
+
+  edge:
+    name: Edge tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Refuse remote database credentials
+        run: node .github/workflows/support/assert-ci-offline.mjs
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      - run: npm run build:core
+      - name: Generate Prisma client (edge)
+        run: npm run prisma:generate -w @poker/edge
+      - name: Edge Vitest
+        run: npm test -w @poker/edge
+      - name: Edge schema parity
+        run: npm run check:schema -w @poker/edge
+      # Top-level worker. env.preview is also in the file; --env="" keeps dry-run off that environment.
+      - name: Wrangler deploy dry-run (edge)
+        run: (cd apps/edge && npx --no-install wrangler deploy --dry-run --env="")
+
+  web:
+    name: Web build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Refuse remote database credentials
+        run: node .github/workflows/support/assert-ci-offline.mjs
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      - run: npm run build:core
+      - name: Next.js production build
+        run: npm run build -w @poker/web
+        env:
+          NEXT_PUBLIC_API_URL: https://poker.example.invalid
+          NEXT_PUBLIC_SOCKET_URL: https://poker.example.invalid
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: 1x00000000000000000000AA
+      # Not deployed. Production builds again in the deploy job with the real public vars.
+      - name: OpenNext Cloudflare build
+        run: (cd apps/web && npx --no-install opennextjs-cloudflare build)
+        env:
+          NEXT_PUBLIC_API_URL: https://poker.example.invalid
+          NEXT_PUBLIC_SOCKET_URL: https://poker.example.invalid
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: 1x00000000000000000000AA
+
+  playwright:
+    name: Browser tests (Playwright, Chrome)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Refuse remote database credentials
+        run: node .github/workflows/support/assert-ci-offline.mjs
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      # apps/web/playwright.config.ts launches channel "chrome". Chromium is
+      # installed as well; Chrome is the browser the suite starts.
+      - run: npx playwright install --with-deps chromium chrome
+      - run: npm run build:core
+      # Fixture game server (no database, no .env) on 127.0.0.1:4107 and next dev on 127.0.0.1:3107.
+      - run: npm run test:browser -w @poker/web
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: apps/web/test-results
+          retention-days: 7
+
+  audit:
+    name: npm audit (production dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Refuse remote database credentials
+        run: node .github/workflows/support/assert-ci-offline.mjs
+      - run: npm audit --omit=dev --audit-level=high
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Refuse remote database credentials
+        run: node .github/workflows/support/assert-ci-offline.mjs
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Required only when the repository belongs to a GitHub organization.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  rng-nightly:
+    name: RNG certification suite (full, nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Refuse remote database credentials
+        run: node .github/workflows/support/assert-ci-offline.mjs
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      # Two-stage chi-square families (false-failure budget < 1e-6 per run).
+      - run: node --experimental-vm-modules node_modules/jest/bin/jest.js --config packages/engine/jest.config.cjs --runInBand rng
+
+  preview:
+    name: Preview deploy
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && vars.CLOUDFLARE_PREVIEW_ENABLED == 'true'
+    needs: [typecheck, engine, server, test-db, edge, web, playwright]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: preview
+    concurrency:
+      group: cloudflare-preview-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Refuse remote database credentials
+        run: node .github/workflows/support/assert-ci-offline.mjs
+      - name: Check preview Wrangler config
+        run: node .github/workflows/support/assert-wrangler-config.mjs preview
+        env:
+          CHECK_GITHUB_PUBLIC_VARS: "1"
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_SOCKET_URL: ${{ vars.NEXT_PUBLIC_SOCKET_URL }}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      - run: npm run build:core
+      # wrangler deploy --env preview, not versions upload: Durable Object
+      # exports make versions upload fail, and a Version URL would use the
+      # production Hyperdrive. This step has no NEON_DIRECT_URL.
+      - name: Deploy preview API Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          node .github/workflows/support/assert-ci-offline.mjs --allow-cloudflare
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID on the preview environment."
+            exit 1
+          fi
+          (cd apps/edge && npx --no-install wrangler deploy --env preview) 2>&1 | tee "$RUNNER_TEMP/preview-wrangler.txt"
+      - name: Deploy preview web Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_SOCKET_URL: ${{ vars.NEXT_PUBLIC_SOCKET_URL }}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+        run: |
+          set -euo pipefail
+          node .github/workflows/support/assert-ci-offline.mjs --allow-cloudflare
+          (cd apps/web && npx --no-install opennextjs-cloudflare build)
+          (cd apps/web && npx --no-install wrangler deploy --env preview) 2>&1 | tee -a "$RUNNER_TEMP/preview-wrangler.txt"
+      - name: Comment preview URLs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          node .github/workflows/support/preview-comment.mjs "$RUNNER_TEMP/preview-wrangler.txt" "$RUNNER_TEMP/preview-comment.json"
+          existing=$(gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments?per_page=100" --jq '[.[] | select(.body | contains("<!-- poker-cloudflare-preview -->"))][0].id')
+          if [ "$existing" = "null" ] || [ -z "$existing" ]; then
+            gh api "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --input "$RUNNER_TEMP/preview-comment.json"
+          else
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" --input "$RUNNER_TEMP/preview-comment.json"
+          fi
+
+  deploy:
+    name: Production deploy
+    if: github.event_name == 'push' && github.ref_name == github.event.repository.default_branch
+    needs: [typecheck, engine, server, test-db, edge, web, playwright]
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: production
+    concurrency:
+      group: cloudflare-production-deploy
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+      - name: Refuse remote database credentials
+        run: node .github/workflows/support/assert-ci-offline.mjs
+      - name: Check production Wrangler config
+        run: node .github/workflows/support/assert-wrangler-config.mjs production
+        env:
+          CHECK_GITHUB_PUBLIC_VARS: "1"
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_SOCKET_URL: ${{ vars.NEXT_PUBLIC_SOCKET_URL }}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      - run: npm run build:core
+      - name: Apply Neon migrations
+        env:
+          NEON_DIRECT_URL: ${{ secrets.NEON_DIRECT_URL }}
+          DATABASE_URL: ${{ secrets.NEON_DIRECT_URL }}
+          DIRECT_URL: ${{ secrets.NEON_DIRECT_URL }}
+        run: |
+          set -euo pipefail
+          node .github/workflows/support/assert-neon-direct-url.mjs
+          npm run prisma:migrate -w @poker/server
+      - name: Deploy API Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          set -euo pipefail
+          node .github/workflows/support/assert-ci-offline.mjs --allow-cloudflare
+          if [ -z "${CLOUDFLARE_API_TOKEN:-}" ] || [ -z "${CLOUDFLARE_ACCOUNT_ID:-}" ]; then
+            echo "Set CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID on the production environment."
+            exit 1
+          fi
+          (cd apps/edge && npx --no-install wrangler deploy --env="")
+      - name: Deploy web Worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          NEXT_PUBLIC_API_URL: ${{ vars.NEXT_PUBLIC_API_URL }}
+          NEXT_PUBLIC_SOCKET_URL: ${{ vars.NEXT_PUBLIC_SOCKET_URL }}
+          NEXT_PUBLIC_TURNSTILE_SITE_KEY: ${{ vars.NEXT_PUBLIC_TURNSTILE_SITE_KEY }}
+        run: |
+          set -euo pipefail
+          node .github/workflows/support/assert-ci-offline.mjs --allow-cloudflare
+          npm run deploy -w @poker/web

@@ -678,6 +678,24 @@ Name `lobby`. Sockets are authenticated the same way. It does not own table stat
 
 The home page keeps working with `GET /api/tables` alone if the lobby socket is down.
 
+#### WP4 notes
+
+Recorded with the lobby implementation. These are the wire and RPC choices WP3 and WP2 need; they do not change poker rules.
+
+- `AUTH_OK` is sent on a successful upgrade. `LOBBY_SNAPSHOT` is the reply to `LOBBY_HELLO` (PROTOCOL.md), including on reconnect. Section 8.7's "on connect" is that handshake.
+- `LOBBY_PATCH.removed` is decided per socket. `removed: true` drops the table for a viewer who is not in `seatedUserIds`. A viewer who is in `seatedUserIds` keeps the row unless `table.status` is `CLOSED`, so the active-seat inclusion on `GET /api/tables` (private, bot, or older than the newest 50) stays intact. The client frame lists `isSeated` and does not include `seatedUserIds`.
+- Inbound lobby frames are `LOBBY_HELLO`, `TABLE_KEEP_ALIVE`, and `SESSION_RENEW`. Other client types, including `TABLE_JOIN`, are `UNKNOWN_TYPE`. The 20-frame / 2-second connection budget from section 8.3 is stored in the lobby DO's SQLite so a snapshot flood cannot pin this single object. `ping` / `pong` stay on the auto-response pair.
+- `AUTH_OK.idleNotice` prefers `TableActor.currentIdleNotice` when the user has a seat. A null or a failed RPC leaves the last notice this lobby delivered (`closingAt = receivedAt + closingInMs`). Once `closingAt` is no longer in the future, the field is `null` rather than `closingInMs: 0`. The lobby does not decrypt ciphertext.
+- `disconnectSession` matches `attachment.sessionId`. Hibernation tags cannot be rewritten after `SESSION_RENEW`, so a stale `session:` tag is not used to close a socket that has already moved to a new session.
+- A spectator's `TABLE_KEEP_ALIVE` is refused with `NOT_SEATED` from the Postgres seat row (human, this table, status not `EMPTY`) and does not call `TableActor`. A seated human's keep-alive is forwarded. `pendingLeave` is enforced when that RPC runs; a `NOT_SEATED` error from it is forwarded on the ack.
+- `UserSessions.register` / `unregister` failures are logged and do not refuse the lobby socket. Revoke stays best-effort plus the session re-read on `TABLE_KEEP_ALIVE` and `SESSION_RENEW`, as in section 8.6.
+
+`apps/edge/src/session/contract.ts` already has the methods this object calls (WP3). No further contract edit is required. `UserSessions.notify` chooses the recipients. `LobbyActor.deliver` only writes `USER_PATCH` and `TABLE_IDLE_NOTICE` onto matching lobby sockets. `SESSION_REVOKED` stays on `disconnectSession` (close `4001`).
+
+- `LobbyActorRpc.deliver` matches `SessionDelivery` (`USER_PATCH` | `TABLE_IDLE_NOTICE`).
+- `TableActorRpc.keepAlive(userId, commandId?)` resolves `{ ok: true, duplicate? }` or rejects with `error.code` (`NOT_SEATED`, `TABLE_CLOSING`, `TABLE_CLOSED`, `TABLE_NOT_FOUND`). The lobby forwards `duplicate` on the ack.
+- `TableActorRpc.currentIdleNotice(userId)` supplies `AUTH_OK.idleNotice` for a seated user. The lobby does not read engine state itself.
+
 ### 8.8 Spectators
 
 Allowed, matching today: any authenticated user who passes `checkTable` may watch. They do not occupy a seat, do not receive other players' hole cards, and do not reset the idle clock by watching. `TABLE_KEEP_ALIVE` from a spectator is refused with `NOT_SEATED` (engine `keepTableOpen`).
@@ -907,6 +925,12 @@ Does not own `login/page.tsx`. Turnstile verification function lives in `src/aut
 
 Acceptance: ported cases from `auth-http.test.mjs` (register, login dummy-timing not required to be bit-exact, lockout, refresh reuse revokes, absolute expiry, 503 keeps the cookie). Table create debits bankroll once. Admin route returns 403 for a non-admin even if Access is disabled in tests (tests simulate Access with a header `Cf-Access-Jwt-Assertion` that the test config treats as optional; production config requires it).
 
+#### WP2 note (implementation)
+
+- Auth and table HTTP tests run inside vitest against an in-memory Prisma double (`apps/edge/test/memory-db.ts`), the same strategy as `apps/server/test/support/auth-fake-db.mjs`. They do not open Docker Postgres or any remote database. Section 11.2's `wrangler dev` pass is still the operator check.
+- Refresh-token hashing and guest randomness use Web Crypto (`crypto.subtle` SHA-256, `crypto.getRandomValues`). `apps/edge/tsconfig.json` types only `@cloudflare/workers-types`, so `node:crypto` does not typecheck. The digest is the same SHA-256 hex the Node server stores.
+- Cloudflare Access on `GET /api/admin/*`: set both Worker vars `CF_ACCESS_AUD` and `CF_ACCESS_TEAM_DOMAIN` (they are not in `wrangler.jsonc`). The JWT is verified with that team's Access certs (RS256, issuer `https://<team>.cloudflareaccess.com`, audience `CF_ACCESS_AUD`). An `https://` `CLIENT_ORIGIN` without both vars makes the admin route 500. An `http://` origin with neither var skips the JWT (tests); `User.role === "ADMIN"` is still required. The `Cf-Access-Jwt-Assertion` header is optional only in that skipped case.
+
 ### WP3 — TableActor, UserSessions, game persist
 
 Inputs: WP1 DO exports, `GameCommand`, protocol types, engine build.
@@ -923,6 +947,29 @@ Files owned:
 - `apps/edge/test/table-actor.test.ts`
 
 Acceptance: two browsers' worth of scripted sockets play a hand to showdown against Miniflare; hole cards differ by viewer; timeout alarm folds or checks; replayed `clientActionId` does not move chips; kill between Postgres commit and DO meta write (simulate by throwing after the transaction) recovers from `GameCommand` without a second cash-out.
+
+#### WP3 notes
+
+Recorded with the TableActor implementation. These are the choices the lobby and HTTP callers already depend on.
+
+**Authority.** Postgres owns chips, seats, and hand history (`User.bankroll`, `TableSeat`, append-only `Hand*`, `GameCommand`). The table Durable Object's SQLite owns the hot copy: AES-256-GCM ciphertext (`meta.engine`), decimal `revision`, the outbox, stored command results, rate-limit buckets, fan membership, and the one alarm plan. A broadcast revision is one that has been stored in `meta.engine`. Money never moves from the ciphertext alone.
+
+**Alarm.** One `setAlarm`. The due work is the JSON plan in `meta.alarm`, not a fresh `Date.now()` check, so an early platform fire still runs the scheduled kind. Kinds, earliest first: `timeout` (`applyTimeout`), `showdown` (`completeHand`, then a separate deal in the same alarm), `deal` (`startHand` when `readyToDeal`), `idle-warn`, `idle-close`, `outbox` (about 1s), `retry`. `bot` exists only when `ENABLE_LEGACY_BOTS` is true; the default is false and edge tables do not seat bots. An idle plan that fires more than 1s early is rescheduled and does not close. An idle close more than 5s after `closingAt` logs `IDLE_ALARM_LATE`, clears the warning, and does not close. Late turn timeouts still apply. A thrown alarm is logged and rearmed about 2s later.
+
+**Recovery.** `applyMutation` settles a pending outbox first (at most 8). A state change inserts the outbox row, commits Postgres (row lock, wallet, seats, `GameCommand`, hand history, ciphertext column), then writes DO meta and deletes the outbox. `armTestFault("throw-after-postgres")` throws once after that commit and before the meta write. The next mutation finds the `GameCommand` row, adopts it, and does not debit or credit again. A client replay of the same `clientActionId` / `commandId` returns the stored ack with `duplicate: true` and does not move chips. Definitive `EngineError`s are stored and returned again without `duplicate`. If the DO revision and Postgres revision diverge and no pending outbox explains it, the table is paused (`TableIncident` `STATE_DIVERGENCE`) and mutations answer `RECOVERY_REQUIRED`. Missing ciphertext while a hand is open pauses as `RECOVERY_REQUIRED` and does not redeal.
+
+**Contract (minimal edits to `session/contract.ts`).** `SessionDelivery` is the shared fan-out shape. `TableActorRpc.keepAlive(userId, commandId?)` resolves `{ ok: true, duplicate? }` and rejects with `error.code` on a definitive refusal. `TableActorRpc.deliver` and `currentIdleNotice(userId)` were added. `LobbyActorRpc.deliver` takes `SessionDelivery`. `UserSessions.notify` and `lobby.patch` run after the input gate is released so they cannot deadlock on `deliver`.
+
+**Deviations.**
+
+- A client command that does not change state still inserts `GameCommand` when `durableNoOp` is true (the default for client ids). Alarm and deal ids use `durableNoOp: false`, so a no-op does not consume `deal:` or `timer:`.
+- Extra server command ids, same idempotency table: `idle:<table>:<revision>`, `idle-late:<table>:<revision>`, `keep:<table>:<user>:<revision>` when the lobby omits `commandId`, `upgrade:<table>:<revision>`, and `bot:<table>:<turnId>` only if legacy bots are enabled.
+- `TABLE_JOIN` has no `lastRevision`. Join and rehydrate always send a full `STATE_SNAPSHOT`.
+- `Hand.rake` is `table.rakeTaken` (the Node writer left the column at its default 0).
+- Hibernation is not downtime: idle warnings are not cleared on wake, and `rebaseTurnClock` is not applied.
+- An empty waiting table closes on the first mutation (`closeIfEmpty`, same as Node `tryStart`). Seat before `TABLE_JOIN`.
+- The vitest pool does not load `.dev.vars` or Hyperdrive's local URL, and it cannot evaluate `pg`'s CommonJS. `vitest.config.ts` injects the Hyperdrive URL plus the stable test secrets `lobby.test.ts` already signs with, and aliases `pg` to an esbuild ESM bundle (`scripts/bundle-pg.mjs`). That bundle is test-only; `wrangler deploy` still bundles `pg` itself. WP3 fixtures are `isPrivate`, so they stay out of the lobby's newest-50 public list.
+- Docker's `POKER_APP_PASSWORD` is empty in the running container, so the local Hyperdrive URL uses the `poker` role from `apps/server/.env` with the host forced to `127.0.0.1`. That is the local database, not production. It is a superuser, so these tests do not exercise `poker_app` grants.
 
 ### WP4 — Lobby DO
 

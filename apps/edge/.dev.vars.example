@@ -1,13 +1,40 @@
-# Copy to apps/edge/.dev.vars (gitignored). Leave values empty in this example.
+# Copy to apps/edge/.dev.vars (gitignored). Leave secrets empty in this example.
 # Never put the repo-root .env, a Supabase URL, or a Neon production URL here.
+# wrangler dev loads this file. Vitest does not, except the Hyperdrive URL when present.
+#
+# Names match apps/edge/src/env.ts. Vars also have placeholders in wrangler.jsonc.
+# A value here overrides the Wrangler var for local dev only.
+
+# --- secrets (wrangler secret put in production; never commit values) ---
 JWT_ACCESS_SECRET=
 JWT_REFRESH_SECRET=
 WS_TICKET_SECRET=
 GAME_ENCRYPTION_KEYS=
 GAME_ENCRYPTION_ACTIVE_KEY_ID=
 TURNSTILE_SECRET_KEY=
-# Local Docker Postgres only. Host must be 127.0.0.1. Password is the local
-# poker_app password (POKER_APP_PASSWORD / ALTER ROLE), not a committed secret.
+
+# --- vars (wrangler.jsonc). Uncomment to override locally. ---
+# CLIENT_ORIGIN=http://127.0.0.1:3000
+# TERMS_VERSION=2026-10-01
+# JWT_ACCESS_TTL=15m
+# JWT_REFRESH_TTL=7d
+# SESSION_IDLE_TTL=7d
+# SESSION_ABSOLUTE_TTL=30d
+# DEFAULT_STARTING_BANKROLL=10000
+# TURN_TIME_BANK_MS=20000
+# TIME_BANK_INITIAL_MS=30000
+# TIME_BANK_MAX_MS=60000
+# TIME_BANK_REFILL_MS=5000
+# TIME_BANK_REFILL_EVERY_HANDS=10
+# ENABLE_LEGACY_BOTS=false
+# TURNSTILE_SITE_KEY=1x00000000000000000000AA
+# TABLE_DO_LOCATION_HINT=weur
+# Cloudflare Access. Both empty (or omitted) skips the admin JWT when CLIENT_ORIGIN is http://.
+# CF_ACCESS_AUD=
+# CF_ACCESS_TEAM_DOMAIN=
+
+# Local Docker Postgres only. Host must be 127.0.0.1. User is poker_app.
+# Password is the local ALTER ROLE password, not a committed secret.
 # Example shape, do not commit a real password:
 # CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE=postgresql://poker_app:PASSWORD@127.0.0.1:5432/poker
 CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE=
