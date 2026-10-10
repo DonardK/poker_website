@@ -1,4 +1,5 @@
 import type { Context } from "hono";
+import { createPrisma } from "./db/client";
 import type { Env } from "./env";
 
 type EdgeContext = Context<{ Bindings: Env }>;
@@ -18,7 +19,6 @@ export async function ready(c: EdgeContext): Promise<Response> {
   if (!connectionString) {
     return c.json({ ready: false, reasons: ["database"] }, 503, { "Cache-Control": "no-store" });
   }
-  const { createPrisma } = await import("./db/client");
   const prisma = createPrisma(connectionString);
   try {
     await prisma.$queryRaw`SELECT 1`;

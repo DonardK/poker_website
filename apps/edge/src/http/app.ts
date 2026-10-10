@@ -1,6 +1,7 @@
 import { EngineError } from "@poker/engine";
 import { REFRESH_COOKIE_NAME } from "@poker/shared";
 import type { Context, Hono, Next } from "hono";
+import { createPrisma } from "../db/client";
 import { readEdgeConfig, type EdgeConfig, type Env } from "../env";
 import { hashRefresh } from "../auth/sessions";
 import { verifyAccessToken, verifyRefreshToken } from "../auth/tokens";
@@ -153,7 +154,6 @@ async function outer(c: Ctx, next: Next): Promise<Response | void> {
   } else {
     const connectionString = c.env.HYPERDRIVE?.connectionString;
     if (!connectionString) return serviceUnavailable(c);
-    const { createPrisma } = await import("../db/client");
     const client = createPrisma(connectionString);
     prisma = client;
     c.set("db", client as unknown as AppDb);
@@ -302,6 +302,8 @@ async function originAndBody(c: Ctx, next: Next): Promise<Response | void> {
     await next();
     return;
   }
+  // The web Worker forwards /api with the browser's URL, so Host and Origin
+  // are the workers.dev page. CLIENT_ORIGIN is that origin. Cookies are host-only.
   const config = c.get("config");
   const origin = c.req.header("origin");
   if (origin !== undefined) {

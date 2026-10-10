@@ -1,6 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 import type { CommandResult, SessionEndReason, TableIdleNoticePayload } from "@poker/shared";
+import { prismaRuntime } from "../db/client";
 import type { Env } from "../env";
+
+void prismaRuntime;
 import type { SessionDelivery } from "../session/contract";
 import { ensureTables } from "./sql";
 import { readAttachment, sendFrame } from "../table/frames";

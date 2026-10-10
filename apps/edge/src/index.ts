@@ -1,7 +1,10 @@
 import { Hono } from "hono";
 import type { Env } from "./env";
+import { prismaRuntime } from "./db/client";
 import { health, ready } from "./health";
 import { mountHttp } from "./http/app";
+
+void prismaRuntime;
 
 const LOCATION_HINTS = ["wnam", "enam", "sam", "weur", "eeur", "apac", "apac-ne", "apac-se", "oc", "afr", "me"] as const;
 

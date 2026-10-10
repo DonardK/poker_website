@@ -1,7 +1,10 @@
 import { DurableObject } from "cloudflare:workers";
 import type { AuthOkPayload, LobbySeatPatch, SessionEndReason, SessionRevokedPayload, TableIdleNoticePayload, UserPatchPayload } from "@poker/shared";
+import { prismaRuntime } from "../db/client";
 import type { PrismaClient } from "../generated/prisma/client";
 import type { Env } from "../env";
+
+void prismaRuntime;
 import { readEdgeConfig } from "../env";
 import type { SessionDelivery } from "../session/contract";
 import { ensureTables } from "./sql";

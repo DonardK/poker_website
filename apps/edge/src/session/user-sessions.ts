@@ -1,5 +1,8 @@
 import { DurableObject } from "cloudflare:workers";
+import { prismaRuntime } from "../db/client";
 import type { Env } from "../env";
+
+void prismaRuntime;
 import { logEvent } from "../game/log";
 import type { LobbyActorRpc, RegisterConnection, RevokeSession, SessionDelivery, TableActorRpc, UnregisterConnection, NotifySession } from "./contract";
 import { ensureTables } from "../actors/sql";
