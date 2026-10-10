@@ -217,7 +217,7 @@ export function IdleWarningPanel({
                 </>
               ) : <strong className="font-semibold text-amber-100">Closing the table…</strong>}
             </p>
-            <p className="idle-panel-aside">Chips at the table go back to each player&apos;s bankroll.</p>
+            <p className="idle-panel-aside">Chips at the table go back to each player&apos;s chip balance.</p>
           </div>
         </div>
       </div>
@@ -377,7 +377,7 @@ export function IdleCloseDialog({
                 <div id={descriptionId} className="mt-2 space-y-2 text-sm leading-relaxed text-emerald-50">
                   <p>
                     {closure.reason === "IDLE" ? `No one played for ${IDLE_MINUTES} minutes. ` : ""}
-                    Any hand in progress is being settled; then chips at the table go back to each player&apos;s bankroll.
+                    Any hand in progress is being settled; then chips at the table go back to each player&apos;s chip balance.
                   </p>
                 </div>
               </div>
@@ -395,13 +395,13 @@ export function IdleCloseDialog({
                 <h2 id={titleId} className="font-[family-name:var(--font-display)] text-2xl leading-tight sm:text-3xl">This table has closed</h2>
                 <div id={descriptionId} className="mt-2 space-y-2 text-sm leading-relaxed text-emerald-50">
                   <p>{closedReasonText(closure.reason)}</p>
-                  <p>Any chips you had at this table are back in your bankroll.</p>
+                  <p>Any chips you had at this table are back in your chip balance.</p>
                 </div>
               </div>
             </div>
             {bankroll !== null ? (
               <p className="mt-5 flex items-baseline justify-between rounded-xl border border-white/10 bg-black/25 px-4 py-3 text-sm">
-                <span className="text-xs uppercase tracking-widest text-amber-200">Bankroll</span>
+                <span className="text-xs uppercase tracking-widest text-amber-200">Chip balance</span>
                 <span className="font-semibold text-emerald-200">{formatChipsWithUnit(bankroll)}</span>
               </p>
             ) : null}

@@ -12,6 +12,7 @@ body {
   background: radial-gradient(ellipse at top, #143d31 0%, #071912 55%, #050d0a 100%);
   color: var(--ink);
 }
+html { overflow-x: clip; }
 
 * { box-sizing: border-box; }
 button, input { font: inherit; }
@@ -211,7 +212,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     position: relative;
     top: auto !important;
     left: auto !important;
+    min-width: 0;
+    max-width: 100%;
     transform: none;
+  }
+  .seat-hud,
+  .poker-table-seat > button {
+    width: 100%;
+    max-width: 100%;
   }
   .poker-table-seat:not(.poker-table-hero) { order: 2; justify-self: center; }
   .poker-table-hero { order: 0; align-self: center; }
@@ -236,4 +244,5 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 body {
   font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
+  overflow-wrap: break-word;
 }

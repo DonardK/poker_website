@@ -168,10 +168,19 @@ export function TurnClockBar({ input, compact = false }: { input: TurnClockInput
   const fill = reducedMotion ? clock.steppedFraction : clock.fraction;
   return (
     <div className="turn-clock mt-1" data-testid="turn-clock" data-phase={clock.phase}>
-      <div className="h-1.5 overflow-hidden rounded bg-white/15" aria-hidden="true">
+      <div
+        className="h-1.5 overflow-hidden rounded bg-white/15"
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={Math.round(clock.fraction * 100)}
+        aria-valuetext={`${formatClock(clock.phaseSeconds)} remaining`}
+        aria-label={bank ? "Time bank remaining" : "Time remaining to act"}
+      >
         <div
           key={`${input.turnKey}:${clock.phase}`}
           data-testid="turn-clock-fill"
+          aria-hidden="true"
           className={`turn-clock-fill h-full origin-left ${reducedMotion ? "turn-clock-fill--stepped" : ""} ${
             bank ? "bg-sky-300" : urgent ? "bg-red-400" : "bg-amber-300"}`}
           style={{ transform: `scaleX(${fill})` }}

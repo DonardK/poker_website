@@ -104,25 +104,27 @@ export function TableControls({
 
 /**
  * Label and help for leaving, matching what the engine does (leaveSeat):
- * outside a betting round the stack is cashed out at once. During one the
+ * outside a betting round the stack is returned at once. During one the
  * seat is released when the hand ends; a player still able to act is folded
  * on their turn, or checks if folding would leave a pot they paid into with no
  * eligible player. An all-in hand plays out.
  */
 function leaveControl(hero: PublicPlayerView, inHand: boolean): { label: string; help: string | null } {
-  if (!inHand || (!hero.holeCards && hero.status === "SIT_OUT")) return { label: `Cash out ${formatChipsWithUnit(hero.stack)}`, help: null };
+  if (!inHand || (!hero.holeCards && hero.status === "SIT_OUT")) {
+    return { label: `Leave table & return ${formatChipsWithUnit(hero.stack)}`, help: null };
+  }
   if (hero.status === "ACTIVE") {
     return {
       label: "Fold & leave",
-      help: "Your hand is folded on your turn; your chips return to your bankroll when the hand ends. " +
+      help: "Your hand is folded on your turn; your chips return to your chip balance when the hand ends. " +
         "If folding would leave a pot you paid into with no eligible player, you check instead.",
     };
   }
   return {
     label: "Leave after hand",
     help: hero.status === "ALL_IN"
-      ? "You are all-in, so your hand plays out; your chips return to your bankroll when the hand ends."
-      : "You are not in this hand; your chips return to your bankroll when it ends.",
+      ? "You are all-in, so your hand plays out; your chips return to your chip balance when the hand ends."
+      : "You are not in this hand; your chips return to your chip balance when it ends.",
   };
 }
 

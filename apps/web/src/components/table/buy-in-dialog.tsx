@@ -201,7 +201,7 @@ export function BuyInDialog({
         <h2 id={titleId} className="font-[family-name:var(--font-display)] text-2xl">Buy in for seat {seatIndex + 1}</h2>
         <p id={descriptionId} className="mt-2 text-sm text-emerald-50">
           Choose how many chips to bring to the table: {formatChipsWithUnit(lo)} to {formatChipsWithUnit(Math.floor(maxBuyIn))}.
-          {" "}Your bankroll is {formatChipsWithUnit(bankroll)}.
+          {" "}Your chip balance is {formatChipsWithUnit(bankroll)}.
         </p>
         <form
           className="mt-5"
@@ -237,7 +237,7 @@ export function BuyInDialog({
             className="mt-3 h-9 w-full accent-amber-300"
           />
           <p id={balanceId} className="mt-3 flex items-baseline justify-between rounded-xl border border-white/15 bg-black/30 px-4 py-3 text-sm" data-testid="buy-in-balance">
-            <span>Bankroll after buy-in</span>
+            <span>Chip balance after buy-in</span>
             <span className="font-semibold tabular-nums text-emerald-100">{formatChipsWithUnit(balanceAfter)}</span>
           </p>
           {!affordable ? (

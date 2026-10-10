@@ -4,7 +4,7 @@ import { Bullets, LegalDocument, Placeholder, type LegalSection } from "@/compon
 import { PLAY_CHIPS_NOTICE, TERMS_VERSION } from "@/lib/legal";
 
 export const metadata: Metadata = {
-  title: "Terms of Service · Hold'em Live",
+  title: "Terms of Service",
   description: "The terms that apply to Hold'em Live, a play-chip Texas Hold'em service for adults.",
 };
 
@@ -15,8 +15,9 @@ const sections: LegalSection[] = [
     body: (
       <>
         <p>
-          Hold&apos;em Live (&ldquo;we&rdquo;, &ldquo;us&rdquo;) is operated by <Placeholder>legal entity name, company number</Placeholder>,
-          registered at <Placeholder>registered address</Placeholder>. Contact: <Placeholder>support e-mail address</Placeholder>.
+          Hold&apos;em Live (&ldquo;we&rdquo;, &ldquo;us&rdquo;) is operated by <Placeholder>Operator name</Placeholder>{" "}
+          (<Placeholder>legal entity and company number</Placeholder>), registered at <Placeholder>registered address</Placeholder>.
+          Contact: <Placeholder>support e-mail address</Placeholder>.
         </p>
         <p>
           Today the service offers play-chip poker only. It does not hold a gaming licence because it accepts no stakes of
@@ -45,7 +46,7 @@ const sections: LegalSection[] = [
       <>
         <p className="font-semibold">{PLAY_CHIPS_NOTICE}</p>
         <Bullets items={[
-          "Play chips are granted free of charge for entertainment. They cannot be bought, sold, transferred between accounts, exchanged for money, goods, crypto-assets or any other value, and they are never converted into real-money balances.",
+          "Play chips are granted free of charge for entertainment. They cannot be bought, sold, transferred between accounts, exchanged for money, prizes, goods, crypto-assets or any other value, and they are never converted into real-money balances. There is no cash redemption.",
           "Chip amounts are whole numbers. Your balance, buy-ins, bets and winnings are recorded by the server; the server's record is authoritative.",
           "We may adjust a balance to correct an error, or reset play-chip balances for everyone, with notice where practical.",
           "Play tables charge no rake.",

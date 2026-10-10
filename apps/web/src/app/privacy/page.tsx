@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Bullets, CounselNote, LegalDocument, Placeholder, type LegalSection } from "@/components/legal-document";
 
 export const metadata: Metadata = {
-  title: "Privacy Notice · Hold'em Live",
+  title: "Privacy Notice",
   description: "What personal data Hold'em Live collects, why, how long it is kept and your rights.",
 };
 
@@ -20,8 +20,8 @@ const sections: LegalSection[] = [
     heading: "Who is responsible for your data",
     body: (
       <p>
-        The data controller is <Placeholder>legal entity name and registered address</Placeholder>. Data protection contact:{" "}
-        <Placeholder>DPO / privacy e-mail address</Placeholder>.
+        The data controller is <Placeholder>Operator name</Placeholder>, registered at <Placeholder>registered address</Placeholder>.
+        Data protection contact: <Placeholder>DPO / privacy e-mail address</Placeholder>.
       </p>
     ),
   },
@@ -34,7 +34,7 @@ const sections: LegalSection[] = [
           <><strong>Account data:</strong> your username; for registered accounts your e-mail address and a password hash (bcrypt, cost 12; we never store or see your password itself); whether the account is a guest account; your avatar colour; when the account was created and last seen.</>,
           <><strong>Consent records:</strong> the terms version you accepted, when you accepted it, and when you confirmed you are 18 or older.</>,
           <><strong>Security data:</strong> failed sign-in counts and temporary lock-outs; for every sign-in session, the IP address and browser user agent it started from, when it was created, last used, expires or was revoked, and why it was revoked.</>,
-          <><strong>Gameplay data:</strong> your play-chip balance and its changes, the tables you sat at, buy-ins and cash-outs, every action you take, and the hand history of hands you played, including your hole cards. Each hand has a tamper-evident audit record; the cards that were never shown to players (undealt and mucked cards) are kept only in an encrypted, sealed record for the operator and the regulator.</>,
+          <><strong>Gameplay data:</strong> your play-chip balance and its changes, the tables you sat at, buy-ins and chips returned when you leave a table, every action you take, and the hand history of hands you played, including your hole cards. Each hand has a tamper-evident audit record; the cards that were never shown to players (undealt and mucked cards) are kept only in an encrypted, sealed record for the operator and the regulator.</>,
           <><strong>Server logs:</strong> technical and security logs (requests, errors, sign-in and admin events) that can contain your user id, IP address and timestamps.</>,
           <><strong>Stored on your device:</strong> a strictly necessary, HTTP-only sign-in cookie, and, in your browser&apos;s session storage, verification evidence for hands you are playing (fairness commitments and a digest of your own hole cards), cleared when you sign out.</>,
         ]} />

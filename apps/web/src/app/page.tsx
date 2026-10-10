@@ -10,7 +10,7 @@ import { AgeTermsGate, hasConsent, NO_CONSENT, type AgeTermsConsent } from "@/co
 import { clearLiveEvidence } from "@/hooks/use-table-socket";
 import { api, API_UNAVAILABLE_MESSAGE } from "@/lib/api";
 import { formatChips, formatChipsWithUnit } from "@/lib/format";
-import { PLAY_CHIPS_NOTICE, termsAcceptance, termsErrorMessage } from "@/lib/legal";
+import { PLAY_CHIPS_NOTICE, PLAY_MONEY_NOTICE, termsAcceptance, termsErrorMessage } from "@/lib/legal";
 import { disconnectSocket } from "@/lib/socket";
 import { dropStaleClosedNotice, useAuthStore } from "@/stores/session";
 
@@ -246,7 +246,7 @@ export default function LobbyPage() {
             <p className="text-xs uppercase tracking-widest text-amber-200">Play-chip balance</p>
             <p className="text-2xl font-semibold">{user.username}</p>
             <p className="text-lg text-emerald-100">{formatChipsWithUnit(user.bankroll)}</p>
-            <p className="mt-1 text-xs text-emerald-50/90">{PLAY_CHIPS_NOTICE}</p>
+            <p className="mt-1 text-xs text-emerald-50">{PLAY_MONEY_NOTICE}. {PLAY_CHIPS_NOTICE}</p>
             {user.isGuest ? (
               <p className="mt-2 text-xs text-amber-100">Guest account: it cannot be recovered on another device or after clearing this browser&apos;s data.</p>
             ) : null}
@@ -283,8 +283,8 @@ export default function LobbyPage() {
         <div className="flex flex-wrap items-center justify-between gap-x-4 gap-y-2 rounded-xl border border-amber-300/40 bg-amber-950/40 px-4 py-3 text-amber-100">
           <p role="status" className="min-w-0 flex-1 basis-64">
             {tableClosedNotice.reason === "IDLE"
-              ? `Your table closed after ${TABLE_IDLE_TIMEOUT_MS / 60_000} minutes without activity. Your chips were returned to your bankroll.`
-              : "Your table closed. Your chips were returned to your bankroll."}
+              ? `Your table closed after ${TABLE_IDLE_TIMEOUT_MS / 60_000} minutes without activity. Your chips were returned to your chip balance.`
+              : "Your table closed. Your chips were returned to your chip balance."}
           </p>
           <button type="button" onClick={() => useAuthStore.getState().clearTableClosedNotice(tableClosedNotice.tableId)}
             className="min-h-10 shrink-0 rounded-full border border-amber-200/40 px-4 text-sm font-semibold transition hover:bg-white/10">
@@ -296,7 +296,7 @@ export default function LobbyPage() {
         <p role="alert" className="rounded-xl border border-red-400/40 bg-red-950/40 px-4 py-3 text-red-100">{error}</p>
       ) : null}
       {listError && !error && !apiOffline ? (
-        <p role="status" className="rounded-xl border border-red-400/40 bg-red-950/40 px-4 py-3 text-red-100">
+        <p role="alert" className="rounded-xl border border-red-400/40 bg-red-950/40 px-4 py-3 text-red-100">
           Could not refresh the table list ({listError}). Retrying automatically.
         </p>
       ) : null}
@@ -330,7 +330,7 @@ export default function LobbyPage() {
             A guest account has no username or password of your choosing, so it cannot be recovered: it is lost if you sign
             out, clear this browser&apos;s data or switch device, together with its play chips. Register to keep your account.
           </p>
-          <p className="text-sm text-emerald-50/90">{PLAY_CHIPS_NOTICE}</p>
+          <p className="text-sm text-emerald-50">{PLAY_MONEY_NOTICE}. {PLAY_CHIPS_NOTICE}</p>
         </section>
       ) : (
         <section className="flex flex-wrap items-center gap-3">
@@ -391,16 +391,21 @@ export default function LobbyPage() {
       ) : null}
 
       {user ? (
-      <section>
+      <section aria-busy={!tablesLoaded}>
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-sm uppercase tracking-[0.2em] text-amber-200">Open tables</h2>
           <button type="button" className="text-sm text-amber-100 underline underline-offset-4" onClick={() => void refreshTables({ fresh: true }).catch(() => undefined)}>
             Refresh
           </button>
         </div>
+        {!tablesLoaded ? <p className="sr-only" aria-live="polite">Loading tables</p> : null}
         <div className="grid gap-3 sm:grid-cols-2">
-          {tables.length === 0 ? (
-            <p className="text-emerald-50/90">No live tables yet. Open one above to get started.</p>
+          {!tablesLoaded ? (
+            [0, 1, 2, 3].map((slot) => (
+              <div key={slot} aria-hidden="true" className="h-[4.5rem] animate-pulse rounded-2xl border border-white/10 bg-white/5" />
+            ))
+          ) : tables.length === 0 ? (
+            <p className="text-emerald-50">No live tables yet. Open one above to get started.</p>
           ) : (
             tables.map((table) => (
               <button

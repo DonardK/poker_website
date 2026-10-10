@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Bullets, LegalDocument, Placeholder, type LegalSection } from "@/components/legal-document";
 
 export const metadata: Metadata = {
-  title: "Game Fairness · Hold'em Live",
+  title: "Game Fairness",
   description: "How Hold'em Live shuffles, commits to every deck before dealing, records each hand in a hash chain, and what a player can and cannot verify.",
 };
 

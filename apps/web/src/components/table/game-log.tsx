@@ -13,9 +13,9 @@ export function GameLog({ entries }: { entries: HandHistoryLogEntry[] }) {
   }, [entries]);
 
   return (
-    <aside className="flex h-72 flex-col rounded-2xl border border-white/10 bg-black/40 p-3 text-sm">
-      <h2 className="mb-2 text-xs uppercase tracking-[0.2em] text-amber-200">Hand log</h2>
-      <div ref={scroller} className="flex-1 space-y-1 overflow-y-auto pr-1">
+    <aside aria-labelledby="hand-log-heading" className="flex h-72 min-w-0 flex-col rounded-2xl border border-white/10 bg-black/40 p-3 text-sm">
+      <h2 id="hand-log-heading" className="mb-2 text-xs uppercase tracking-[0.2em] text-amber-200">Hand log</h2>
+      <div ref={scroller} aria-live="polite" aria-relevant="additions" className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1">
         {entries.length === 0 ? (
           <p className="text-emerald-50">Waiting for cards…</p>
         ) : (

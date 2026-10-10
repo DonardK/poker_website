@@ -39,6 +39,9 @@ export const LEGAL_PAGES: readonly LegalPageLink[] = [
 /** The statement required wherever a play-chip balance is shown. */
 export const PLAY_CHIPS_NOTICE = "Play chips have no cash value and cannot be redeemed.";
 
+/** Short notice on the footer and on sign-up / sign-in. */
+export const PLAY_MONEY_NOTICE = "Play chips only — no real money";
+
 /** Body fields the server requires on POST /api/auth/guest and /api/auth/register. */
 export interface TermsAcceptance {
   acceptTerms: true;

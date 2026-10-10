@@ -32,7 +32,7 @@ async function expectReachable(control: Locator) {
 const warningName = "Table closing due to inactivity";
 /** TABLE_IDLE_WARNING_MS (@poker/shared): how long the idle warning lasts before the table closes. */
 const WARNING_SECONDS = 30;
-const closedNoticeText = "Your table closed after 5 minutes without activity. Your chips were returned to your bankroll.";
+const closedNoticeText = "Your table closed after 5 minutes without activity. Your chips were returned to your chip balance.";
 
 /** Seated at an active table, then back in the lobby with the seat kept. */
 async function keepSeatInLobby(page: Page, request: APIRequestContext) {
@@ -66,7 +66,7 @@ test("the idle warning floats over a playable table, counts down and \"I'm still
   await expect(page.getByRole("alertdialog")).toHaveCount(1);
   await expect(dialog.getByRole("link", { name: "Go to table" })).toHaveCount(0);
   await expect(dialog).toHaveAccessibleDescription(/No one has played for 5 minutes\. The table closes in \d+ seconds? unless you're still here\./);
-  await expect(dialog).toContainText("Chips at the table go back to each player's bankroll.");
+  await expect(dialog).toContainText("Chips at the table go back to each player's chip balance.");
   const countdown = dialog.getByTestId("idle-countdown");
   const first = Number(await countdown.textContent());
   // The warning lasts WARNING_SECONDS and counts down from (about) all of it.
@@ -149,7 +149,7 @@ test("on a short landscape phone the table warning shows its focused action abov
 test("a spectator can take a seat during the warning, which keeps the table open", async ({ page, request }) => {
   await request.post(`${fixture}/__test/reset`, { data: { mode: "spectator" } });
   await page.goto("/table/fixture-table");
-  const sit = page.getByRole("button", { name: "Sit here" }).first();
+  const sit = page.getByRole("button", { name: /Sit at seat/ }).first();
   await expect(sit).toBeEnabled();
   await request.post(`${fixture}/__test/idle-warning`);
 
@@ -288,7 +288,7 @@ test("an idle closure settles the hand, then the closed dialog returns the playe
   const closed = page.getByRole("alertdialog", { name: "This table has closed" });
   await expect(closed).toBeVisible();
   await expect(closed).toHaveAccessibleDescription(
-    "It closed after 5 minutes without activity. Any chips you had at this table are back in your bankroll.");
+    "It closed after 5 minutes without activity. Any chips you had at this table are back in your chip balance.");
   await expect(closed.getByText("10,000 chips", { exact: true })).toBeVisible();
   // The hand the closure settled can be verified before leaving.
   await expect(closed.getByRole("button", { name: "Verify hand" })).toBeVisible();
@@ -313,7 +313,7 @@ test("the lobby explains an idle closure that happened while the player was away
   await request.post(`${fixture}/__test/close-idle`);
   await request.post(`${fixture}/__test/finish-close`);
 
-  const notice = page.getByText("Your table closed after 5 minutes without activity. Your chips were returned to your bankroll.");
+  const notice = page.getByText("Your table closed after 5 minutes without activity. Your chips were returned to your chip balance.");
   await expect(notice).toBeVisible();
   await expect(page.getByText("10,000 chips", { exact: true })).toBeVisible();
   // The notice reloads the list at once (well inside the 5 s poll): the closed table is gone, no "Return to your table".
@@ -329,7 +329,7 @@ test("joining a table that has closed shows the closed dialog", async ({ page, r
   const closed = page.getByRole("alertdialog", { name: "This table has closed" });
   await expect(closed).toBeVisible();
   await expect(closed).toHaveAccessibleDescription(
-    "This table is no longer available. Any chips you had at this table are back in your bankroll.");
+    "This table is no longer available. Any chips you had at this table are back in your chip balance.");
   // The refusal is an outcome, not a connection fault.
   await expect(page.getByText("Could not join this table", { exact: false })).toHaveCount(0);
   // No snapshot of the table, so no hand to verify.
@@ -347,7 +347,7 @@ test("back from a dropped connection to a table that closed mid-hand, the closed
   const closed = page.getByRole("alertdialog", { name: "This table has closed" });
   await expect(closed).toBeVisible();
   await expect(closed).toHaveAccessibleDescription(
-    "This table is no longer available. Any chips you had at this table are back in your bankroll.");
+    "This table is no longer available. Any chips you had at this table are back in your chip balance.");
   // Closure settled the hand in progress, so it can be verified, and it is the default.
   const verify = closed.getByRole("button", { name: "Verify hand" });
   await expect(verify).toBeVisible();

@@ -4,7 +4,7 @@ import { Bullets, LegalDocument, Placeholder, type LegalSection } from "@/compon
 import { PLAY_CHIPS_NOTICE } from "@/lib/legal";
 
 export const metadata: Metadata = {
-  title: "Responsible Gaming · Hold'em Live",
+  title: "Responsible Gaming",
   description: "Responsible gaming at Hold'em Live: staying in control, the limits and exclusion tools, and where to get help.",
 };
 

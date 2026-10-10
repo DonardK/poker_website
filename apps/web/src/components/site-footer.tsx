@@ -1,10 +1,10 @@
 import Link from "next/link";
-import { LEGAL_PAGES, PLAY_CHIPS_NOTICE } from "@/lib/legal";
+import { LEGAL_PAGES, PLAY_CHIPS_NOTICE, PLAY_MONEY_NOTICE } from "@/lib/legal";
 
 /** Links to every legal document, on every page (decision D10). */
 export function SiteFooter() {
   return (
-    <footer className="mx-auto w-full max-w-6xl px-4 pb-8 pt-4 text-sm text-emerald-50/90 sm:px-8">
+    <footer className="mx-auto w-full max-w-6xl px-4 pb-8 pt-4 text-sm text-emerald-50 sm:px-8">
       <div className="border-t border-white/15 pt-5">
         <nav aria-label="Legal">
           <ul className="flex flex-wrap gap-x-5 gap-y-2">
@@ -18,8 +18,8 @@ export function SiteFooter() {
           </ul>
         </nav>
         <p className="mt-3">
-          18+ only. {PLAY_CHIPS_NOTICE} Real-money play is not offered and will only start under a Malta Gaming Authority
-          licence.
+          18+ only. {PLAY_MONEY_NOTICE}. {PLAY_CHIPS_NOTICE} Real-money play is not offered and will only start under a
+          Malta Gaming Authority licence.
         </p>
       </div>
     </footer>

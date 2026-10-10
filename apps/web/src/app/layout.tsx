@@ -1,9 +1,10 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { connection } from "next/server";
 import { Fraunces, Outfit } from "next/font/google";
 import { AuthHydrator } from "@/components/auth-hydrator";
 import { SiteFooter } from "@/components/site-footer";
 import { TableIdleNotice } from "@/components/table-idle-notice";
+import { SITE_DESCRIPTION, SITE_NAME, siteOrigin } from "@/lib/site";
 import "./globals.css";
 
 const sans = Outfit({
@@ -17,8 +18,30 @@ const display = Fraunces({
 });
 
 export const metadata: Metadata = {
-  title: "Hold'em Live",
-  description: "Real-time multiplayer Texas Hold'em between human players. Play chips only: no cash value, not redeemable. 18+.",
+  metadataBase: new URL(siteOrigin()),
+  title: {
+    default: SITE_NAME,
+    template: `%s · ${SITE_NAME}`,
+  },
+  description: SITE_DESCRIPTION,
+  applicationName: SITE_NAME,
+  openGraph: {
+    type: "website",
+    siteName: SITE_NAME,
+    description: SITE_DESCRIPTION,
+    locale: "en_US",
+  },
+  twitter: {
+    card: "summary",
+    description: SITE_DESCRIPTION,
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#071912",
+  width: "device-width",
+  initialScale: 1,
+  colorScheme: "dark",
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {

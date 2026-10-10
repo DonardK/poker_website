@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import type { AuthResponse } from "@poker/shared";
 import { AgeTermsGate, hasConsent, NO_CONSENT, type AgeTermsConsent } from "@/components/age-terms-gate";
 import { api } from "@/lib/api";
-import { termsAcceptance, termsErrorMessage } from "@/lib/legal";
+import { PLAY_CHIPS_NOTICE, PLAY_MONEY_NOTICE, termsAcceptance, termsErrorMessage } from "@/lib/legal";
 import { useAuthStore } from "@/stores/session";
 
 export default function LoginPage() {
@@ -52,7 +52,8 @@ export default function LoginPage() {
         ← Lobby
       </Link>
       <h1 className="mt-4 font-[family-name:var(--font-display)] text-4xl">Table access</h1>
-      <p className="mt-2 text-sm text-emerald-50/90">Your seat, play-chip balance and hands stay with your account.</p>
+      <p className="mt-2 text-sm text-emerald-50">Your seat, play-chip balance and hands stay with your account.</p>
+      <p className="mt-2 text-sm text-emerald-50">{PLAY_MONEY_NOTICE}. {PLAY_CHIPS_NOTICE}</p>
       <div className="mt-6 flex gap-3">
         <button
           type="button"

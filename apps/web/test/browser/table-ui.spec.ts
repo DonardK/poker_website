@@ -201,7 +201,7 @@ test.describe("turn announcements", () => {
     await expect(felt).toHaveText("");
     await call.click();
     await expect(page.getByText("Waiting for an opponent to act…")).toBeVisible();
-    await expect(page.getByText("Pot 25", { exact: true })).toBeVisible();
+    await expect(page.getByText("Pot 25 chips", { exact: true })).toBeVisible();
     // The pot moved, nothing else did: nothing to announce.
     await expect(felt).toHaveText("");
     // The others call and check: the flop is dealt, and its cards are announced by name.
@@ -282,7 +282,7 @@ test("the header says the cards match the commitment, and explains what that doe
 
 test("chip amounts never show a currency symbol, and cards are named by rank", async ({ page, request }) => {
   await openActiveTable(page, request);
-  await expect(page.getByText("Pot 15", { exact: true })).toBeVisible();
+  await expect(page.getByText("Pot 15 chips", { exact: true })).toBeVisible();
   await expect(page.locator("main")).not.toContainText("$");
   await expect(page.locator("main")).toContainText("Player-0 · 9,000 chips");
   const cards = page.locator(".poker-table-hero").getByRole("img");
@@ -296,7 +296,7 @@ test.describe("buy-in dialog", () => {
   test("\"Sit here\" asks for the amount first; nothing is sent until Confirm", async ({ page, request }) => {
     await reset(request, "spectator");
     await page.goto("/table/fixture-table");
-    const sit = page.getByRole("button", { name: "Sit here" }).first();
+    const sit = page.getByRole("button", { name: /Sit at seat/ }).first();
     await sit.click();
     const dialog = page.getByRole("dialog", { name: "Buy in for seat 1" });
     await expect(dialog).toHaveAttribute("aria-modal", "true");
@@ -339,7 +339,7 @@ test.describe("buy-in dialog", () => {
     await reset(request, "spectator");
     await page.goto("/table/fixture-table");
     await request.post(`${fixture}/__test/reject-next-seat`);
-    await page.getByRole("button", { name: "Sit here" }).first().click();
+    await page.getByRole("button", { name: /Sit at seat/ }).first().click();
     const dialog = page.getByRole("dialog", { name: "Buy in for seat 1" });
     const confirm = dialog.getByRole("button", { name: "Confirm buy-in" });
     await confirm.click();
@@ -357,7 +357,7 @@ test.describe("buy-in dialog", () => {
   test("Confirm is disabled when the bankroll no longer covers the minimum", async ({ page, request }) => {
     await reset(request, "spectator");
     await page.goto("/table/fixture-table");
-    await page.getByRole("button", { name: "Sit here" }).first().click();
+    await page.getByRole("button", { name: /Sit at seat/ }).first().click();
     const dialog = page.getByRole("dialog", { name: "Buy in for seat 1" });
     await request.post(`${fixture}/__test/bankroll`, { data: { bankroll: 150 } });
     await expect(dialog.getByRole("alert")).toHaveText("You need at least 200 chips to sit here.");

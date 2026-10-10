@@ -66,11 +66,11 @@ export function PokerFelt({
           transition={{ duration: reducedMotion ? 0 : 0.26, ease: "easeOut" }}
           className="mt-1 text-2xl font-semibold text-amber-50"
         >
-          Pot {formatChips(snapshot.potTotal)}
+          Pot {formatChips(snapshot.potTotal)} chips
         </motion.p>
         {snapshot.pots.length > 1 ? (
           <p className="text-xs text-amber-50">
-            {snapshot.pots.map((p) => `Pot ${p.index + 1}: ${formatChips(p.amount)}`).join(" · ")}
+            {snapshot.pots.map((p) => `Pot ${p.index + 1}: ${formatChipsWithUnit(p.amount)}`).join(" · ")}
           </p>
         ) : null}
         <div className="mt-3 flex min-h-14 flex-wrap justify-center gap-1">

@@ -20,7 +20,7 @@ export function LegalDocument({ title, summary, sections }: { title: string; sum
       <DraftBanner />
       <header>
         <h1 className="font-[family-name:var(--font-display)] text-4xl font-semibold tracking-tight sm:text-5xl">{title}</h1>
-        <p className="mt-2 text-sm text-emerald-50/90">Version {TERMS_VERSION} · effective {TERMS_EFFECTIVE_DATE}</p>
+        <p className="mt-2 text-sm text-emerald-50">Version {TERMS_VERSION} · effective {TERMS_EFFECTIVE_DATE}</p>
         <div className="mt-4 text-emerald-50">{summary}</div>
       </header>
       <nav aria-label="Contents" className="rounded-2xl border border-white/15 bg-black/30 px-5 py-4">

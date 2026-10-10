@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Bullets, LegalDocument, type LegalSection } from "@/components/legal-document";
 
 export const metadata: Metadata = {
-  title: "House Rules · Hold'em Live",
+  title: "House Rules",
   description: "The no-limit Texas Hold'em rules Hold'em Live applies: blinds, button, betting, showdown, pots, time bank, sitting out and table closure.",
 };
 

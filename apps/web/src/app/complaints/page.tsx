@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Bullets, LegalDocument, Placeholder, type LegalSection } from "@/components/legal-document";
 
 export const metadata: Metadata = {
-  title: "Complaints · Hold'em Live",
+  title: "Complaints",
   description: "How to make a complaint to Hold'em Live, how it is handled, and how to escalate it.",
 };
 

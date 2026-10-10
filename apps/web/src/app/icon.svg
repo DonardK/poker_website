@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Hold'em Live">
+  <title>Hold'em Live</title>
+  <circle cx="16" cy="16" r="15" fill="#0b3d30" stroke="#c9a227" stroke-width="2"/>
+  <circle cx="16" cy="16" r="11" fill="none" stroke="#f4efe4" stroke-width="0.8" opacity="0.9"/>
+  <g fill="#c9a227">
+    <rect x="14.7" y="1.15" width="2.6" height="3.1" rx="0.4"/>
+    <rect x="14.7" y="27.75" width="2.6" height="3.1" rx="0.4"/>
+    <rect x="1.15" y="14.7" width="3.1" height="2.6" rx="0.4"/>
+    <rect x="27.75" y="14.7" width="3.1" height="2.6" rx="0.4"/>
+  </g>
+  <path fill="#f4efe4" d="M16 7.4c.15 2.2-2.05 4.35-4.35 6.25-1.45 1.2-2.15 2.45-2.15 3.8 0 2.15 1.7 3.6 3.8 3.6-.75.65-1.25 1.5-1.35 2.45h8.1c-.1-.95-.6-1.8-1.35-2.45 2.1 0 3.8-1.45 3.8-3.6 0-1.35-.7-2.6-2.15-3.8C18.05 11.75 15.85 9.6 16 7.4z"/>
+</svg>

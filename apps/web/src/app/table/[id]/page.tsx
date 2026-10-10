@@ -44,7 +44,14 @@ export default function TablePage() {
   // whose closure the lobby is still explaining.
   useEffect(() => { if (params.id) dropStaleClosedNotice(params.id); }, [params.id]);
 
-  if (!hydrated) return null;
+  if (!hydrated) {
+    return (
+      <main className="mx-auto flex min-h-screen max-w-lg flex-col items-center justify-center gap-4 px-6 py-24" aria-busy="true">
+        <div aria-hidden="true" className="h-10 w-10 animate-spin rounded-full border-2 border-amber-200/30 border-t-amber-200" />
+        <p className="text-emerald-50" aria-live="polite">Loading your table…</p>
+      </main>
+    );
+  }
 
   if (!user || !accessToken) {
     return (
@@ -91,7 +98,7 @@ export default function TablePage() {
     if (leaving) return;
     const socket = getSocket(token);
     if (!socket.connected) {
-      useTableStore.getState().setTableError("Reconnect before leaving so we can confirm your cash-out.");
+      useTableStore.getState().setTableError("Reconnect before leaving so we can confirm your chips are returned.");
       return;
     }
     setLeaving(true);
@@ -150,7 +157,7 @@ export default function TablePage() {
       </div>
 
       {tableError ? (
-        <p className="mb-4 rounded-xl border border-red-400/40 bg-red-950/40 px-4 py-3 text-red-100">{tableError}</p>
+        <p role="alert" className="mb-4 rounded-xl border border-red-400/40 bg-red-950/40 px-4 py-3 text-red-100">{tableError}</p>
       ) : null}
 
       {snapshot ? (
@@ -176,15 +183,15 @@ export default function TablePage() {
         ) : (
           <div className="rounded-2xl border border-white/10 bg-black/30 p-4 text-sm text-emerald-50" role="status">
             {closure?.kind === "closed"
-              ? "This table has closed. Any chips you had here are back in your bankroll."
+              ? "This table has closed. Any chips you had here are back in your chip balance."
               : closure?.kind === "closing"
-              ? "The table is closing. Chips at the table go back to each player's bankroll."
+              ? "The table is closing. Chips at the table go back to each player's chip balance."
               : hero?.pendingLeave
               ? "Leaving after this hand. Your remaining chips will return automatically."
               : hero?.sittingOut
               ? "You are sitting out. Sit in to play again; if you missed a blind while out, you may wait for the big blind."
               : hero?.status === "ELIMINATED"
-                ? "You are busted. Cash out and buy in again from the lobby."
+                ? "You are busted. Leave the table to return your chips, then buy in again from the lobby."
               : hero?.waitingForBigBlind
                   ? "You will be dealt in when the big blind reaches you."
                   : snapshot?.phase === "WAITING"

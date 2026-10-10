@@ -35,7 +35,8 @@ export function SeatHud({
         onClick={onClaim}
         // Opaque surface and full-strength text: the label must read at 4.5:1
         // over both the felt and the page behind it (WCAG 2.2 AA).
-        className={`w-28 rounded-2xl border border-dashed px-3 py-2 text-center text-xs disabled:cursor-default sm:w-36 ${
+        aria-label={canClaim ? `Sit at seat ${player.seatIndex + 1}` : `Open seat ${player.seatIndex + 1}`}
+        className={`w-28 max-w-full rounded-2xl border border-dashed px-3 py-2 text-center text-xs disabled:cursor-default sm:w-36 ${
           canClaim ? "min-h-11 border-amber-200/70 bg-emerald-950 font-semibold text-amber-100 hover:bg-emerald-900" : "border-white/30 bg-emerald-950 text-emerald-100"}`}
         data-testid={canClaim ? "seat-claim" : "open-seat"}
       >
@@ -46,7 +47,7 @@ export function SeatHud({
 
   return (
     <div
-      className={`seat-hud w-32 rounded-2xl border bg-black/60 px-3 py-2 backdrop-blur sm:w-40 ${
+      className={`seat-hud w-32 max-w-full rounded-2xl border bg-black/60 px-3 py-2 backdrop-blur sm:w-40 ${
         isWinner
           ? "seat-hud--winner border-amber-300 shadow-[0_0_24px_rgba(251,191,36,0.45)]"
           : isToAct
