@@ -187,6 +187,21 @@ model TableIncident {
   @@index([tableId, createdAt])
 }
 
+/// One committed table mutation (migration 20261010130000_game_command).
+/// Inserted in the same Postgres transaction as the bankroll change. A unique
+/// conflict means the mutation already committed. The runtime role may
+/// SELECT and INSERT this table, never UPDATE or DELETE.
+model GameCommand {
+  id              String   @id
+  tableId         String
+  userId          String?
+  kind            String
+  appliedRevision Int
+  createdAt       DateTime @default(now())
+
+  @@index([tableId, createdAt])
+}
+
 model TableSeat {
   id         String      @id @default(cuid())
   tableId    String
