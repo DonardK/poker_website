@@ -1,5 +1,9 @@
+import path from "node:path";
 import type { NextConfig } from "next";
 import { PHASE_DEVELOPMENT_SERVER } from "next/constants";
+
+/** Repo root (this file is apps/web/next.config.ts). Stops Next from treating a parent lockfile as the workspace. */
+const repoRoot = path.resolve(__dirname, "../..");
 
 /**
  * SECURITY: response headers for every route (the nonce-based CSP is set per
@@ -22,6 +26,7 @@ function securityHeaders(phase: string): { key: string; value: string }[] {
 }
 
 const nextConfig = (phase: string): NextConfig => ({
+  outputFileTracingRoot: repoRoot,
   transpilePackages: ["@poker/shared"],
   reactStrictMode: true,
   poweredByHeader: false,
