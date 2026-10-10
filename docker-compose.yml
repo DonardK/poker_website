@@ -1,18 +1,52 @@
+# LOCAL DEVELOPMENT STACK ONLY - this is NOT production infrastructure.
+#
+# It runs a throwaway Postgres and Redis on this machine for `npm run dev`.
+# Production uses a managed Postgres (separate administrator and runtime
+# roles, TLS, backups) and a private Redis; see docs/DEPLOYMENT.md and
+# deploy/README.md.
+#
+# Hardening, even for local use (a dev laptop on cafe Wi-Fi is a network):
+#  - Ports are published on 127.0.0.1 only, so nothing on the LAN can reach
+#    them. Docker's port publishing bypasses host firewalls such as ufw, so a
+#    "0.0.0.0" binding would be reachable even with the firewall up.
+#  - There are no default passwords. Compose refuses to start until
+#    POSTGRES_PASSWORD and REDIS_PASSWORD are set (the `:?` form), so a known
+#    password such as "poker" can never end up guarding a database.
+#  - Redis requires a password and keeps protected mode on.
+#
+# Usage: put the two passwords in a gitignored env file that is NOT the repo
+# root .env (that file may point at the LIVE database; Compose reads `.env`
+# automatically for interpolation, so keep these values out of it), e.g.
+#   .env.compose:  POSTGRES_PASSWORD=<random>  REDIS_PASSWORD=<random>
+#   docker compose --env-file .env.compose up -d
+# then point your local apps/server/.env at
+#   DATABASE_URL=postgresql://poker:<POSTGRES_PASSWORD>@127.0.0.1:5432/poker?schema=public
+#   REDIS_URL=redis://:<REDIS_PASSWORD>@127.0.0.1:6379
+# Generate passwords with:
+#   node -e "console.log(require('node:crypto').randomBytes(24).toString('hex'))"
+# POSTGRES_PASSWORD only takes effect when the data volume is first created.
+# A poker_pg_data volume made by an older version of this file still has the
+# old "poker" password: change it with ALTER ROLE poker PASSWORD '...', or
+# recreate the volume with `docker compose down -v` (deletes local data).
 services:
   postgres:
     image: postgres:16-alpine
     container_name: poker-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: poker
-      POSTGRES_PASSWORD: poker
-      POSTGRES_DB: poker
+      POSTGRES_USER: ${POSTGRES_USER:-poker}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD (see the header of docker-compose.yml)}
+      POSTGRES_DB: ${POSTGRES_DB:-poker}
+      # Password logins use SCRAM, never md5 or trust.
+      POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - poker_pg_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U poker -d poker"]
+      # $$ defers expansion to the container shell, so the check always uses
+      # the values the server was actually started with.
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -21,13 +55,25 @@ services:
     image: redis:7-alpine
     container_name: poker-redis
     restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes"]
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?set REDIS_PASSWORD (see the header of docker-compose.yml)}
+      # redis-cli reads the password from here, so the healthcheck never puts
+      # it on a command line.
+      REDISCLI_AUTH: ${REDIS_PASSWORD:?set REDIS_PASSWORD (see the header of docker-compose.yml)}
+    # The password is passed from the container environment at start-up
+    # instead of being written into this file. It is still visible to anyone
+    # who can run `docker inspect` on this machine, which is acceptable for a
+    # local dev stack and is one reason this file must not be used in production.
+    command:
+      - sh
+      - -c
+      - exec redis-server --appendonly yes --protected-mode yes --requirepass "$$REDIS_PASSWORD"
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - poker_redis_data:/data
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD-SHELL", "redis-cli ping | grep -q PONG"]
       interval: 5s
       timeout: 3s
       retries: 10

@@ -1,0 +1,15 @@
+{
+  "configAccepted": {
+    "bankrollBeyondPostgresInt": true,
+    "timeBankBeyondNodeDelay": true,
+    "invalidJwtDuration": true
+  },
+  "absence": {
+    "hands": 30,
+    "timeouts": 75,
+    "stillSittingIn": true,
+    "startingStack": 1000,
+    "remainingStack": 915
+  },
+  "classification": "Unpublished house-policy gap; not an engine arithmetic bug"
+}

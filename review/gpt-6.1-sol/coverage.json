@@ -1,0 +1,1137 @@
+[
+  {
+    "path": ".audit.json",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Generated prior advisory result; inspected metadata only, replaced by newly executed audit evidence."
+  },
+  {
+    "path": ".cursor/mcp.json",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Only configuration structure inspected (one server); secret-bearing values deliberately not printed/copied."
+  },
+  {
+    "path": ".cursor/rules/supabase.mdc",
+    "status": "FULL",
+    "findings": [
+      "SOL-051"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": ".env.example",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": ".gitignore",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "BACKEND-SECURITY-AUDIT.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "CLAUDE-REVIEW.md",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Independent concurrent report added after baseline; inspected index/some claims, not relied upon as executed evidence for this report."
+  },
+  {
+    "path": "CLAUDE_HANDOFF.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "COMPLIANCE.md",
+    "status": "FULL",
+    "findings": [
+      "SOL-025",
+      "SOL-028",
+      "SOL-002",
+      "SOL-023",
+      "SOL-026"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "GPT-6.1-SOL-REVIEW-PROMPT.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "README.md",
+    "status": "FULL",
+    "findings": [
+      "SOL-002",
+      "SOL-023",
+      "SOL-025",
+      "SOL-026",
+      "SOL-028"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "SECURITY-REVIEW.md",
+    "status": "FULL",
+    "findings": [
+      "SOL-002",
+      "SOL-023",
+      "SOL-025",
+      "SOL-026",
+      "SOL-028"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/certs/supabase-pooler-root.pem",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Public CA/config use inspected; actual DB TLS was verified, not an independent CA provenance/certificate-chain audit."
+  },
+  {
+    "path": "apps/server/package.json",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/prisma.config.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/prisma/migrations/20240919190000_init/migration.sql",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/prisma/migrations/20260920140611_poker_security/migration.sql",
+    "status": "FULL",
+    "findings": [
+      "SOL-024"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/prisma/migrations/20260920141323_restrict_rls_event_trigger/migration.sql",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/prisma/migrations/20260920165155_poker_history_integrity/migration.sql",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/prisma/migrations/20260924120000_compliance_audit_trail/migration.sql",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/prisma/migrations/migration_lock.toml",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/prisma/schema.prisma",
+    "status": "FULL",
+    "findings": [
+      "SOL-002",
+      "SOL-024",
+      "SOL-027",
+      "SOL-040",
+      "SOL-004",
+      "SOL-005",
+      "SOL-006",
+      "SOL-036",
+      "SOL-038"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/prisma/seed.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/app.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-004",
+      "SOL-022",
+      "SOL-033",
+      "SOL-035",
+      "SOL-039"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/auth/jwt.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/auth/middleware.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-011"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/auth/routes.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-003",
+      "SOL-005",
+      "SOL-011",
+      "SOL-013",
+      "SOL-020",
+      "SOL-021",
+      "SOL-031",
+      "SOL-033",
+      "SOL-034",
+      "SOL-040",
+      "SOL-046",
+      "SOL-050"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/config.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-023",
+      "SOL-030",
+      "SOL-046",
+      "SOL-047"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/db/prisma.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/game/audit.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/game/encryption.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-023",
+      "SOL-025"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/game/legacy.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/game/manager.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-001",
+      "SOL-006",
+      "SOL-008",
+      "SOL-009",
+      "SOL-010",
+      "SOL-014",
+      "SOL-015",
+      "SOL-016",
+      "SOL-019",
+      "SOL-025",
+      "SOL-032",
+      "SOL-035",
+      "SOL-038",
+      "SOL-047",
+      "SOL-005",
+      "SOL-018",
+      "SOL-029",
+      "SOL-036"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/index.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-027"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/logger.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/redis/client.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/redis/table-state.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/routes/admin-access-log.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-022"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/routes/admin.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-021"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/routes/health.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-037"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/routes/tables.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/socket/index.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-011",
+      "SOL-016",
+      "SOL-036",
+      "SOL-013",
+      "SOL-032"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/socket/mask.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/socket/rate-limit.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-035"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/socket/rooms.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/socket/types.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/src/transport.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-030"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/server/test/compliance.test.mjs",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "apps/server/test/game-flow.test.mjs",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read complete fixture/test/helper; integration read only and not executed; other applicable baseline suites executed."
+  },
+  {
+    "path": "apps/server/test/human-tables.test.mjs",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read complete fixture/test/helper; integration read only and not executed; other applicable baseline suites executed."
+  },
+  {
+    "path": "apps/server/test/integration.test.mjs",
+    "status": "FULL",
+    "findings": [
+      "SOL-029"
+    ],
+    "note": "Read complete fixture/test/helper; integration read only and not executed; other applicable baseline suites executed."
+  },
+  {
+    "path": "apps/server/test/security.test.mjs",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read complete fixture/test/helper; integration read only and not executed; other applicable baseline suites executed."
+  },
+  {
+    "path": "apps/server/test/table-lifecycle.test.mjs",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "apps/server/tsconfig.json",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/next-env.d.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/next.config.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-039"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/package.json",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/playwright.config.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/postcss.config.mjs",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/app/globals.css",
+    "status": "FULL",
+    "findings": [
+      "SOL-041"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/app/layout.tsx",
+    "status": "FULL",
+    "findings": [
+      "SOL-007",
+      "SOL-051"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/app/login/page.tsx",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/app/page.tsx",
+    "status": "FULL",
+    "findings": [
+      "SOL-038",
+      "SOL-048"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/app/table/[id]/page.tsx",
+    "status": "FULL",
+    "findings": [
+      "SOL-044"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/components/auth-hydrator.tsx",
+    "status": "FULL",
+    "findings": [
+      "SOL-013",
+      "SOL-011",
+      "SOL-012",
+      "SOL-016",
+      "SOL-031",
+      "SOL-038"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/components/table-idle-notice.tsx",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/components/table/action-bar.tsx",
+    "status": "FULL",
+    "findings": [
+      "SOL-017",
+      "SOL-042",
+      "SOL-043",
+      "SOL-048",
+      "SOL-049"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/components/table/fairness-audit.tsx",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/components/table/game-log.tsx",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/components/table/idle-close-dialog.tsx",
+    "status": "FULL",
+    "findings": [
+      "SOL-045"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/components/table/playing-card.tsx",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/components/table/poker-felt.tsx",
+    "status": "FULL",
+    "findings": [
+      "SOL-043"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/components/table/seat-hud.tsx",
+    "status": "FULL",
+    "findings": [
+      "SOL-018",
+      "SOL-041",
+      "SOL-043",
+      "SOL-044"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/components/table/table-controls.tsx",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/hooks/use-table-fx.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/hooks/use-table-socket.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-012",
+      "SOL-045",
+      "SOL-036"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/lib/api.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-013",
+      "SOL-046"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/lib/socket.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-012"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/lib/sounds.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-017"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/src/stores/session.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "apps/web/test/browser/game-flow.spec.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read complete fixture/test/helper; integration read only and not executed; other applicable baseline suites executed."
+  },
+  {
+    "path": "apps/web/test/browser/table-lifecycle.spec.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "apps/web/test/support/game-server.mjs",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read complete fixture/test/helper; integration read only and not executed; other applicable baseline suites executed."
+  },
+  {
+    "path": "apps/web/test/support/restore-next-env.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read complete fixture/test/helper; integration read only and not executed; other applicable baseline suites executed."
+  },
+  {
+    "path": "apps/web/tsconfig.json",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "chatgpt-6-codex.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "chatgpt-6-sol.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "docker-compose.yml",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "package-lock.json",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Parsed complete lock inventory, production audit/license scan and workspace/version/dependency structure; not every dependency implementation reviewed."
+  },
+  {
+    "path": "package.json",
+    "status": "FULL",
+    "findings": [
+      "SOL-051"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/jest.config.cjs",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/package.json",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/__tests__/audit.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/bots.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/deck.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/evaluate-exhaustive.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/evaluate.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/helpers/drive.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read complete fixture/test/helper; integration read only and not executed; other applicable baseline suites executed."
+  },
+  {
+    "path": "packages/engine/src/__tests__/helpers/forge.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/helpers/simulate.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/helpers/stats.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read complete fixture/test/helper; integration read only and not executed; other applicable baseline suites executed."
+  },
+  {
+    "path": "packages/engine/src/__tests__/leakage.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/leave-flow.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/pots-reference.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/pots.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/review-fixes.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/rng.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/security.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/table-lifecycle.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/__tests__/table.test.ts",
+    "status": "PARTIAL",
+    "findings": [],
+    "note": "Executed relevant suite (integration excepted); inspected selected assertions, fixtures/descriptors and relevant behavior, not every line independently."
+  },
+  {
+    "path": "packages/engine/src/audit.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-026"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/bots/chen.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/bots/decide.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/bots/delay.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/bots/montecarlo.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/bots/texture.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/cards.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/deck.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/evaluate.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/fairness.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/index.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/isolation.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/legal.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/pots.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-052"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/public.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/rng.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/seats.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/table.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-019"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/src/types.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/engine/tsconfig.json",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/shared/package.json",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/shared/src/api.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/shared/src/audit.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-026",
+      "SOL-025"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/shared/src/constants.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/shared/src/events.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-018",
+      "SOL-036",
+      "SOL-038",
+      "SOL-016"
+    ],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/shared/src/fairness.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/shared/src/index.ts",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "packages/shared/src/poker.ts",
+    "status": "FULL",
+    "findings": [
+      "SOL-052"
+    ],
+    "note": "Production types FULL; odd-chip comment is false (actual left of button), see section 9; correct algorithm must remain."
+  },
+  {
+    "path": "packages/shared/tsconfig.json",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "plan.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "progress.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "scripts/review-database.mjs",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "scripts/security-review.mjs",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "scripts/verify-evaluator.mjs",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "skills-lock.json",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "supabase/.temp/cli-latest",
+    "status": "NOT REVIEWED",
+    "findings": [],
+    "note": "Generated CLI-version cache; no application behavior."
+  },
+  {
+    "path": "supabase/ACCESS.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "supabase/README.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "supabase/authenticated-account/PROJECT.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Historical/other-account metadata read to establish scope; not evidence for current OnlinePoker security."
+  },
+  {
+    "path": "supabase/authenticated-account/advisors.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Historical/other-account metadata read to establish scope; not evidence for current OnlinePoker security."
+  },
+  {
+    "path": "supabase/authenticated-account/database.types.ts",
+    "status": "NOT REVIEWED",
+    "findings": [],
+    "note": "Generated types for the documented other/historical account; not a runtime dependency of the poker application."
+  },
+  {
+    "path": "supabase/authenticated-account/extensions.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Historical/other-account metadata read to establish scope; not evidence for current OnlinePoker security."
+  },
+  {
+    "path": "supabase/authenticated-account/functions.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Historical/other-account metadata read to establish scope; not evidence for current OnlinePoker security."
+  },
+  {
+    "path": "supabase/authenticated-account/migrations.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Historical/other-account metadata read to establish scope; not evidence for current OnlinePoker security."
+  },
+  {
+    "path": "supabase/authenticated-account/rls.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Historical/other-account metadata read to establish scope; not evidence for current OnlinePoker security."
+  },
+  {
+    "path": "supabase/authenticated-account/schema.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Historical/other-account metadata read to establish scope; not evidence for current OnlinePoker security."
+  },
+  {
+    "path": "supabase/mcp.md",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "supabase/migrations/20260920140611_poker_security.sql",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "supabase/migrations/20260920141323_restrict_rls_event_trigger.sql",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "supabase/migrations/20260920165155_poker_history_integrity.sql",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "supabase/migrations/20260927224842_compliance_audit_trail.sql",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  },
+  {
+    "path": "tsconfig.base.json",
+    "status": "FULL",
+    "findings": [],
+    "note": "Read current source/config/document; see section 9 for grouped claim checks."
+  }
+]

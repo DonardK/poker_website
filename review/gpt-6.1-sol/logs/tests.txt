@@ -1,0 +1,678 @@
+
+> poker-platform@0.1.0 pretest
+> npm run build:core
+
+
+> poker-platform@0.1.0 build:core
+> npm run build -w @poker/shared && npm run build -w @poker/engine
+
+
+> @poker/shared@0.1.0 build
+> tsc -p tsconfig.json
+
+npm notice
+npm notice New major version of npm available! 11.17.0 -> 12.1.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.1.0
+npm notice To update run: npm install -g npm@12.1.0
+npm notice
+
+> @poker/engine@0.1.0 build
+> tsc -p tsconfig.json
+
+npm notice
+npm notice New major version of npm available! 11.17.0 -> 12.1.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.1.0
+npm notice To update run: npm install -g npm@12.1.0
+npm notice
+npm notice
+npm notice New major version of npm available! 11.17.0 -> 12.1.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.1.0
+npm notice To update run: npm install -g npm@12.1.0
+npm notice
+
+> poker-platform@0.1.0 test
+> npm run test --workspaces --if-present
+
+
+> @poker/server@0.1.0 test
+> npm run build && node --test test/security.test.mjs test/compliance.test.mjs test/game-flow.test.mjs test/human-tables.test.mjs test/table-lifecycle.test.mjs
+
+
+> @poker/server@0.1.0 build
+> tsc -p tsconfig.json
+
+npm notice
+npm notice New major version of npm available! 11.17.0 -> 12.1.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.1.0
+npm notice To update run: npm install -g npm@12.1.0
+npm notice
+✔ isSecureTransport: only a real TLS socket, or https from a trusted proxy (4.7412ms)
+✔ engineTransportGuard: passes TLS requests, refuses and reports everything else (1.7912ms)
+✔ createListener: http without files, https with both, fails fast on partial or missing files (1.2819ms)
+✔ production refuses to start without TLS; TLS files are both-or-neither (1547.5011ms)
+✔ production behind a TLS proxy: plaintext HTTP gets 426, Socket.io handshakes need TLS, health probe exempt, HSTS on (1863.8307ms)
+✔ production behind a TLS proxy: every engine.io request of a session needs TLS (polling with sid, WebSocket upgrade, preflight) (1053.4515ms)
+✔ admin access log: every /api/admin request is logged with its outcome, including 426, 401 and 429 (1002.9759ms)
+✔ admin access log middleware: user id once known, status on finish, one entry per request, aborted requests (0.5381ms)
+✔ development behaviour is unchanged: no TLS requirement, HSTS still sent (1132.5061ms)
+﹣ production with direct TLS (node:https): TLS requests pass, plaintext cannot connect (7.0882ms) # openssl unavailable: spawnSync openssl ENOENT
+✔ static scan: no Math.random, no player-entropy shuffle protocol, every emitted snapshot is guarded (12.055ms)
+✔ static scan: cash-outs are paid only inside TableManager.mutate, and stored with none pending (5.0571ms)
+✔ guarded projection: each viewer sees only their own cards; a leak is refused and reported, never emitted (9.6234ms)
+✔ audit columns, regulator and participant audits verify for real hands; no hidden card reaches a participant (268.067ms)
+✔ 30 chained random hands (bots, time-outs, sit-outs, re-buys) all verify; the per-table hash chain links them (3307.4979ms)
+✔ persistence fails closed on any audit inconsistency, and on a settled hand with no audit (60.5302ms)
+✔ outcome replay before persisting: a re-sealed record with reassigned winners is never recorded (57.7743ms)
+✔ regulator report: ok only if row binding, card integrity, outcome replay and table chain all pass (79.3916ms)
+✔ legacy in-flight hands (PREFLOP and FLOP) are voided on load: every stack restored, chips conserved, safe to emit (8.1889ms)
+✔ legacy WAITING state with leftover board, hole cards, log and old-format fairness is purged and emits without LEAK_BLOCKED (5.8987ms)
+✔ legacy SHOWDOWN state (settled by the old server) runs Hand Clean-up on load (3.9256ms)
+✔ legacy upgrade: reported once per table and hand, deterministic, idempotent, and a no-op for current state (8.7446ms)
+✔ participant redaction guard blocks hidden cards, sealed fields, salts and extra proofs (21.1085ms)
+✔ participant redaction guard trusts the stored showedCards flags, not the record, before opening another seat (32.5109ms)
+✔ a call writes only the changed seat; encrypted loads do not fetch seat/user relations (2171.0773ms)
+✔ queued cash-out reaches the user room after leaving the table; retry never pays twice (36.6604ms)
+✔ failed persistence rolls back chips and emits no wallet update (2.8297ms)
+✔ stale timer failure cannot replace a newer turn timer (2.9965ms)
+✔ timer recovery retries a temporary read failure and stops cleanly (2.9438ms)
+✔ real sockets acknowledge leave/errors and do not autojoin the lobby player to a table (56.15ms)
+[2026-09-29 23:56:56.573 +0200] [31mERROR[39m (71504): [36mrecovery retry failed[39m
+    [35mtableId[39m: "flow-test"
+    err: {
+      "type": "Error",
+      "message": "temporary outage",
+      "stack":
+          Error: temporary outage
+              at TableManager.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/test/game-flow.test.mjs:124:75)
+              at Object.apply (node:internal/test_runner/mock/mock:767:20)
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:520:23
+              at MockTimers.tick (node:internal/test_runner/mock/mock_timers:705:7)
+              at TestContext.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/test/game-flow.test.mjs:126:17)
+              at Test.runInAsyncScope (node:async_hooks:227:14)
+              at Test.run (node:internal/test_runner/test:1382:25)
+              at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+              at Test.postRun (node:internal/test_runner/test:1522:19)
+              at Test.run (node:internal/test_runner/test:1447:12)
+    }
+[2026-09-29 23:56:55.620 +0200] [33mWARN[39m (71504): [36msocket request rejected[39m
+    err: {
+      "type": "ZodError",
+      "message": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"tableId\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "stack":
+          ZodError: [
+            {
+              "expected": "string",
+              "code": "invalid_type",
+              "path": [
+                "tableId"
+              ],
+              "message": "Invalid input: expected string, received undefined"
+            }
+          ]
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:169:40
+              at Socket.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:174:15)
+              at Socket.emit (node:events:509:28)
+              at Socket.emitUntyped (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\typed-events.js:69:22)
+              at C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\socket.js:697:39
+              at process.processTicksAndRejections (node:internal/process/task_queues:85:11)
+      "name": "ZodError"
+    }
+[2026-09-29 23:56:55.622 +0200] [33mWARN[39m (71504): [36msocket request rejected[39m
+    err: {
+      "type": "EngineError",
+      "message": "Try a legal action",
+      "stack":
+          EngineError: Try a legal action
+              at TableManager.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/test/game-flow.test.mjs:158:53)
+              at Object.apply (node:internal/test_runner/mock/mock:767:20)
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:200:36
+              at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      "code": "ILLEGAL",
+      "name": "EngineError"
+    }
+✔ startup refuses a database without the hand-audit migration (1947.4804ms)
+✔ custom tables seat only the human host, reject bots, and do not debit an already seated host (129.2938ms)
+[2026-09-29 23:56:55.655 +0200] [31mERROR[39m (124724): [36mrequest failed[39m
+    err: {
+      "type": "EngineError",
+      "message": "Leave your current table before creating another",
+      "stack":
+          EngineError: Leave your current table before creating another
+              at prisma.$transaction.maxWait (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/routes/tables.js:186:19)
+              at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+      "code": "ALREADY_SEATED",
+      "name": "EngineError"
+    }
+prisma:error 
+Invalid `prisma.table.findUnique()` invocation:
+
+
+Can't reach database server at `127.0.0.1:1`
+
+Please make sure your database server is running at `127.0.0.1:1`.
+[2026-09-29 23:56:56.664 +0200] [31mERROR[39m (124724): [36mcould not start the new table's timers[39m
+    [35mtableId[39m: "new-human-table"
+    err: {
+      "type": "PrismaClientInitializationError",
+      "message": "\nInvalid `prisma.table.findUnique()` invocation:\n\n\nCan't reach database server at `127.0.0.1:1`\n\nPlease make sure your database server is running at `127.0.0.1:1`.",
+      "stack":
+          PrismaClientInitializationError: 
+          Invalid `prisma.table.findUnique()` invocation:
+          
+          
+          Can't reach database server at `127.0.0.1:1`
+          
+          Please make sure your database server is running at `127.0.0.1:1`.
+              at ei.handleRequestError (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\@prisma\client\runtime\library.js:121:7568)
+              at ei.handleAndLogRequestError (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\@prisma\client\runtime\library.js:121:6593)
+              at ei.request (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\@prisma\client\runtime\library.js:121:6300)
+              at async a (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\@prisma\client\runtime\library.js:130:9551)
+              at async TableManager.load (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:53:21)
+              at async TableManager.get (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:80:34)
+              at async TableManager.track (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:95:23)
+      "clientVersion": "6.19.3",
+      "name": "PrismaClientInitializationError"
+    }
+✔ AES-256-GCM round trips and uses a fresh nonce (2.9508ms)
+✔ ciphertext tampering and substitution between tables fail closed (1.0084ms)
+✔ tokens bind to a session and refresh tokens are unique even in the same second (5.2814ms)
+✔ configured client origin is normalized (0.498ms)
+✔ host alone leaves a table nobody joined: CLOSED (EMPTY) in the same commit, closedAt written, buy-in refunded once, final state then room emptied (2188.5437ms)
+✔ host leaves between hands with two others seated: cashed out, the table stays open and keeps dealing (44.8322ms)
+✔ host leaves mid-hand with two others: the hand finishes and is recorded, the host is paid once at clean-up, the next hand is dealt (33.2656ms)
+✔ heads-up: the host leaves mid-hand and the table stays open; when the last player leaves it closes (11.2068ms)
+✔ idle: warning at exactly 5 minutes, closure (IDLE) 10 seconds later, chips returned once with tableClosedReason (11.9549ms)
+✔ idle: "I'm still here" from a seated player cancels the warning and restarts the clock; spectators cannot (17.989ms)
+✔ idle: a real sit-out/sit-in and a seat claim are activity; a repeated toggle is not; a hand is dealt once the warning is gone (13.0533ms)
+✔ idle: a player's own action during the warning cancels it; time-outs neither cancel it nor restart the clock; the hand is untouched by the warning (6.4589ms)
+✔ idle: a warning stops the next deal (the SHOWDOWN timer only cleans up); closure between hands cashes everyone out at once (7.5665ms)
+✔ idle: AFK players whose hands keep timing out are warned at exactly 5 minutes and closed; every hand recorded and verified once, everyone paid once (189.3989ms)
+✔ idle closure mid-hand (flop, facing a bet, a leaver and a newcomer): the hand is settled and recorded once, verified, and each player paid exactly once (23.2015ms)
+✔ idle timer: a stale lower-revision load never replaces a newer timer; a failed check retries without clobbering one; a closed table is forgotten (3.915ms)
+✔ idle timer: a timer kept for a newer state with the same deadline still retries when its check fails (1.036ms)
+✔ idle timer: a corrupt far-future lastActivityAt is re-checked after one idle timeout, never in a tight loop (0.3963ms)
+✔ recover() closes a table that was left empty; an open table is only timed; nothing is paid twice (1.6433ms)
+✔ legacy state without the idle clocks: upgraded (reported), clocks stored from the row's last update; the restart still gives a full 5 minutes (7.423ms)
+✔ load() tolerates rows without createdAt/updatedAt (the clock then starts now) and uses them when present (1.1604ms)
+✔ sockets: a closed table refuses joins and commands with TABLE_CLOSED (private tables stay hidden); TABLE_KEEP_ALIVE is acknowledged (49.3772ms)
+[2026-09-28 14:00:00.001 +0200] [31mERROR[39m (92368): [36mtable idle timer failed[39m
+    [35mtableId[39m: "lifecycle-test"
+    err: {
+      "type": "Error",
+      "message": "database offline",
+      "stack":
+          Error: database offline
+              at TestContext.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/test/table-lifecycle.test.mjs:672:10)
+              at Test.runInAsyncScope (node:async_hooks:227:14)
+              at Test.run (node:internal/test_runner/test:1382:25)
+              at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+              at Test.postRun (node:internal/test_runner/test:1522:19)
+              at Test.run (node:internal/test_runner/test:1447:12)
+              at async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+    }
+[2026-09-28 14:00:00.002 +0200] [31mERROR[39m (92368): [36mtable idle timer failed[39m
+    [35mtableId[39m: "lifecycle-test"
+    err: {
+      "type": "Error",
+      "message": "database offline",
+      "stack":
+          Error: database offline
+              at TestContext.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/test/table-lifecycle.test.mjs:679:10)
+              at async Test.run (node:internal/test_runner/test:1389:7)
+              at async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+    }
+[2026-09-28 14:00:01.000 +0200] [31mERROR[39m (92368): [36mtable idle timer failed[39m
+    [35mtableId[39m: "lifecycle-test"
+    err: {
+      "type": "Error",
+      "message": "database offline",
+      "stack":
+          Error: database offline
+              at TableManager.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/test/table-lifecycle.test.mjs:717:71)
+              at Object.apply (node:internal/test_runner/mock/mock:767:20)
+              at TableManager.idleCheck (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:469:21)
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:449:23
+              at MockTimers.tick (node:internal/test_runner/mock/mock_timers:705:7)
+              at TestContext.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/test/table-lifecycle.test.mjs:718:17)
+              at Test.runInAsyncScope (node:async_hooks:227:14)
+              at Test.run (node:internal/test_runner/test:1382:25)
+              at Test.processPendingSubtests (node:internal/test_runner/test:960:18)
+              at Test.postRun (node:internal/test_runner/test:1522:19)
+    }
+[2026-09-28 14:00:02.001 +0200] [31mERROR[39m (92368): [36mtable idle timer failed[39m
+    [35mtableId[39m: "lifecycle-test"
+    err: {
+      "type": "Error",
+      "message": "database offline",
+      "stack":
+          Error: database offline
+              at TableManager.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/test/table-lifecycle.test.mjs:717:71)
+              at Object.apply (node:internal/test_runner/mock/mock:767:20)
+              at TableManager.idleCheck (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:469:21)
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:449:23
+              at MockTimers.tick (node:internal/test_runner/mock/mock_timers:705:7)
+              at TestContext.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/test/table-lifecycle.test.mjs:726:17)
+              at async Test.run (node:internal/test_runner/test:1389:7)
+              at async Test.processPendingSubtests (node:internal/test_runner/test:960:7)
+    }
+[2026-09-29 23:56:55.962 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "EngineError",
+      "message": "This table has closed",
+      "stack":
+          EngineError: This table has closed
+              at checkTable (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:118:23)
+              at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+              at async join (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:121:13)
+              at async file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:149:76
+      "code": "TABLE_CLOSED",
+      "name": "EngineError"
+    }
+[2026-09-29 23:56:55.963 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "EngineError",
+      "message": "This table has closed",
+      "stack":
+          EngineError: This table has closed
+              at checkTable (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:118:23)
+              at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+              at async file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:170:17
+      "code": "TABLE_CLOSED",
+      "name": "EngineError"
+    }
+[2026-09-29 23:56:55.965 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "EngineError",
+      "message": "This table has closed",
+      "stack":
+          EngineError: This table has closed
+              at checkTable (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:118:23)
+              at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+              at async file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:179:17
+      "code": "TABLE_CLOSED",
+      "name": "EngineError"
+    }
+[2026-09-29 23:56:55.966 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "EngineError",
+      "message": "Table not found",
+      "stack":
+          EngineError: Table not found
+              at checkTable (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:115:23)
+              at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+              at async file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:179:17
+      "code": "TABLE_NOT_FOUND",
+      "name": "EngineError"
+    }
+[2026-09-29 23:56:55.969 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "ZodError",
+      "message": "[\n  {\n    \"code\": \"unrecognized_keys\",\n    \"keys\": [\n      \"extra\"\n    ],\n    \"path\": [],\n    \"message\": \"Unrecognized key: \\\"extra\\\"\"\n  }\n]",
+      "stack":
+          ZodError: [
+            {
+              "code": "unrecognized_keys",
+              "keys": [
+                "extra"
+              ],
+              "path": [],
+              "message": "Unrecognized key: \"extra\""
+            }
+          ]
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:178:40
+              at Socket.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:183:15)
+              at Socket.emit (node:events:509:28)
+              at Socket.emitUntyped (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\typed-events.js:69:22)
+              at C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\socket.js:697:39
+              at process.processTicksAndRejections (node:internal/process/task_queues:85:11)
+      "name": "ZodError"
+    }
+✔ idle: an AFK human and a bot on a legacy table: the bot's actions are not activity; warned at 5 minutes, closed, the human paid exactly once (269.5899ms)
+✔ idle: a player leaving during the warning does not cancel it; the table closes on time, everyone paid once, and no "warning over" notice is sent (8.4546ms)
+✔ idle: an outsider who takes a seat and leaves again does not extend an AFK table's clock, before or during the warning (9.6201ms)
+✔ restart after a long outage: every table gets a full 5 minutes from the restart, even mid-hand, and the hands play on (83.6677ms)
+✔ restart during a warning: the stale warning is dropped at recover in one commit, dealing resumes, and the table is timed afresh (126.5214ms)
+✔ idle check: a warning from before the restart that reaches the idle timer is dropped, never acted on (5.8692ms)
+✔ idle notices: the start goes to each seated human still at the table (not spectators, bots or leaving players); the end to every seated human (6.5031ms)
+✔ mutate: a command that meets a closed table is told TABLE_CLOSED; a table that does not exist is still TABLE_NOT_FOUND (1.7769ms)
+✔ timers: a game or idle timer that finds the table closed (TABLE_CLOSED) forgets it, as for a missing table (2.0415ms)
+✔ sockets: a join or a command racing the closure is told TABLE_CLOSED (with its tableId) instead of silence, and nothing is taken or left behind (16.5705ms)
+✔ sockets: SERVER_ERROR names the table the refused request named (acks unchanged); none for a missing or malformed tableId (25.7442ms)
+[2026-09-29 23:56:56.498 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "EngineError",
+      "message": "This table has closed",
+      "stack":
+          EngineError: This table has closed
+              at checkTable (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:118:23)
+              at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+              at async join (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:134:21)
+              at async file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:149:76
+      "code": "TABLE_CLOSED",
+      "name": "EngineError"
+    }
+[2026-09-29 23:56:56.499 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "EngineError",
+      "message": "This table has closed",
+      "stack":
+          EngineError: This table has closed
+              at checkTable (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:118:23)
+              at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+              at async join (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:134:21)
+              at async file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:156:21
+      "code": "TABLE_CLOSED",
+      "name": "EngineError"
+    }
+[2026-09-29 23:56:56.501 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "EngineError",
+      "message": "This table has closed",
+      "stack":
+          EngineError: This table has closed
+              at TableManager.unavailable (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:299:43)
+              at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+              at async prisma.$transaction.maxWait (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:145:23)
+              at async file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/test/table-lifecycle.test.mjs:146:22
+      "code": "TABLE_CLOSED",
+      "name": "EngineError"
+    }
+[2026-09-29 23:56:56.502 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "EngineError",
+      "message": "This table has closed",
+      "stack":
+          EngineError: This table has closed
+              at TableManager.unavailable (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:299:43)
+              at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+              at async prisma.$transaction.maxWait (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:145:23)
+              at async file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/test/table-lifecycle.test.mjs:146:22
+      "code": "TABLE_CLOSED",
+      "name": "EngineError"
+    }
+[2026-09-29 23:56:56.503 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "EngineError",
+      "message": "This table has closed",
+      "stack":
+          EngineError: This table has closed
+              at TableManager.unavailable (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:299:43)
+              at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+              at async prisma.$transaction.maxWait (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/game/manager.js:145:23)
+              at async file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/test/table-lifecycle.test.mjs:146:22
+      "code": "TABLE_CLOSED",
+      "name": "EngineError"
+    }
+[2026-09-29 23:56:56.523 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "EngineError",
+      "message": "Table not found",
+      "stack":
+          EngineError: Table not found
+              at checkTable (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:115:23)
+              at process.processTicksAndRejections (node:internal/process/task_queues:104:5)
+              at async file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:179:17
+      "code": "TABLE_NOT_FOUND",
+      "name": "EngineError"
+    }
+[2026-09-29 23:56:56.525 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "ZodError",
+      "message": "[\n  {\n    \"expected\": \"int\",\n    \"format\": \"safeint\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"seatIndex\"\n    ],\n    \"message\": \"Invalid input: expected int, received number\"\n  },\n  {\n    \"origin\": \"number\",\n    \"code\": \"too_small\",\n    \"minimum\": 0,\n    \"inclusive\": false,\n    \"path\": [\n      \"buyIn\"\n    ],\n    \"message\": \"Too small: expected number to be >0\"\n  }\n]",
+      "stack":
+          ZodError: [
+            {
+              "expected": "int",
+              "format": "safeint",
+              "code": "invalid_type",
+              "path": [
+                "seatIndex"
+              ],
+              "message": "Invalid input: expected int, received number"
+            },
+            {
+              "origin": "number",
+              "code": "too_small",
+              "minimum": 0,
+              "inclusive": false,
+              "path": [
+                "buyIn"
+              ],
+              "message": "Too small: expected number to be >0"
+            }
+          ]
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:161:146
+              at Socket.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:165:15)
+              at Socket.emit (node:events:509:28)
+              at Socket.emitUntyped (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\typed-events.js:69:22)
+              at C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\socket.js:697:39
+              at process.processTicksAndRejections (node:internal/process/task_queues:85:11)
+      "name": "ZodError"
+    }
+[2026-09-29 23:56:56.526 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "ZodError",
+      "message": "[\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_big\",\n    \"maximum\": 128,\n    \"inclusive\": true,\n    \"path\": [\n      \"tableId\"\n    ],\n    \"message\": \"Too big: expected string to have <=128 characters\"\n  }\n]",
+      "stack":
+          ZodError: [
+            {
+              "origin": "string",
+              "code": "too_big",
+              "maximum": 128,
+              "inclusive": true,
+              "path": [
+                "tableId"
+              ],
+              "message": "Too big: expected string to have <=128 characters"
+            }
+          ]
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:161:146
+              at Socket.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:165:15)
+              at Socket.emit (node:events:509:28)
+              at Socket.emitUntyped (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\typed-events.js:69:22)
+              at C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\socket.js:697:39
+              at process.processTicksAndRejections (node:internal/process/task_queues:85:11)
+      "name": "ZodError"
+    }
+[2026-09-29 23:56:56.526 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "ZodError",
+      "message": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"tableId\"\n    ],\n    \"message\": \"Invalid input: expected string, received number\"\n  }\n]",
+      "stack":
+          ZodError: [
+            {
+              "expected": "string",
+              "code": "invalid_type",
+              "path": [
+                "tableId"
+              ],
+              "message": "Invalid input: expected string, received number"
+            }
+          ]
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:161:146
+              at Socket.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:165:15)
+              at Socket.emit (node:events:509:28)
+              at Socket.emitUntyped (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\typed-events.js:69:22)
+              at C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\socket.js:697:39
+              at process.processTicksAndRejections (node:internal/process/task_queues:85:11)
+      "name": "ZodError"
+    }
+[2026-09-29 23:56:56.527 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "ZodError",
+      "message": "[\n  {\n    \"origin\": \"string\",\n    \"code\": \"too_small\",\n    \"minimum\": 1,\n    \"inclusive\": true,\n    \"path\": [\n      \"tableId\"\n    ],\n    \"message\": \"Too small: expected string to have >=1 characters\"\n  }\n]",
+      "stack":
+          ZodError: [
+            {
+              "origin": "string",
+              "code": "too_small",
+              "minimum": 1,
+              "inclusive": true,
+              "path": [
+                "tableId"
+              ],
+              "message": "Too small: expected string to have >=1 characters"
+            }
+          ]
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:161:146
+              at Socket.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:165:15)
+              at Socket.emit (node:events:509:28)
+              at Socket.emitUntyped (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\typed-events.js:69:22)
+              at C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\socket.js:697:39
+              at process.processTicksAndRejections (node:internal/process/task_queues:85:11)
+      "name": "ZodError"
+    }
+[2026-09-29 23:56:56.528 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "ZodError",
+      "message": "[\n  {\n    \"expected\": \"string\",\n    \"code\": \"invalid_type\",\n    \"path\": [\n      \"tableId\"\n    ],\n    \"message\": \"Invalid input: expected string, received undefined\"\n  }\n]",
+      "stack":
+          ZodError: [
+            {
+              "expected": "string",
+              "code": "invalid_type",
+              "path": [
+                "tableId"
+              ],
+              "message": "Invalid input: expected string, received undefined"
+            }
+          ]
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:161:146
+              at Socket.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:165:15)
+              at Socket.emit (node:events:509:28)
+              at Socket.emitUntyped (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\typed-events.js:69:22)
+              at C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\socket.js:697:39
+              at process.processTicksAndRejections (node:internal/process/task_queues:85:11)
+      "name": "ZodError"
+    }
+[2026-09-29 23:56:56.529 +0200] [33mWARN[39m (92368): [36msocket request rejected[39m
+    err: {
+      "type": "ZodError",
+      "message": "[\n  {\n    \"expected\": \"object\",\n    \"code\": \"invalid_type\",\n    \"path\": [],\n    \"message\": \"Invalid input: expected object, received string\"\n  }\n]",
+      "stack":
+          ZodError: [
+            {
+              "expected": "object",
+              "code": "invalid_type",
+              "path": [],
+              "message": "Invalid input: expected object, received string"
+            }
+          ]
+              at file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:161:146
+              at Socket.<anonymous> (file:///C:/Users/rronp/Documents/GitHub/Poker/poker_website/apps/server/dist/socket/index.js:165:15)
+              at Socket.emit (node:events:509:28)
+              at Socket.emitUntyped (C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\typed-events.js:69:22)
+              at C:\Users\rronp\Documents\GitHub\Poker\poker_website\node_modules\socket.io\dist\socket.js:697:39
+              at process.processTicksAndRejections (node:internal/process/task_queues:85:11)
+      "name": "ZodError"
+    }
+ℹ tests 65
+ℹ suites 0
+ℹ pass 64
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 1
+ℹ todo 0
+ℹ duration_ms 34528.6124
+
+> @poker/engine@0.1.0 test
+> node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config jest.config.cjs --runInBand
+
+(node:70712) ExperimentalWarning: VM Modules is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+PASS src/__tests__/leakage.test.ts (85.46 s)
+  ● Console
+
+    console.log
+      leakage sweep coverage {"seconds":84,"hands":2000,"transitions":20623,"snapshots":182377,"verifiedSnapshots":20264,"decisionPoints":12968,"botDecisions":324,"participantHands":400,"participantSeats":1464,"dealtCounts":{"2":665,"3":560,"4":278,"5":173,"6":108,"7":84,"8":62,"9":70},"foldEndingsByBoard":{"0":375,"3":100,"4":40,"5":28},"showdowns":1457,"runouts":1228,"sidePotHands":719,"busts":1591,"timeouts":193,"sitOutsMidHand":268,"leavesMidHand":272,"leavesOutsideBetting":325,"newcomersMidHand":86,"minRaises":372,"allInSizedBets":700,"allInActions":1465,"buttonMoves":1401}
+
+      at Object.<anonymous> (src/__tests__/leakage.test.ts:684:13)
+
+PASS src/__tests__/evaluate-exhaustive.test.ts (52.01 s)
+PASS src/__tests__/rng.test.ts (44.397 s)
+  ● Console
+
+    console.info
+      [rng] lnGamma worst relative error vs references: 3.84e-15
+
+      at Object.<anonymous> (src/__tests__/rng.test.ts:132:13)
+
+    console.info
+      [rng] chi-square worst relative error vs mpmath (34 points, df 0.3..3000): 2.97e-12
+
+      at Object.<anonymous> (src/__tests__/rng.test.ts:204:13)
+
+    console.info
+      [rng] chi-square vs finite-sum oracle: 624 points, worst relative error 8.05e-12
+
+      at Object.<anonymous> (src/__tests__/rng.test.ts:229:13)
+
+    console.info
+      [rng] Wilson-Hilferty max |dp| at df 1000/2601: 9.31e-6
+
+      at Object.<anonymous> (src/__tests__/rng.test.ts:261:13)
+
+    console.info
+      [rng] generated 1000000 production shuffles in 34.3 s (34.30 us each under jest)
+
+      at Object.<anonymous> (src/__tests__/rng.test.ts:615:13)
+
+    console.info
+      [rng] (a) positions: X2(df 51) min 28.22 max 79.16 mean 50.67; min two-sided p 0.0080 (Bonferroni-adjusted 0.4158); alpha each 3.077e-6
+            X2 each: 39.1 57.5 48.4 39.7 55.7 44.1 54.3 54.4 50.2 50.0 31.5 47.7 65.8 42.6 42.2 51.4 68.0 50.3 65.6 66.0 75.2 43.8 54.4 44.1 40.3 42.5 49.8 47.2 47.4 35.1 44.2 60.7 33.9 59.2 50.4 41.8 43.6 28.2 53.1 58.4 48.8 57.4 55.7 51.8 79.2 46.1 58.6 54.9 50.8 55.6 49.5 48.8
+
+      at Object.<anonymous> (src/__tests__/rng.test.ts:639:13)
+
+    console.info
+      [rng] (b) cards: X2(df 51) min 31.22 max 71.37 mean 50.67; min two-sided p 0.0263 (Bonferroni-adjusted 1.0000); alpha each 3.077e-6
+            X2 each: 47.7 62.7 61.2 38.3 58.1 46.3 46.5 44.5 31.2 65.1 41.0 57.3 44.9 52.3 57.4 40.6 32.3 68.5 47.2 65.8 54.6 51.4 47.7 53.0 57.4 60.8 40.7 36.8 54.3 47.3 46.5 47.0 48.2 39.9 60.1 71.4 48.6 38.6 58.3 64.9 36.9 48.0 55.9 46.2 50.0 51.0 52.0 36.2 67.3 37.1 49.8 68.0
+
+      at Object.<anonymous> (src/__tests__/rng.test.ts:647:13)
+
+    console.info
+      [rng] (c) global: S 2634.72 (E[S] = 2652), S*51/52 2584.06 ~ chi2(2601); lower p 0.4105, upper p 0.5895, two-sided p 0.8211; alpha 1.60e-4
+
+      at Object.<anonymous> (src/__tests__/rng.test.ts:665:13)
+
+    console.info
+      [rng] (d) successive shuffles, top cards, df 2703: pairs (2t,2t+1): 500000 disjoint pairs, X2 2647.97, two-sided p 0.4565; pairs (2t+1,2t+2): 499999 disjoint pairs, X2 2758.21, two-sided p 0.4503; alpha/table 8.00e-5
+
+      at Object.<anonymous> (src/__tests__/rng.test.ts:687:13)
+
+    console.info
+      [rng] (e) permutations of 5: X2 135.07 ~ chi2(119) over 1000000 shuffles in 7.8 s (min count 8105, max 8607, E 8333.3); two-sided p 0.2978; alpha 1.60e-4
+
+      at Object.<anonymous> (src/__tests__/rng.test.ts:718:13)
+
+    console.info
+      [rng] static scan: 26 source files, Math.random in code: 0; mentioned only in comments: packages/engine/src/rng.ts
+
+      at Object.<anonymous> (src/__tests__/rng.test.ts:1032:13)
+
+PASS src/__tests__/review-fixes.test.ts (15.904 s)
+PASS src/__tests__/pots-reference.test.ts (14.976 s)
+PASS src/__tests__/table-lifecycle.test.ts (5.127 s)
+PASS src/__tests__/security.test.ts
+PASS src/__tests__/audit.test.ts
+PASS src/__tests__/pots.test.ts
+PASS src/__tests__/bots.test.ts
+PASS src/__tests__/deck.test.ts
+PASS src/__tests__/table.test.ts
+PASS src/__tests__/leave-flow.test.ts
+PASS src/__tests__/evaluate.test.ts
+
+Test Suites: 14 passed, 14 total
+Tests:       451 passed, 451 total
+Snapshots:   0 total
+Time:        228.038 s
+Ran all test suites.
+npm notice
+npm notice New major version of npm available! 11.17.0 -> 12.1.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.1.0
+npm notice To update run: npm install -g npm@12.1.0
+npm notice
+npm notice
+npm notice New major version of npm available! 11.17.0 -> 12.1.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.1.0
+npm notice To update run: npm install -g npm@12.1.0
+npm notice

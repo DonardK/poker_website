@@ -1,0 +1,56 @@
+{
+  "purpose": "Current defects confirmed with in-memory faults; no real database",
+  "observations": {
+    "missingState": {
+      "leaveRejected": "RECOVERY_REQUIRED",
+      "cashOutImpossible": true
+    },
+    "corruptCiphertext": {
+      "leaveRejected": true
+    },
+    "nextShuffleFailure": {
+      "cleanUpRolledBack": true,
+      "pendingLeaveStillSeated": true
+    },
+    "postCommitBotFailure": {
+      "mutationReportedFailed": true,
+      "stateActuallyCommitted": true,
+      "turnTimerArmed": false
+    },
+    "multiWorkerRestart": {
+      "freshWorkerWouldNotWarn": true,
+      "olderWorkerStartedWarning": true
+    },
+    "walletPatchOrder": {
+      "receivedBalances": [
+        10000,
+        9000
+      ],
+      "noWalletRevision": true
+    },
+    "refreshDatabaseTimeout": {
+      "status": 401,
+      "refreshCookieDeleted": true
+    },
+    "multiTabRefresh": {
+      "statuses": [
+        200,
+        401
+      ],
+      "loserMessage": {
+        "error": "Invalid refresh session"
+      }
+    },
+    "uniqueGuestCollision": {
+      "status": 500
+    },
+    "warningReplay": {
+      "activeTablePresent": true,
+      "warningNoticesAfterAuthentication": 0
+    },
+    "socketDatabaseTimeout": {
+      "disconnectReason": "io server disconnect",
+      "automaticReconnectionActive": false
+    }
+  }
+}

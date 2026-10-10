@@ -1,0 +1,179 @@
+# Continuous integration. What each job proves, how to run it locally and how
+# long it takes: docs/TESTING.md.
+#
+# No job ever has a production database URL or any real secret: server tests
+# get loopback-only DATABASE_URLs from apps/server/test/support/run-tests.mjs,
+# real-Postgres tests start a disposable embedded PostgreSQL on 127.0.0.1
+# (apps/server/test/support/pg.mjs), and the few secrets config.ts requires are
+# random per run.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Nightly: everything below plus the full RNG certification suite (rng-nightly).
+    - cron: "17 2 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  NODE_VERSION: "24"
+  NEXT_TELEMETRY_DISABLED: "1"
+  CHECKPOINT_DISABLE: "1"
+  PRISMA_HIDE_UPDATE_MESSAGE: "1"
+  npm_config_fund: "false"
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
+      - run: npm ci
+      # package-lock.json lacks some linux-x64 native packages (see the script); remove once the lockfile is regenerated.
+      - run: node .github/workflows/support/platform-binaries.mjs
+      - run: npm run typecheck
+
+  engine:
+    name: Engine tests (Jest, without the RNG suite)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      # Exactly `npm test -w @poker/engine` minus rng.test.ts (the 1M-shuffle certification runs nightly in rng-nightly).
+      - working-directory: packages/engine
+        run: node --experimental-vm-modules ../../node_modules/jest/bin/jest.js --config jest.config.cjs --runInBand --testPathIgnorePatterns "/node_modules/" "rng\.test\.ts$"
+
+  server:
+    name: Server tests (node:test, no database)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      - name: Random test-only secrets (config.ts requires them; there is no .env in CI)
+        run: |
+          for name in JWT_ACCESS_SECRET JWT_REFRESH_SECRET GAME_ENCRYPTION_KEY; do
+            value=$(openssl rand -hex 32)
+            echo "::add-mask::$value"
+            echo "$name=$value" >> "$GITHUB_ENV"
+          done
+      - run: npm run build:core
+      # run-tests.mjs points DATABASE_URL/DIRECT_URL at a dead loopback port and empties REDIS_URL.
+      - run: npm test -w @poker/server
+      - name: Ledger unit tests (amount parsing and money flows, no database)
+        working-directory: apps/server
+        run: node test/support/run-tests.mjs --import tsx test/money-amounts.test.mjs test/money-flows.test.mjs
+
+  test-db:
+    name: Real-PostgreSQL tests (test:db, embedded PostgreSQL 18)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      # embedded-postgres resolves @embedded-postgres/linux-x64 (listed in package-lock.json with os/cpu, so npm ci installs it).
+      - name: Check the embedded PostgreSQL binaries for this runner
+        run: |
+          ls node_modules/@embedded-postgres/
+          test -d node_modules/@embedded-postgres/linux-x64/native/bin
+          node_modules/@embedded-postgres/linux-x64/native/bin/postgres --version
+      # Starts a disposable cluster on 127.0.0.1, applies every migration with prisma migrate deploy, runs test/db/*.test.mjs, deletes the cluster.
+      - run: npm run test:db
+
+  build:
+    name: Production build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_API_URL: https://poker.example.invalid
+          NEXT_PUBLIC_SOCKET_URL: https://poker.example.invalid
+
+  playwright:
+    name: Browser tests (Playwright, Chrome)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      - run: npx playwright install --with-deps chrome
+      - run: npm run build:core
+      # Fixture game server (no database, no .env) on 127.0.0.1:4107 and next dev on 127.0.0.1:3107 (apps/web/playwright.config.ts).
+      - run: npm run test:browser -w @poker/web
+        env:
+          CI: "1"
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: apps/web/test-results
+          retention-days: 7
+
+  audit:
+    name: npm audit (production dependencies)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      - run: npm audit --omit=dev --audit-level=high
+
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Required only when the repository belongs to a GitHub organization.
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+  rng-nightly:
+    name: RNG certification suite (full, nightly)
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: npm }
+      - run: npm ci
+      - run: node .github/workflows/support/platform-binaries.mjs
+      # Two-stage chi-square families (false-failure budget < 1e-6 per run); prints every statistic and p-value.
+      - run: node --experimental-vm-modules node_modules/jest/bin/jest.js --config packages/engine/jest.config.cjs --runInBand rng

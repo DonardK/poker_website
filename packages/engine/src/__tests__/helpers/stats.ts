@@ -217,3 +217,63 @@ export function chiSquareSurvivalExact(x: number, df: number): number {
   }
   return sum;
 }
+
+// ---------------------------------------------------------------------------
+// Two-stage decision for a statistical family (rng.test.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * One evaluation of a statistical family on one sample: the smallest p-value
+ * of its tests, the per-test threshold it is compared with (the family fails
+ * when p <= alpha), and a human-readable report (statistics, the offending
+ * row's cell counts) to print with the verdict.
+ */
+export interface FamilyEvaluation {
+  p: number;
+  alpha: number;
+  report: string;
+}
+
+export interface TwoStageVerdict {
+  /** False only when the first sample AND the independent repeat both failed. */
+  pass: boolean;
+  /** Whether the repeat ran (only after a first-stage failure). */
+  repeated: boolean;
+  first: FamilyEvaluation;
+  second: FamilyEvaluation | null;
+}
+
+/** A family evaluation fails when its smallest p-value is at or below its threshold (NaN fails). */
+export function familyFails(evaluation: FamilyEvaluation): boolean {
+  return !(evaluation.p > evaluation.alpha);
+}
+
+/**
+ * Two-stage test: a family that fails on the first sample is re-run on a
+ * FRESH, INDEPENDENT sample (`repeat` must draw new output from the RNG under
+ * test, never reuse the first sample), and the family fails only if the repeat
+ * fails too. `repeat` is not called when the first stage passes.
+ *
+ * False alarms: a healthy RNG fails stage one with probability <= a (the
+ * family's level) and, independently, the repeat with probability <= a, so the
+ * family's false-failure probability is <= a^2. Power against a real defect is
+ * barely touched: a defect that fails stage one with probability q fails both
+ * with probability q^2, and the defects that matter (bias, Sattolo, repeated
+ * output) give q = 1 to within 1e-50 at these sample sizes.
+ */
+export function twoStage(first: FamilyEvaluation, repeat: () => FamilyEvaluation): TwoStageVerdict {
+  if (!familyFails(first)) return { pass: true, repeated: false, first, second: null };
+  const second = repeat();
+  return { pass: !familyFails(second), repeated: true, first, second };
+}
+
+/** The verdict as printed by the suite: both p-values (when the repeat ran) and their reports. */
+export function describeVerdict(name: string, verdict: TwoStageVerdict): string {
+  const p = (x: number): string => (Math.abs(x) >= 1e-3 || x === 0 ? x.toFixed(4) : x.toExponential(3));
+  const head = (label: string, e: FamilyEvaluation): string =>
+    `${label}: min p ${p(e.p)} vs alpha ${e.alpha.toExponential(3)} -> ${familyFails(e) ? "FAIL" : "pass"}`;
+  if (!verdict.repeated) return `${name} ${head("stage 1", verdict.first)}\n      ${verdict.first.report}`;
+  return `${name} two-stage ${verdict.pass ? "PASS (stage-1 false alarm, repeat clean)" : "FAIL (failed on two independent samples)"}\n` +
+    `      ${head("stage 1", verdict.first)}\n      ${verdict.first.report}\n` +
+    `      ${head("stage 2 (fresh sample)", verdict.second!)}\n      ${verdict.second!.report}`;
+}

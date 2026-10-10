@@ -9,27 +9,63 @@ import {
   verifyTableCards,
   type PublicFairness,
   type PublicTableState,
+  type SocketErrorPayload,
 } from "@poker/shared";
 import { getSocket } from "@/lib/socket";
 import { useAuthStore, useTableStore } from "@/stores/session";
 
+/**
+ * The table header's connection status. "cards match commitment": the latest
+ * snapshot's revealed cards were checked against the hand's deck commitment
+ * (Merkle proofs) and match; it claims nothing more about fairness than that.
+ * "disconnected": the connection is being re-established and the last
+ * verified snapshot stays on screen meanwhile.
+ */
+export type TableSocketStatus =
+  | "idle" | "connected" | "authenticated" | "live" | "cards match commitment"
+  | "disconnected" | "verification failed" | "error" | "closed";
+
+export const CARDS_MATCH_COMMITMENT = "cards match commitment" satisfies TableSocketStatus;
+
+/** Statuses in which the table is playable: a verified snapshot over a live connection. */
+export function isTableSocketLive(status: string): boolean {
+  return status === "live" || status === CARDS_MATCH_COMMITMENT;
+}
+
+/** How often a join that has produced no snapshot is re-sent (and the "taking longer" note shown). */
+const JOIN_RETRY_MS = 8_000;
+/** A temporary refusal (retryable) of the join is retried after this pause. */
+const RETRYABLE_JOIN_DELAY_MS = 2_000;
+
+/**
+ * Join `tableId` on the session's socket and keep the table store in step.
+ * Keyed on the table and the signed-in user, not the access token: a token
+ * refresh keeps the socket, the room and the snapshot on screen (the session
+ * renews the socket's token in place). The table store is reset only when the
+ * table or the user changes, or on sign-out.
+ */
 export function useTableSocket(tableId: string | undefined, accessToken: string | null) {
   const setSnapshot = useTableStore((s) => s.setSnapshot);
   const setSocketStatus = useTableStore((s) => s.setSocketStatus);
   const setTableError = useTableStore((s) => s.setTableError);
+  const markTableClosed = useTableStore((s) => s.markTableClosed);
   const appendLog = useTableStore((s) => s.appendLog);
   const resetTable = useTableStore((s) => s.resetTable);
+  const userId = useAuthStore((s) => s.user?.id ?? null);
+  const signedIn = Boolean(accessToken);
 
   useEffect(() => {
-    if (!accessToken || !tableId) return;
+    // Signed out (or not yet signed in): nothing of a previous session's table stays on screen.
+    const token = useAuthStore.getState().accessToken;
+    if (!signedIn || !userId || !tableId || !token) { resetTable(); return; }
     purgeUnscopedLiveEvidence();
     resetTable();
-    const socket = getSocket(accessToken);
+    const socket = getSocket(token);
 
+    const join = () => socket.emit(SOCKET_EVENTS.TABLE_JOIN, { tableId });
     const onConnect = () => {
       setSocketStatus("connected");
-      socket.emit(SOCKET_EVENTS.TABLE_JOIN, { tableId });
-
+      join();
     };
     let cancelled = false;
     // Set once a snapshot fails verification. Every later snapshot, including
@@ -38,6 +74,9 @@ export function useTableSocket(tableId: string | undefined, accessToken: string 
     let queue = Promise.resolve();
     const onSnap = (payload: PublicTableState) => {
       if (payload.tableId !== tableId) return;
+      // closingInMs was measured when the server built the snapshot, so the
+      // idle countdown starts from arrival, not from when verification ends.
+      const receivedAt = performance.now();
       // Snapshots are verified and recorded strictly one at a time, in arrival
       // order: each step (including the async hole-card digest) finishes
       // before the next starts.
@@ -47,7 +86,7 @@ export function useTableSocket(tableId: string | undefined, accessToken: string 
         if (previous && payload.revision < previous.revision) return;
         if (!await verifyTableCards(payload)) throw new Error("Card verification failed. Reconnect before playing.");
         if (payload.fairness) await recordLiveEvidence(payload, payload.fairness);
-        if (!cancelled) { setSnapshot(payload); setSocketStatus(payload.fairness ? "cards verified" : "live"); }
+        if (!cancelled) { setSnapshot(payload, receivedAt); setSocketStatus(payload.fairness ? CARDS_MATCH_COMMITMENT : "live"); }
       }).catch((err: Error) => {
         if (cancelled) return;
         failed = true;
@@ -55,15 +94,39 @@ export function useTableSocket(tableId: string | undefined, accessToken: string 
         socket.disconnect();
       });
     };
-    const onAuth = () => setSocketStatus("authenticated");
+    // AUTH_OK on a socket already showing a live table (a server that
+    // re-confirms after SESSION_RENEW) must not mark the table as connecting.
+    const onAuth = () => { if (!isTableSocketLive(useTableStore.getState().socketStatus)) setSocketStatus("authenticated"); };
     const onConnectError = (err: Error) => {
       setSocketStatus("disconnected");
-      setTableError(err.message === "Unauthorized" ? "Session expired. Sign in again." : "Live game connection unavailable. Retrying…");
+      // The session refreshes the token and reconnects, or signs out if the session is over.
+      setTableError(err.message === "Unauthorized" ? "Renewing your session…" : "Live game connection unavailable. Retrying…");
     };
     const onDisconnect = () => {
+      // The last verified snapshot stays on screen; the status says it is not live.
       if (useTableStore.getState().socketStatus !== "verification failed") setSocketStatus("disconnected");
     };
-    const onError = (payload: { code: string; message: string }) => {
+    let retryJoin: number | undefined;
+    const onError = (payload: SocketErrorPayload) => {
+      // A refusal of a request about another table (e.g. the app-wide idle
+      // warning's "I'm still here" for the table this player kept a seat at)
+      // says nothing about this one. Errors naming no table still show.
+      if (payload.tableId !== undefined && payload.tableId !== tableId) return;
+      // This table is refused on join, on reconnect and for every command
+      // because it has closed. That is an outcome, not a fault: the page
+      // shows the closed dialog.
+      if (payload.code === "TABLE_CLOSED" && payload.tableId === tableId) { markTableClosed(); return; }
+      // Temporary (e.g. SERVICE_UNAVAILABLE): the session shows a brief
+      // notice. Nothing here is broken; a refused join is simply sent again.
+      if (payload.retryable === true) {
+        if (!useTableStore.getState().snapshot) {
+          window.clearTimeout(retryJoin);
+          retryJoin = window.setTimeout(() => {
+            if (!cancelled && socket.connected && !useTableStore.getState().snapshot) join();
+          }, RETRYABLE_JOIN_DELAY_MS);
+        }
+        return;
+      }
       setTableError(payload.message);
       if (!useTableStore.getState().snapshot) setSocketStatus("error");
     };
@@ -79,16 +142,19 @@ export function useTableSocket(tableId: string | undefined, accessToken: string 
     if (socket.connected) onConnect();
     else socket.connect();
 
-    const watchdog = window.setTimeout(() => {
-      const { snapshot, socketStatus } = useTableStore.getState();
-      if (!snapshot && socketStatus !== "error") {
-        setTableError("Could not join this table. It may have stalled — try another from the lobby.");
-      }
-    }, 8_000);
+    // A slow network is not a stalled table: say it is taking longer than
+    // usual and keep asking until a snapshot (or a refusal) arrives.
+    const watchdog = window.setInterval(() => {
+      const { snapshot, socketStatus, tableClosed } = useTableStore.getState();
+      if (snapshot || tableClosed || socketStatus === "error" || socketStatus === "verification failed") return;
+      setTableError("Joining this table is taking longer than usual. Still trying…");
+      if (socket.connected) join();
+    }, JOIN_RETRY_MS);
 
     return () => {
       cancelled = true;
-      window.clearTimeout(watchdog);
+      window.clearInterval(watchdog);
+      window.clearTimeout(retryJoin);
       socket.off("connect", onConnect);
       socket.off("connect_error", onConnectError);
       socket.off("disconnect", onDisconnect);
@@ -99,11 +165,13 @@ export function useTableSocket(tableId: string | undefined, accessToken: string 
       if (socket.connected) socket.emit(SOCKET_EVENTS.TABLE_LEAVE, { tableId });
     };
   }, [
-    accessToken,
+    signedIn,
+    userId,
     tableId,
     setSnapshot,
     setSocketStatus,
     setTableError,
+    markTableClosed,
     appendLog,
     resetTable,
   ]);

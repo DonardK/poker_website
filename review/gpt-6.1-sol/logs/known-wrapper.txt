@@ -1,0 +1,53 @@
+{
+  "purpose": "Evidence of current gaps, not security pass/fail",
+  "observations": {
+    "malformedJson": {
+      "status": 500,
+      "syntheticPasswordInErrorLog": true,
+      "bypassesAuthLimiter": true
+    },
+    "crossOriginGuest": {
+      "status": 201,
+      "bankrollGranted": 10000
+    },
+    "authCaching": {
+      "meCacheControl": null,
+      "guestCacheControl": null
+    },
+    "refreshReplay": {
+      "replayStatus": 401,
+      "rotatedSessionStillValid": true
+    },
+    "absoluteSessionAge": {
+      "createdDaysAgo": 365,
+      "refreshStatus": 200
+    },
+    "revokedSocket": {
+      "httpAuthenticationRejected": true,
+      "stillReceivedBankroll": 10000
+    },
+    "healthWithoutDatabase": {
+      "status": 200,
+      "ok": true
+    },
+    "productionSecretValidation": {
+      "acceptsZeroEncryptionKeyReusedAsAccessSecret": true
+    },
+    "missingCashoutRecipient": {
+      "creditedRows": 0,
+      "playerSeatReleased": true,
+      "remainingCashoutInstructions": 0
+    },
+    "outageRecovery": {
+      "resumedAction": "TIMEOUT_FOLD",
+      "elapsedMs": 7,
+      "originalTurnExpiredDuringOutage": true
+    },
+    "auditBettingLegality": {
+      "forgedAction": "CHECK",
+      "amount": 10,
+      "resealedCardVerificationPasses": true,
+      "outcomeVerificationPasses": true
+    }
+  }
+}

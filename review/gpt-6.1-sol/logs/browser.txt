@@ -1,0 +1,181 @@
+
+> @poker/web@0.1.0 test:browser
+> playwright test
+
+[WebServer] (node:88748) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:115800) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:127684) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 56 tests using 1 worker
+
+(node:49332) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:105140) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  1 [desktop] › test\browser\game-flow.spec.ts:5:5 › custom human table opens even while the wallet refresh is delayed (3.8s)
+[WebServer] (node:109900) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  2 [desktop] › test\browser\game-flow.spec.ts:21:5 › leave during a hand returns to the lobby and the wallet updates after settlement (1.6s)
+[WebServer] (node:143908) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  3 [desktop] › test\browser\game-flow.spec.ts:33:5 › the top leave control cashes out immediately between hands (1.3s)
+[WebServer] (node:92700) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  4 [desktop] › test\browser\game-flow.spec.ts:42:5 › a stale wallet fetch cannot overwrite a newer cash-out event (1.4s)
+[WebServer] (node:10372) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  5 [desktop] › test\browser\game-flow.spec.ts:57:5 › a delayed session refresh cannot roll back a completed cash-out (2.7s)
+[WebServer] (node:137324) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  6 [desktop] › test\browser\game-flow.spec.ts:77:5 › a rejected action can be retried without waiting for another snapshot (1.5s)
+[WebServer] (node:90468) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  7 [desktop] › test\browser\game-flow.spec.ts:90:5 › disconnected action and leave buttons cannot queue commands (1.4s)
+[WebServer] (node:104172) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  8 [desktop] › test\browser\table-lifecycle.spec.ts:53:5 › the idle warning floats over a playable table, counts down and "I'm still here" keeps the table open (3.4s)
+[WebServer] (node:107744) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  9 [desktop] › test\browser\table-lifecycle.spec.ts:92:5 › during the warning the action bar stays usable, and acting ends the warning (1.4s)
+[WebServer] (node:36000) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 10 [desktop] › test\browser\table-lifecycle.spec.ts:115:5 › on a short landscape phone the table warning shows its focused action above the action dock (1.4s)
+[WebServer] (node:38024) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 11 [desktop] › test\browser\table-lifecycle.spec.ts:146:5 › a spectator can take a seat during the warning, which keeps the table open (1.3s)
+[WebServer] (node:79572) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 12 [desktop] › test\browser\table-lifecycle.spec.ts:166:5 › a newer snapshot restarts the countdown, which reads "Closing the table…" at zero (3.1s)
+[WebServer] (node:29472) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 13 [desktop] › test\browser\table-lifecycle.spec.ts:181:5 › the countdown ignores a device clock that is far off the server's (3.1s)
+[WebServer] (node:12444) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 14 [desktop] › test\browser\table-lifecycle.spec.ts:193:5 › keeping the table open shows pending and error states and can be retried (1.6s)
+[WebServer] (node:61144) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 15 [desktop] › test\browser\table-lifecycle.spec.ts:220:5 › a session refresh while "I'm still here" is pending leaves the table and the app live (2.3s)
+[WebServer] (node:35556) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 16 [desktop] › test\browser\table-lifecycle.spec.ts:269:5 › an idle closure settles the hand, then the closed dialog returns the player to the lobby (1.7s)
+[WebServer] (node:33040) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 17 [desktop] › test\browser\table-lifecycle.spec.ts:301:5 › the lobby explains an idle closure that happened while the player was away (1.4s)
+[WebServer] (node:89888) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 18 [desktop] › test\browser\table-lifecycle.spec.ts:318:5 › joining a table that has closed shows the closed dialog (1.6s)
+[WebServer] (node:128960) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 19 [desktop] › test\browser\table-lifecycle.spec.ts:334:5 › back from a dropped connection to a table that closed mid-hand, the closed dialog verifies that hand (2.7s)
+  ok 20 [desktop] › test\browser\table-lifecycle.spec.ts:363:5 › a host who leaves a table nobody joined closes it (1.5s)
+[WebServer] (node:114404) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 21 [desktop] › test\browser\table-lifecycle.spec.ts:378:5 › a player who kept their seat gets the warning in the lobby and can keep the table open from there (3.2s)
+[WebServer] (node:2456) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 22 [desktop] › test\browser\table-lifecycle.spec.ts:406:5 › on a phone held in landscape the lobby warning's actions are on screen and work (2.1s)
+[WebServer] (node:126536) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 23 [desktop] › test\browser\table-lifecycle.spec.ts:429:5 › the lobby warning ends when another player keeps the table open, and "Go to table" opens the table's own warning (1.8s)
+[WebServer] (node:123016) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 24 [desktop] › test\browser\table-lifecycle.spec.ts:450:5 › the lobby warning gives way to the closed notice when the table closes (1.3s)
+[WebServer] (node:133652) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 25 [desktop] › test\browser\table-lifecycle.spec.ts:463:5 › opening another table's page clears the lobby's closed-table notice (1.6s)
+[WebServer] (node:110180) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 26 [desktop] › test\browser\table-lifecycle.spec.ts:476:5 › opening a new table clears the lobby's closed-table notice (1.5s)
+[WebServer] (node:82448) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 27 [desktop] › test\browser\table-lifecycle.spec.ts:486:5 › a refusal about another table does not close this one (1.2s)
+[WebServer] (node:29560) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 28 [desktop] › test\browser\table-lifecycle.spec.ts:503:5 › leaving as the table closes takes the player to the lobby with their chips back (1.3s)
+(node:32912) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  ok 29 [mobile] › test\browser\game-flow.spec.ts:5:5 › custom human table opens even while the wallet refresh is delayed (1.5s)
+[WebServer] (node:39276) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 30 [mobile] › test\browser\game-flow.spec.ts:21:5 › leave during a hand returns to the lobby and the wallet updates after settlement (1.4s)
+[WebServer] (node:87080) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 31 [mobile] › test\browser\game-flow.spec.ts:33:5 › the top leave control cashes out immediately between hands (1.3s)
+[WebServer] (node:62220) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 32 [mobile] › test\browser\game-flow.spec.ts:42:5 › a stale wallet fetch cannot overwrite a newer cash-out event (1.4s)
+[WebServer] (node:54032) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 33 [mobile] › test\browser\game-flow.spec.ts:57:5 › a delayed session refresh cannot roll back a completed cash-out (2.1s)
+[WebServer] (node:104856) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 34 [mobile] › test\browser\game-flow.spec.ts:77:5 › a rejected action can be retried without waiting for another snapshot (1.4s)
+[WebServer] (node:118028) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 35 [mobile] › test\browser\game-flow.spec.ts:90:5 › disconnected action and leave buttons cannot queue commands (1.3s)
+[WebServer] (node:4292) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 36 [mobile] › test\browser\table-lifecycle.spec.ts:53:5 › the idle warning floats over a playable table, counts down and "I'm still here" keeps the table open (3.4s)
+[WebServer] (node:67072) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 37 [mobile] › test\browser\table-lifecycle.spec.ts:92:5 › during the warning the action bar stays usable, and acting ends the warning (1.5s)
+[WebServer] (node:32992) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 38 [mobile] › test\browser\table-lifecycle.spec.ts:115:5 › on a short landscape phone the table warning shows its focused action above the action dock (1.5s)
+[WebServer] (node:52636) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 39 [mobile] › test\browser\table-lifecycle.spec.ts:146:5 › a spectator can take a seat during the warning, which keeps the table open (1.2s)
+[WebServer] (node:89588) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 40 [mobile] › test\browser\table-lifecycle.spec.ts:166:5 › a newer snapshot restarts the countdown, which reads "Closing the table…" at zero (3.1s)
+[WebServer] (node:133696) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 41 [mobile] › test\browser\table-lifecycle.spec.ts:181:5 › the countdown ignores a device clock that is far off the server's (3.1s)
+[WebServer] (node:115288) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 42 [mobile] › test\browser\table-lifecycle.spec.ts:193:5 › keeping the table open shows pending and error states and can be retried (1.7s)
+[WebServer] (node:120464) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 43 [mobile] › test\browser\table-lifecycle.spec.ts:220:5 › a session refresh while "I'm still here" is pending leaves the table and the app live (2.2s)
+[WebServer] (node:117620) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 44 [mobile] › test\browser\table-lifecycle.spec.ts:269:5 › an idle closure settles the hand, then the closed dialog returns the player to the lobby (1.7s)
+[WebServer] (node:44336) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 45 [mobile] › test\browser\table-lifecycle.spec.ts:301:5 › the lobby explains an idle closure that happened while the player was away (1.4s)
+[WebServer] (node:29440) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 46 [mobile] › test\browser\table-lifecycle.spec.ts:318:5 › joining a table that has closed shows the closed dialog (1.5s)
+[WebServer] (node:29364) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 47 [mobile] › test\browser\table-lifecycle.spec.ts:334:5 › back from a dropped connection to a table that closed mid-hand, the closed dialog verifies that hand (2.6s)
+  ok 48 [mobile] › test\browser\table-lifecycle.spec.ts:363:5 › a host who leaves a table nobody joined closes it (1.4s)
+[WebServer] (node:82412) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 49 [mobile] › test\browser\table-lifecycle.spec.ts:378:5 › a player who kept their seat gets the warning in the lobby and can keep the table open from there (3.3s)
+[WebServer] (node:48632) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 50 [mobile] › test\browser\table-lifecycle.spec.ts:406:5 › on a phone held in landscape the lobby warning's actions are on screen and work (2.1s)
+[WebServer] (node:137428) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 51 [mobile] › test\browser\table-lifecycle.spec.ts:429:5 › the lobby warning ends when another player keeps the table open, and "Go to table" opens the table's own warning (1.9s)
+[WebServer] (node:125452) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 52 [mobile] › test\browser\table-lifecycle.spec.ts:450:5 › the lobby warning gives way to the closed notice when the table closes (1.2s)
+[WebServer] (node:12976) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 53 [mobile] › test\browser\table-lifecycle.spec.ts:463:5 › opening another table's page clears the lobby's closed-table notice (1.8s)
+[WebServer] (node:109232) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 54 [mobile] › test\browser\table-lifecycle.spec.ts:476:5 › opening a new table clears the lobby's closed-table notice (1.6s)
+[WebServer] (node:71624) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 55 [mobile] › test\browser\table-lifecycle.spec.ts:486:5 › a refusal about another table does not close this one (1.1s)
+[WebServer] (node:38040) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok 56 [mobile] › test\browser\table-lifecycle.spec.ts:503:5 › leaving as the table closes takes the player to the lobby with their chips back (1.3s)
+
+  56 passed (2.1m)

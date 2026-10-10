@@ -1,13 +1,43 @@
 ---
-description: Live Supabase inventory and MCP setup for this repo
+description: Live production database warning, forbidden commands, and Supabase MCP setup for this repo
 alwaysApply: true
 ---
 
-# Supabase
+# The root .env targets the LIVE production database
 
-Before any Supabase work, read `supabase/README.md`. That folder is the live inventory of what MCP can see.
+The repo root `.env` (loaded by `apps/server/src/config.ts` and
+`apps/server/prisma.config.ts`) points `DATABASE_URL` / `DIRECT_URL` at the
+LIVE production database: real players, real balances, real money. Anything
+that connects with it acts on production. There is no undo.
 
-- This poker app currently uses local Docker Postgres (`DATABASE_URL`), not Supabase.
+## Forbidden while the root .env (or any production URL) is in effect
+
+Never run these, and never suggest running them, against it:
+
+- `prisma migrate dev`, `npm run prisma:migrate:dev -w @poker/server` (creates and applies migrations, may prompt to reset)
+- `prisma migrate reset`, `npm run db:reset`, `npm run prisma:reset -w @poker/server` (DROPS ALL DATA)
+- `prisma db push` (applies schema changes without a reviewed migration, can drop columns)
+- `prisma db seed`, `npm run db:seed`, `npm run prisma:seed -w @poker/server` (writes fake users and chips)
+- `prisma migrate deploy`, `npm run db:migrate` except by the operator, following docs/DEPLOYMENT.md "Applying migrations"
+- `npm run dev`, `npm run dev:server`, `npm run dev -w @poker/server` (the dev server recovers and runs live tables, deals hands and moves chips)
+- `node apps/server/dist/index.js`, `npm start -w @poker/server`
+- `node scripts/review-database.mjs`, any `review/**/live-*.mjs`
+- `prisma studio` or any ad-hoc SQL/psql session with the production credentials
+
+Safe: `prisma generate`, `prisma validate`, `prisma format` (no connection).
+
+## How to work safely
+
+- Server tests: from `apps/server`, ONLY `node test/support/run-tests.mjs <files>`; it forces a dead `DATABASE_URL` so nothing can reach production.
+- Local development: use the Docker stack (`docker-compose.yml`, loopback-only, passwords required) with a separate env file, and point `apps/server/.env` at `127.0.0.1`. Never copy production values into it.
+- Schema changes: write a reviewed, additive migration file; applying it to production is an operator task (docs/DEPLOYMENT.md).
+- If you are unsure which database a command would reach, do not run it; ask.
+
+# Supabase MCP
+
+Before any Supabase work, read `supabase/README.md`. That folder is the inventory of what MCP can see.
+
 - MCP is configured for project ref `tgfudufxslhrxbdxcnyl` in `.cursor/mcp.json`.
 - The authenticated MCP login currently only reaches a different project (construction ERP). Do not use those tables (`employees`, `vehicles`, `attendance`, …) in poker code.
-- Do not commit service-role keys. Publishable/anon keys belong only in env files, not in source.
+- MCP tools that write (`apply_migration`, `execute_sql` with DDL/DML, branch reset/merge) are subject to the same rules as above when the target is production.
+- Do not commit service-role keys or database passwords. Publishable/anon keys belong only in env files, not in source.

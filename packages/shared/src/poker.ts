@@ -30,6 +30,10 @@ export interface PotShare {
   amount: number;
   eligibleSeatIndexes: readonly number[];
   winnerSeatIndexes: readonly number[];
-  /** Casino odd-chip rule: earliest position past the blinds. */
+  /**
+   * Odd-chip rule: the first eligible winner clockwise from the seat left of
+   * the button. It receives the first odd chip; any further odd chips go to
+   * the next winners in the same clockwise order.
+   */
   oddChipSeatIndex: number | null;
 }

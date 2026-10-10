@@ -1,0 +1,57 @@
+
+> poker-platform@0.1.0 typecheck
+> npm run build:core && npm run typecheck --workspaces --if-present
+
+
+> poker-platform@0.1.0 build:core
+> npm run build -w @poker/shared && npm run build -w @poker/engine
+
+
+> @poker/shared@0.1.0 build
+> tsc -p tsconfig.json
+
+npm notice
+npm notice New major version of npm available! 11.17.0 -> 12.1.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.1.0
+npm notice To update run: npm install -g npm@12.1.0
+npm notice
+
+> @poker/engine@0.1.0 build
+> tsc -p tsconfig.json
+
+npm notice
+npm notice New major version of npm available! 11.17.0 -> 12.1.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.1.0
+npm notice To update run: npm install -g npm@12.1.0
+npm notice
+npm notice
+npm notice New major version of npm available! 11.17.0 -> 12.1.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.1.0
+npm notice To update run: npm install -g npm@12.1.0
+npm notice
+
+> @poker/server@0.1.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+
+> @poker/web@0.1.0 typecheck
+> tsc --noEmit
+
+
+> @poker/engine@0.1.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+
+> @poker/shared@0.1.0 typecheck
+> tsc -p tsconfig.json --noEmit
+
+npm notice
+npm notice New major version of npm available! 11.17.0 -> 12.1.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.1.0
+npm notice To update run: npm install -g npm@12.1.0
+npm notice
+npm notice
+npm notice New major version of npm available! 11.17.0 -> 12.1.0
+npm notice Changelog: https://github.com/npm/cli/releases/tag/v12.1.0
+npm notice To update run: npm install -g npm@12.1.0
+npm notice

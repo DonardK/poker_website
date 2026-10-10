@@ -1,0 +1,42 @@
+[WebServer] (node:44716) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:90172) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:112296) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 10 tests using 1 worker
+
+(node:112176) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:131920) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  1 review\gpt-6.1-sol\repro\browser-defects.spec.ts:5:5 › optional sound storage failure prevents sending and leaves actions disabled (3.7s)
+[WebServer] (node:126012) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  2 review\gpt-6.1-sol\repro\browser-defects.spec.ts:11:5 › decimal raise stays selectable and is sent despite integer engine requirements (1.2s)
+[WebServer] (node:93684) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  3 review\gpt-6.1-sol\repro\browser-defects.spec.ts:17:5 › browser clock skew empties a live turn clock (964ms)
+[WebServer] (node:144848) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+REDUCED_CLOCK {"transform":"matrix(0, 0, 0, 1, 0, 0)","duration":"1e-05s","name":"timebank-drain","media":true,"animations":[{"currentTime":0.01,"playState":"finished"}]}
+REDUCED_CLOCK_LATER matrix(0, 0, 0, 1, 0, 0)
+  ok  4 review\gpt-6.1-sol\repro\browser-defects.spec.ts:23:5 › diagnose reduced motion turn clock without assuming a failure (2.3s)
+[WebServer] (node:25644) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  5 review\gpt-6.1-sol\repro\browser-defects.spec.ts:28:5 › lobby refresh can overwrite a newer wallet patch (1.6s)
+[WebServer] (node:34048) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  6 review\gpt-6.1-sol\repro\browser-defects.spec.ts:35:5 › actual token rotation resets the playable table while rejoining (2.8s)
+  ok  7 review\gpt-6.1-sol\repro\browser-defects.spec.ts:40:5 › warning started before lobby authentication is not shown (682ms)
+[WebServer] (node:73460) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  8 review\gpt-6.1-sol\repro\browser-defects.spec.ts:44:5 › fresh visit to a closed table loses the participant audit control (864ms)
+  ok  9 review\gpt-6.1-sol\repro\browser-defects.spec.ts:48:5 › web origin has no CSP or anti-frame policy headers (657ms)
+[WebServer] (node:22732) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+CALL_CONTRAST {"contrast":3.1858692567863036,"fontSize":"16px","fontWeight":"400"}
+  ok 10 review\gpt-6.1-sol\repro\browser-defects.spec.ts:51:5 › call button text has insufficient normal-text contrast (952ms)
+
+  10 passed (25.6s)

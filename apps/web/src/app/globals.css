@@ -32,7 +32,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   inset: 12% 8%;
   border: 8px solid #8a6933;
   border-radius: 999px;
-  background: radial-gradient(ellipse at 50% 40%, #218566, #105440 63%, #092c24);
+  /* The centre is dark enough for amber-50/100 text at 4.5:1 (WCAG 2.2 AA) where the pot and phase sit. */
+  background: radial-gradient(ellipse at 50% 40%, #1b6f55, #0f4d3b 63%, #092c24);
   box-shadow: 0 0 0 5px #32271c, 0 16px 45px #0008, inset 0 0 65px #0007;
 }
 .poker-table-center {
@@ -141,6 +142,41 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   }
   .table-page-with-actions { padding-bottom: min(46dvh, 27rem); }
 }
+/*
+ * The idle-closing warnings float here (the table's own and the app-wide one
+ * stack instead of overlapping): fixed near the top, centred, a 16px side
+ * gutter, and clicks pass through everywhere but the panels themselves, so the
+ * table stays playable. Below the lg breakpoint, while the bottom action dock
+ * is on screen (.table-action-dock: .5rem from the bottom, at most
+ * min(44dvh, 25rem) tall), it stops short of the dock and a taller panel
+ * scrolls inside it instead (the panel scrolls its focused action into view).
+ * Elsewhere (the lobby, or no turn to act) it may use the full height, so a
+ * phone in landscape still shows the panel's buttons. On short screens the
+ * panel drops its secondary line (.idle-panel-aside).
+ */
+.idle-float-layer {
+  position: fixed;
+  z-index: 55;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: .75rem;
+  max-height: 100dvh;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: .75rem 1rem;
+  pointer-events: none;
+}
+.idle-float-layer > * { pointer-events: auto; }
+@media (max-width: 1023px) {
+  body:has(.table-action-dock) .idle-float-layer { max-height: calc(100dvh - min(44dvh, 25rem) - .5rem); }
+}
+@media (max-height: 520px) {
+  .idle-panel-aside { display: none; }
+}
 @media (max-width: 1199px) {
   .poker-table {
     display: grid;
@@ -165,7 +201,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
     transform: none;
     border: 5px solid #8a6933;
     border-radius: 45% / 35%;
-    background: radial-gradient(ellipse at 50% 40%, #218566, #105440 63%, #092c24);
+    background: radial-gradient(ellipse at 50% 40%, #1b6f55, #0f4d3b 63%, #092c24);
     box-shadow: 0 0 0 3px #32271c, 0 12px 35px #0008, inset 0 0 45px #0007;
   }
   .poker-table-seats {
@@ -184,16 +220,20 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (min-width: 540px) and (max-width: 1199px) {
   .poker-table { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
+/*
+ * The turn clock's fill is driven from the anchored clock (turn-clock.tsx),
+ * not by a CSS animation: collapsing animations to ~0 ms here used to drain
+ * the old CSS bar to empty the moment a turn began, telling a reduced-motion
+ * player they had no time left. It is exempt from the blanket rule and,
+ * under reduced motion, steps once a second without any transition.
+ */
+.turn-clock-fill { transition: transform .25s linear; }
+.turn-clock-fill--stepped { transition: none; }
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  *:not(.turn-clock-fill), *::before, *::after { animation-duration: .01ms !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  .turn-clock-fill { transition: none; }
 }
 
 body {
   font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
-}
-
-@keyframes timebank-drain {
-  to {
-    transform: scaleX(0);
-  }
 }

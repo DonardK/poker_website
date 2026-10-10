@@ -1,0 +1,162 @@
+/**
+ * Game-state encryption key ring and secret-strength validation.
+ *
+ * SECURITY NOTES
+ * - Ring: GAME_ENCRYPTION_KEYS="kid:hex64,kid2:hex64" names every key that
+ *   may DECRYPT; GAME_ENCRYPTION_ACTIVE_KEY_ID names the one that ENCRYPTS.
+ *   The legacy single GAME_ENCRYPTION_KEY stays supported as key id "k0", the
+ *   key every "v1." ciphertext was written with. Rotation = add a new key,
+ *   make it active, re-encrypt the mutable rows (scripts/rotate-game-key.mjs)
+ *   and keep the old key in the ring for as long as append-only history
+ *   (sealed audits, encrypted hole cards) written under it must stay readable.
+ * - Production strength checks reject keys and JWT secrets that are
+ *   placeholders, low-entropy, reused across purposes or duplicated. Error
+ *   messages name the variable and key id, never the value.
+ *
+ * This module imports no configuration, so it can be tested directly and
+ * used by the rotation script without loading any .env file.
+ */
+import { createCipheriv, createDecipheriv, randomBytes } from "node:crypto";
+
+export const LEGACY_KEY_ID = "k0";
+const KEY_ID = /^[A-Za-z0-9_-]{1,32}$/;
+const HEX64 = /^[a-f0-9]{64}$/i;
+
+export interface KeyRing {
+  activeKeyId: string;
+  keys: ReadonlyMap<string, Buffer>;
+}
+
+export interface KeyRingInput {
+  /** GAME_ENCRYPTION_KEYS: "kid:hex64,kid2:hex64" (blank = none). */
+  keys?: string | undefined;
+  /** GAME_ENCRYPTION_KEY: the legacy single key, ring id "k0" (blank = none). */
+  legacyKey?: string | undefined;
+  /** GAME_ENCRYPTION_ACTIVE_KEY_ID (blank = the only key, or "k0" when only the legacy key is set). */
+  activeKeyId?: string | undefined;
+}
+
+/** Builds the ring; throws (without echoing any key material) on malformed input. */
+export function parseKeyRing(input: KeyRingInput): KeyRing {
+  const keys = new Map<string, Buffer>();
+  const legacy = input.legacyKey?.trim();
+  if (legacy) {
+    if (!HEX64.test(legacy)) throw new Error("GAME_ENCRYPTION_KEY must be 64 hex characters");
+    keys.set(LEGACY_KEY_ID, Buffer.from(legacy, "hex"));
+  }
+  for (const entry of (input.keys ?? "").split(",").map((part) => part.trim()).filter(Boolean)) {
+    const separator = entry.indexOf(":");
+    const kid = separator < 0 ? "" : entry.slice(0, separator).trim();
+    const hex = separator < 0 ? "" : entry.slice(separator + 1).trim();
+    if (!KEY_ID.test(kid)) throw new Error("GAME_ENCRYPTION_KEYS: each entry must be <kid>:<64 hex>, kid of 1-32 letters, digits, '_' or '-'");
+    if (!HEX64.test(hex)) throw new Error(`GAME_ENCRYPTION_KEYS: key "${kid}" must be 64 hex characters`);
+    if (keys.has(kid)) throw new Error(kid === LEGACY_KEY_ID && legacy
+      ? `GAME_ENCRYPTION_KEYS: key id "${LEGACY_KEY_ID}" is reserved for GAME_ENCRYPTION_KEY`
+      : `GAME_ENCRYPTION_KEYS: key id "${kid}" appears twice`);
+    keys.set(kid, Buffer.from(hex, "hex"));
+  }
+  if (keys.size === 0) throw new Error("Set GAME_ENCRYPTION_KEYS (with GAME_ENCRYPTION_ACTIVE_KEY_ID) or the legacy GAME_ENCRYPTION_KEY");
+  const requested = input.activeKeyId?.trim();
+  let activeKeyId: string;
+  if (requested) activeKeyId = requested;
+  else if (keys.size === 1) activeKeyId = [...keys.keys()][0]!;
+  else throw new Error("GAME_ENCRYPTION_ACTIVE_KEY_ID is required when the ring holds more than one key");
+  if (!keys.has(activeKeyId)) throw new Error(`GAME_ENCRYPTION_ACTIVE_KEY_ID "${activeKeyId.slice(0, 32)}" is not in the key ring`);
+  return { activeKeyId, keys };
+}
+
+/** Hex keys that have shipped in examples or documentation. */
+const PLACEHOLDER_KEYS = new Set([
+  "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
+  "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+  "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+  "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+]);
+
+const distinct = (values: Iterable<unknown>): number => new Set(values).size;
+
+/**
+ * Production-only strength checks for the key ring and JWT secrets. Throws
+ * the first problem found. A JWT secret is compared with each key both as
+ * the hex text and as raw bytes, so pasting one value into two variables is
+ * caught either way.
+ */
+export function assertProductionSecrets(ring: KeyRing, jwtAccessSecret: string, jwtRefreshSecret: string): void {
+  const seen = new Map<string, string>();
+  for (const [kid, key] of ring.keys) {
+    const hex = key.toString("hex");
+    if (PLACEHOLDER_KEYS.has(hex)) throw new Error(`Encryption key "${kid}" is a published placeholder; generate a random key`);
+    if (distinct(key) === 1) throw new Error(`Encryption key "${kid}" repeats a single byte; generate a random key`);
+    if (distinct(key) < 16) throw new Error(`Encryption key "${kid}" has fewer than 16 distinct byte values; generate a random key`);
+    const twin = seen.get(hex);
+    if (twin !== undefined) throw new Error(`Encryption keys "${twin}" and "${kid}" are identical; every key id needs its own key`);
+    seen.set(hex, kid);
+    for (const [name, secret] of [["JWT_ACCESS_SECRET", jwtAccessSecret], ["JWT_REFRESH_SECRET", jwtRefreshSecret]] as const) {
+      if (secret.trim().toLowerCase() === hex || Buffer.from(secret, "utf8").equals(key)) throw new Error(`${name} reuses encryption key "${kid}"; every purpose needs an independent secret`);
+    }
+  }
+  for (const [name, secret] of [["JWT_ACCESS_SECRET", jwtAccessSecret], ["JWT_REFRESH_SECRET", jwtRefreshSecret]] as const) {
+    if (secret.length < 32) throw new Error(`${name} must be at least 32 characters`);
+    if (distinct(secret) < 16) throw new Error(`${name} must contain at least 16 distinct characters (generate it with randomBytes(48).toString("base64url"))`);
+  }
+  if (jwtAccessSecret === jwtRefreshSecret) throw new Error("JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must differ");
+}
+
+// ---------------------------------------------------------------------------
+// Ciphertext format
+// ---------------------------------------------------------------------------
+
+/**
+ * v2 additional authenticated data: binds the format version, the key id and
+ * the row context (e.g. "table:<id>"). Key ids cannot contain ":" (KEY_ID),
+ * so the encoding is unambiguous. Moving a ciphertext to another row, or
+ * relabelling it with another key id, fails authentication.
+ */
+function v2Aad(kid: string, context: string): Buffer {
+  return Buffer.from(`poker-state:v2:${kid}:${context}`, "utf8");
+}
+
+/** "v2.<kid>.<iv hex>.<tag hex>.<data base64>" under the ring's active key. */
+export function encryptWithRing(ring: KeyRing, value: unknown, context: string): string {
+  const kid = ring.activeKeyId;
+  const key = ring.keys.get(kid);
+  if (!key) throw new Error("Active encryption key is missing from the ring");
+  const iv = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  cipher.setAAD(v2Aad(kid, context));
+  const encrypted = Buffer.concat([cipher.update(JSON.stringify(value), "utf8"), cipher.final()]);
+  return ["v2", kid, iv.toString("hex"), cipher.getAuthTag().toString("hex"), encrypted.toString("base64")].join(".");
+}
+
+/** The key id a ciphertext was written with ("k0" for v1), or null when it is not a recognised format. */
+export function ciphertextKeyId(value: string): string | null {
+  const parts = value.split(".");
+  if (parts[0] === "v1" && parts.length === 4) return LEGACY_KEY_ID;
+  if (parts[0] === "v2" && parts.length === 5 && KEY_ID.test(parts[1] ?? "")) return parts[1]!;
+  return null;
+}
+
+/**
+ * Decrypts v1 (legacy, key "k0", AAD = context) and v2 ciphertexts. Fails
+ * closed: an unknown format, an unknown key id or any authentication failure
+ * throws.
+ */
+export function decryptWithRing<T>(ring: KeyRing, value: string, context: string): T {
+  const parts = value.split(".");
+  let kid: string; let nonce: string | undefined; let tag: string | undefined; let data: string | undefined; let aad: Buffer;
+  if (parts[0] === "v1" && parts.length === 4) {
+    kid = LEGACY_KEY_ID; [, nonce, tag, data] = parts; aad = Buffer.from(context);
+  } else if (parts[0] === "v2" && parts.length === 5 && KEY_ID.test(parts[1] ?? "")) {
+    kid = parts[1]!; [, , nonce, tag, data] = parts; aad = v2Aad(kid, context);
+  } else {
+    throw new Error("Invalid encrypted state");
+  }
+  if (!nonce || !tag || !data || !/^[a-f0-9]{24}$/.test(nonce) || !/^[a-f0-9]{32}$/.test(tag)) throw new Error("Invalid encrypted state");
+  const key = ring.keys.get(kid);
+  if (!key) throw new Error(`Encrypted state uses unknown key id "${kid}"`);
+  const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(nonce, "hex"));
+  decipher.setAAD(aad);
+  decipher.setAuthTag(Buffer.from(tag, "hex"));
+  return JSON.parse(Buffer.concat([decipher.update(Buffer.from(data, "base64")), decipher.final()]).toString("utf8")) as T;
+}

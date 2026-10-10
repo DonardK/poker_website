@@ -2,10 +2,14 @@
 
 import { useEffect, useRef } from "react";
 import type { PublicTableState } from "@poker/shared";
-import { playSound } from "@/lib/sounds";
+import { installAudioUnlock, playSound } from "@/lib/sounds";
 
 export function useTableFx(snapshot: PublicTableState | null, heroUserId: string | null) {
   const prev = useRef<PublicTableState | null>(null);
+
+  // Browsers keep audio suspended until a gesture (and suspend it again after
+  // interruptions); every tap or key press on the table page resumes it.
+  useEffect(() => installAudioUnlock(), []);
 
   useEffect(() => {
     if (!snapshot) return;

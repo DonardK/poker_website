@@ -2,6 +2,7 @@
   "name": "@poker/server",
   "version": "0.1.0",
   "private": true,
+  "license": "UNLICENSED",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
@@ -13,7 +14,8 @@
     "prisma:migrate:dev": "prisma migrate dev",
     "prisma:reset": "prisma migrate reset --force",
     "prisma:seed": "tsx prisma/seed.ts",
-    "test": "npm run build && node --test test/security.test.mjs test/compliance.test.mjs test/game-flow.test.mjs test/human-tables.test.mjs",
+    "test": "npm run build && node test/support/run-tests.mjs test/security.test.mjs test/compliance.test.mjs test/game-flow.test.mjs test/human-tables.test.mjs test/table-lifecycle.test.mjs test/auth-http.test.mjs test/auth-socket.test.mjs test/platform-config.test.mjs test/platform-crypto.test.mjs test/platform-http.test.mjs test/socket-contract.test.mjs test/startup.test.mjs test/hand-cleanup.test.mjs",
+    "test:db": "npm run build && node test/support/pg.mjs --exec \"node test/db/run-all.mjs\"",
     "test:integration": "npm run build && node --test test/integration.test.mjs"
   },
   "dependencies": {
@@ -42,6 +44,8 @@
     "@types/express": "^5.0.3",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^24.5.2",
+    "embedded-postgres": "18.4.0-beta.17",
+    "pg": "8.23.1",
     "prisma": "^6.16.1",
     "tsx": "^4.20.5",
     "typescript": "^5.9.2"

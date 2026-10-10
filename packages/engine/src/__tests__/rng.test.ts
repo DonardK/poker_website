@@ -15,28 +15,40 @@
  *     health test fires on stuck or repeating entropy and never on healthy
  *     entropy; no Math.random, no seeded or HMAC shuffle in the sources.
  *
- * FALSE-FAILURE BUDGET (whole file) <= 1e-3.
- *  Five statistical families, each tested two-sided at ALPHA_FAMILY = 1.6e-4:
+ * FALSE-FAILURE BUDGET (whole file) <= 1e-6 (was 1e-3 before the two-stage rule).
+ *  Five statistical families, each tested two-sided at ALPHA_FAMILY = 1.6e-4
+ *  per stage:
  *    (a) 52 position rows    Bonferroni: 1.6e-4 / 52 per row
  *    (b) 52 card columns     Bonferroni: 1.6e-4 / 52 per column
  *    (c) global 52x52        1.6e-4
  *    (d) successive pairs    Bonferroni: 1.6e-4 / 2 per table (2 tables)
  *    (e) 5-item permutations 1.6e-4
- *  Union bound (valid under any dependence): 5 * 1.6e-4 = 8.0e-4.
- *  Reserve 2.0e-4 covers:
- *   - the chi-square approximation of the discrete Pearson statistics. Every
+ *  TWO-STAGE RULE (helpers/stats.ts twoStage): a family that fails is re-run
+ *  on a FRESH, INDEPENDENT sample (1,000,000 new production calls drawn from
+ *  the OS CSPRNG), and the suite fails only if the repeat fails too. Both
+ *  p-values and the offending row's cell counts are printed. (A healthy RNG
+ *  once failed one Bonferroni family, a row p = 1.24e-6 < 3.08e-6: a
+ *  ~1-in-1,000 event per run under the old single-stage budget.)
+ *  Per family: P(stage 1 fails) <= a and, independently, P(repeat fails) <= a,
+ *  so P(family fails) <= a^2, with a = 1.24 * 1.6e-4 (the 24% approximation
+ *  allowance below): <= 3.94e-8 per family. One repeat sample may serve every
+ *  family among (a)-(d) that failed: each family's two stages are still two
+ *  independent samples, and the union bound below needs nothing more.
+ *  Union bound (valid under any dependence): 5 * 3.94e-8 = 1.97e-7.
+ *   - The chi-square approximation of the discrete Pearson statistics: every
  *     cell expects >= 184 counts, so the true tail probabilities differ from
- *     the nominal ones by O(1/E) corrections, well under 1% relative. The
- *     reserve would absorb even a 24% relative error on all five families
- *     (0.24 * 8.0e-4 = 1.92e-4), and
- *   - the events that could fail a HEALTHY CSPRNG: an all-zero or repeated
+ *     the nominal ones by O(1/E) corrections, well under 1% relative; the
+ *     factor 1.24 per stage allows even a 24% relative error.
+ *   - The events that could fail a HEALTHY CSPRNG: an all-zero or repeated
  *     256-byte block (2^-2048 each; 2^-256 for a SHA-256 digest collision),
  *     128 consecutive rejections (every range drawn from the real CSPRNG here
  *     rejects with p < 2^-26), two identical 64-word streams (2^-2048), a bit
  *     never set in 4096 words (2^-4096), and so on. Each is < 2^-128 per
  *     opportunity, with fewer than 2^30 opportunities, so < 2^-98 in total.
- *  Total <= 1.24 * 8.0e-4 + 2^-98 < 1e-3. Every other assertion, including
- *  the negative controls, is deterministic.
+ *  Total <= 5 * (1.24 * 1.6e-4)^2 + 2^-98 < 2e-7 < 1e-6. Power against real
+ *  defects is unchanged: the negative controls below fail with p < 1e-50 on
+ *  any sample, so they fail both stages. Every other assertion, including the
+ *  negative controls and the two-stage unit tests, is deterministic.
  */
 import * as nodeCrypto from "node:crypto";
 import * as fs from "node:fs";
@@ -57,15 +69,19 @@ import {
   uniformFromWords,
 } from "../rng.js";
 import {
+  type FamilyEvaluation,
   chiSquareCdf,
   chiSquareSurvival,
   chiSquareSurvivalExact,
   chiSquareTwoSidedP,
+  describeVerdict,
   erfc,
+  familyFails,
   lnGamma,
   pearsonEqualExpected,
   regularizedGammaP,
   regularizedGammaQ,
+  twoStage,
   wilsonHilfertyCdf,
 } from "./helpers/stats.js";
 
@@ -76,16 +92,22 @@ const DECK = 52;
 const N = 1_000_000;
 const ALPHA_FAMILY = 1.6e-4;
 const FAMILIES = 5;
-const TOTAL_BUDGET = 1e-3;
-const RESERVE = TOTAL_BUDGET - FAMILIES * ALPHA_FAMILY;
+/** Allowance for the chi-square approximation of the discrete statistics, per stage (see header). */
+const APPROXIMATION_FACTOR = 1.24;
+/** Two-stage false-failure probability of one family: both independent stages fail. */
+const FAMILY_FALSE_FAILURE = (APPROXIMATION_FACTOR * ALPHA_FAMILY) ** 2;
+const HEALTH_EVENTS = 2 ** -98;
+const TOTAL_BUDGET = 1e-6;
 
 const fmt = (x: number, digits = 4): string => (Math.abs(x) >= 1e-3 || x === 0 ? x.toFixed(digits) : x.toExponential(3));
 const relErr = (actual: number, expected: number): number => Math.abs(actual - expected) / Math.abs(expected);
 
-it("keeps the false-failure budget within 1e-3", () => {
-  expect(FAMILIES * ALPHA_FAMILY).toBeLessThanOrEqual(8.0e-4 + 1e-18);
-  expect(RESERVE).toBeGreaterThanOrEqual(2.0e-4 - 1e-18);
-  expect(FAMILIES * ALPHA_FAMILY + RESERVE).toBeLessThanOrEqual(TOTAL_BUDGET + 1e-18);
+it("keeps the two-stage false-failure budget within 1e-6 (about alpha^2 per family)", () => {
+  expect(FAMILY_FALSE_FAILURE).toBeLessThan(3.94e-8 + 1e-12);
+  expect(FAMILIES * FAMILY_FALSE_FAILURE).toBeLessThan(1.97e-7 + 1e-12);
+  expect(FAMILIES * FAMILY_FALSE_FAILURE + HEALTH_EVENTS).toBeLessThanOrEqual(TOTAL_BUDGET);
+  // The single-stage budget at the same alpha was 5 * 1.24 * 1.6e-4 ~ 1e-3.
+  expect(FAMILIES * APPROXIMATION_FACTOR * ALPHA_FAMILY).toBeLessThan(1e-3);
 });
 
 // ---------------------------------------------------------------------------
@@ -568,56 +590,249 @@ const describeRows = (label: string, stats: number[], pValues: number[], alpha: 
     `      X2 each: ${stats.map((x) => x.toFixed(1)).join(" ")}`;
 };
 
-describe("1,000,000 production shuffles (shuffledDeck)", () => {
-  const cardIndex = new Map<Card, number>(fullDeck().map((card, i) => [card, i]));
+/** The indices whose p fails `alpha`, or (when none does) the single smallest-p index: the rows worth printing. */
+function offendingIndices(pValues: readonly number[], alpha: number): number[] {
+  const failing = pValues.flatMap((p, i) => (p > alpha ? [] : [i]));
+  if (failing.length > 0) return failing;
+  let worst = 0;
+  for (let i = 1; i < pValues.length; i++) if (pValues[i]! < pValues[worst]!) worst = i;
+  return [worst];
+}
+
+const countsLine = (counts: ArrayLike<number>, expected: number): string =>
+  `cell counts (E = ${fmt(expected, 2)}): ${Array.from(counts).join(" ")}`;
+
+/** The row of a 52 x 52 table that contributes most to its Pearson statistic (for printing). */
+function largestRow(table: Int32Array, expected: number): { row: number; x: number } {
+  let best = { row: 0, x: -1 };
+  for (let r = 0; r < DECK; r++) {
+    const x = pearsonEqualExpected(table.subarray(r * DECK, (r + 1) * DECK), expected);
+    if (x > best.x) best = { row: r, x };
+  }
+  return best;
+}
+
+/** One sample of `samples` production shuffledDeck() calls: the position x card matrix and the successive-pair tables. */
+interface ProductionSample {
+  samples: number;
   /** matrix[position * 52 + card]: how often `card` landed at `position`. */
-  const matrix = new Int32Array(DECK * DECK);
+  matrix: Int32Array;
   /**
    * Top cards of successive shuffles, split so each table holds DISJOINT pairs:
    * evenPairs[top(2t) * 52 + top(2t+1)] and oddPairs[top(2t+1) * 52 + top(2t+2)].
-   * Together they hold all N - 1 successive pairs of the stream.
+   * Together they hold all samples - 1 successive pairs of the stream.
    */
+  evenPairs: Int32Array;
+  oddPairs: Int32Array;
+  malformed: number;
+  shuffles: number;
+  stats: ReturnType<typeof matrixStatistics>;
+}
+
+const cardIndexOf = new Map<Card, number>(fullDeck().map((card, i) => [card, i]));
+
+function productionSample(samples: number, label: string): ProductionSample {
+  const started = performance.now();
+  const matrix = new Int32Array(DECK * DECK);
   const evenPairs = new Int32Array(DECK * DECK);
   const oddPairs = new Int32Array(DECK * DECK);
-  let stats: ReturnType<typeof matrixStatistics>;
+  const seen = new Int32Array(DECK);
+  const indices = new Int32Array(DECK);
+  let previousTop = -1;
   let malformed = 0;
   let shuffles = 0;
+  for (let s = 0; s < samples; s++) {
+    const deck = shuffledDeck();
+    shuffles++;
+    // Validate the permutation before counting it.
+    let valid = deck.length === DECK;
+    for (let pos = 0; valid && pos < DECK; pos++) {
+      const card = cardIndexOf.get(deck[pos]!);
+      if (card === undefined || seen[card] === s + 1) valid = false;
+      else {
+        seen[card] = s + 1;
+        indices[pos] = card;
+      }
+    }
+    if (!valid) {
+      malformed++;
+      continue;
+    }
+    addDeck(matrix, indices);
+    const top = indices[0]!;
+    if (s > 0) (s % 2 === 1 ? evenPairs : oddPairs)[previousTop * DECK + top]! += 1;
+    previousTop = top;
+  }
+  const seconds = (performance.now() - started) / 1000;
+  console.info(`[rng] ${label}: generated ${shuffles} production shuffles in ${seconds.toFixed(1)} s (${((seconds * 1e6) / shuffles).toFixed(2)} us each under jest)`);
+  return { samples, matrix, evenPairs, oddPairs, malformed, shuffles, stats: matrixStatistics(matrix, samples) };
+}
+
+/** Family (a) or (b) on one sample: 52 Bonferroni-split chi2(51) tests; reports the offending rows' (columns') counts. */
+function evaluateLines(sample: ProductionSample, kind: "positions" | "cards"): FamilyEvaluation {
+  const alpha = ALPHA_FAMILY / DECK;
+  const { stats, matrix, samples } = sample;
+  const values = kind === "positions" ? stats.rows : stats.columns;
+  const pValues = kind === "positions" ? stats.rowP : stats.columnP;
+  const line = (i: number): number[] => Array.from({ length: DECK }, (_, j) => (kind === "positions" ? matrix[i * DECK + j]! : matrix[j * DECK + i]!));
+  const offenders = offendingIndices(pValues, alpha).map((i) =>
+    `${kind === "positions" ? "position" : "card"} ${i}${pValues[i]! > alpha ? " (smallest p, passing)" : " (FAILS)"}: X2 ${fmt(values[i]!, 2)}, p ${fmt(pValues[i]!)}; ${countsLine(line(i), samples / DECK)}`);
+  return {
+    p: Math.min(...pValues),
+    alpha,
+    report: `${describeRows(`(${kind === "positions" ? "a" : "b"}) ${kind}`, values, pValues, alpha)}\n      ${offenders.join("\n      ")}`,
+  };
+}
+
+/** Family (c) on one sample: the global statistic; reports the row contributing most. */
+function evaluateGlobal(sample: ProductionSample): FamilyEvaluation {
+  const { global, globalScaled, globalP } = sample.stats;
+  const expected = sample.samples / DECK;
+  const worst = largestRow(sample.matrix, expected);
+  return {
+    p: globalP,
+    alpha: ALPHA_FAMILY,
+    report: `(c) global: S ${fmt(global, 2)} (E[S] = ${DECK * (DECK - 1)}), S*51/52 ${fmt(globalScaled, 2)} ~ chi2(${GLOBAL_DF}); ` +
+      `lower p ${fmt(chiSquareCdf(globalScaled, GLOBAL_DF))}, upper p ${fmt(chiSquareSurvival(globalScaled, GLOBAL_DF))}, two-sided p ${fmt(globalP)}\n` +
+      `      largest row contribution: position ${worst.row}, X2 ${fmt(worst.x, 2)}; ${countsLine(sample.matrix.subarray(worst.row * DECK, (worst.row + 1) * DECK), expected)}`,
+  };
+}
+
+/** Family (d) on one sample: two Bonferroni-split chi2(2703) tables; reports the offending table's largest row. */
+function evaluatePairs(sample: ProductionSample): FamilyEvaluation {
+  const alpha = ALPHA_FAMILY / 2;
+  const tables = [
+    { name: "pairs (2t,2t+1)", table: sample.evenPairs, count: Math.floor(sample.samples / 2) },
+    { name: "pairs (2t+1,2t+2)", table: sample.oddPairs, count: Math.ceil(sample.samples / 2) - 1 },
+  ].map((t) => ({ ...t, ...pairStatistic(t.table, t.count) }));
+  const offenders = offendingIndices(tables.map((t) => t.p), alpha).map((i) => {
+    const t = tables[i]!;
+    const expected = t.count / (DECK * DECK);
+    const worst = largestRow(t.table, expected);
+    return `${t.name}${t.p > alpha ? " (smallest p, passing)" : " (FAILS)"}: largest row is first top card ${worst.row}, X2 ${fmt(worst.x, 2)}; ${countsLine(t.table.subarray(worst.row * DECK, (worst.row + 1) * DECK), expected)}`;
+  });
+  return {
+    p: Math.min(...tables.map((t) => t.p)),
+    alpha,
+    report: `(d) successive shuffles, top cards, df ${PAIR_DF}: ${tables.map((t) => `${t.name}: ${t.count} disjoint pairs, X2 ${fmt(t.x, 2)}, two-sided p ${fmt(t.p)}`).join("; ")}; alpha/table ${alpha.toExponential(2)}\n      ${offenders.join("\n      ")}`,
+  };
+}
+
+/** `samples` production shuffle() calls on 5 items, counted by Lehmer index. */
+function permutationSample(samples: number): { counts: Int32Array; malformed: number; seconds: number } {
+  const items = [0, 1, 2, 3, 4] as const;
+  const counts = new Int32Array(120);
+  let malformed = 0;
+  const started = performance.now();
+  for (let s = 0; s < samples; s++) {
+    const p = shuffle(items);
+    let mask = 0;
+    for (const v of p) mask |= 1 << v;
+    if (p.length !== 5 || mask !== 0b11111) malformed++;
+    else counts[lehmerIndex(p)]! += 1;
+  }
+  return { counts, malformed, seconds: (performance.now() - started) / 1000 };
+}
+
+/** Family (e) on one sample of permutation counts; reports all 120 counts. */
+function evaluatePermutations(counts: Int32Array, samples: number, seconds: number): FamilyEvaluation {
+  const { x, p } = permutationStatistic(counts, samples);
+  return {
+    p,
+    alpha: ALPHA_FAMILY,
+    report: `(e) permutations of 5: X2 ${fmt(x, 2)} ~ chi2(119) over ${samples} shuffles in ${seconds.toFixed(1)} s (min count ${Math.min(...counts)}, max ${Math.max(...counts)}); two-sided p ${fmt(p)}\n` +
+      `      ${countsLine(counts, samples / 120)}`,
+  };
+}
+
+/** Runs one family two-stage; prints both stages; fails (with both reports) only if the fresh repeat fails too. */
+function expectFamilyPasses(name: string, first: FamilyEvaluation, repeat: () => FamilyEvaluation): void {
+  const verdict = twoStage(first, repeat);
+  const text = describeVerdict(name, verdict);
+  console.info(`[rng] ${text}`);
+  if (!verdict.pass) throw new Error(`[rng] ${text}`);
+}
+
+describe("two-stage family decision (forced p-values, deterministic)", () => {
+  const evaluation = (p: number, alpha = 1e-3): FamilyEvaluation => ({ p, alpha, report: `forced p ${p}` });
+
+  it("a passing first stage never draws the repeat sample", () => {
+    const repeat = jest.fn(() => evaluation(0.5));
+    const verdict = twoStage(evaluation(0.2), repeat);
+    expect(verdict).toEqual({ pass: true, repeated: false, first: evaluation(0.2), second: null });
+    expect(repeat).not.toHaveBeenCalled();
+  });
+
+  it("a first-stage failure is re-run once on a fresh sample and passes when the repeat passes", () => {
+    const repeat = jest.fn(() => evaluation(0.31));
+    // The production false alarm: row p = 1.24e-6 against alpha = 1.6e-4 / 52.
+    const verdict = twoStage(evaluation(1.24e-6, ALPHA_FAMILY / DECK), repeat);
+    expect(repeat).toHaveBeenCalledTimes(1);
+    expect(verdict.pass).toBe(true);
+    expect(verdict.repeated).toBe(true);
+    expect(verdict.second?.p).toBe(0.31);
+    const text = describeVerdict("(a) positions", verdict);
+    expect(text).toContain("min p 1.240e-6");
+    expect(text).toContain("min p 0.3100");
+    expect(text).toContain("forced p 0.00000124");
+    expect(text).toContain("stage-1 false alarm");
+  });
+
+  it("fails only when the repeat fails too, and reports both p-values", () => {
+    const verdict = twoStage(evaluation(1e-9), () => evaluation(2e-9));
+    expect(verdict.pass).toBe(false);
+    const text = describeVerdict("(c) global", verdict);
+    expect(text).toContain("FAIL (failed on two independent samples)");
+    expect(text).toContain("1.000e-9");
+    expect(text).toContain("2.000e-9");
+    expect(() => expectFamilyPasses("(c) global", evaluation(1e-9), () => evaluation(2e-9))).toThrow(/stage 2 \(fresh sample\): min p 2\.000e-9/);
+  });
+
+  it("treats p exactly at alpha, and NaN, as failures (as the single-stage expect(p).toBeGreaterThan(alpha) did)", () => {
+    expect(familyFails(evaluation(1e-3))).toBe(true);
+    expect(familyFails(evaluation(Number.NaN))).toBe(true);
+    expect(familyFails(evaluation(1.0000001e-3))).toBe(false);
+    expect(twoStage(evaluation(1e-3), () => evaluation(1e-3)).pass).toBe(false);
+  });
+
+  it("drives the real family evaluators: a deterministic bad sample fails both stages and prints the offending row's counts", () => {
+    // Perfectly regular output (rotations): every statistic is 0, lower-tail p = 0, on every sample.
+    const regular = (): ProductionSample => {
+      const samples = 52 * 400;
+      const matrix = new Int32Array(DECK * DECK);
+      for (let s = 0; s < samples; s++) addDeck(matrix, Array.from({ length: DECK }, (_, pos) => (pos + s) % DECK));
+      return { samples, matrix, evenPairs: new Int32Array(DECK * DECK), oddPairs: new Int32Array(DECK * DECK), malformed: 0, shuffles: samples, stats: matrixStatistics(matrix, samples) };
+    };
+    let draws = 0;
+    const fresh = (): ProductionSample => { draws++; return regular(); };
+    const verdict = twoStage(evaluateLines(fresh(), "positions"), () => evaluateLines(fresh(), "positions"));
+    expect(draws).toBe(2);
+    expect(verdict.pass).toBe(false);
+    const text = describeVerdict("(a) positions", verdict);
+    expect(text).toContain("position 0 (FAILS)");
+    expect(text).toContain(`cell counts (E = 400.00): ${Array.from({ length: DECK }, () => 400).join(" ")}`);
+    expect(twoStage(evaluateGlobal(fresh()), () => evaluateGlobal(fresh())).pass).toBe(false);
+  });
+});
+
+describe("1,000,000 production shuffles (shuffledDeck), two-stage", () => {
+  let first: ProductionSample;
+  /**
+   * The repeat sample: 1,000,000 NEW production shuffles, drawn only if some
+   * family among (a)-(d) fails on the first sample, and shared by every family
+   * that does (each family's two stages are still independent samples).
+   */
+  let repeatSample: ProductionSample | null = null;
+  const repeat = (): ProductionSample => (repeatSample ??= productionSample(N, "repeat sample (fresh, independent)"));
 
   beforeAll(() => {
-    const started = performance.now();
-    const seen = new Int32Array(DECK);
-    const indices = new Int32Array(DECK);
-    let previousTop = -1;
-    for (let s = 0; s < N; s++) {
-      const deck = shuffledDeck();
-      shuffles++;
-      // Validate the permutation before counting it.
-      let valid = deck.length === DECK;
-      for (let pos = 0; valid && pos < DECK; pos++) {
-        const card = cardIndex.get(deck[pos]!);
-        if (card === undefined || seen[card] === s + 1) valid = false;
-        else {
-          seen[card] = s + 1;
-          indices[pos] = card;
-        }
-      }
-      if (!valid) {
-        malformed++;
-        continue;
-      }
-      addDeck(matrix, indices);
-      const top = indices[0]!;
-      if (s > 0) (s % 2 === 1 ? evenPairs : oddPairs)[previousTop * DECK + top]! += 1;
-      previousTop = top;
-    }
-    stats = matrixStatistics(matrix, N);
-    const seconds = (performance.now() - started) / 1000;
-    console.info(`[rng] generated ${shuffles} production shuffles in ${seconds.toFixed(1)} s (${((seconds * 1e6) / shuffles).toFixed(2)} us each under jest)`);
+    first = productionSample(N, "first sample");
   }, 600_000);
 
   it("produces only valid 52-card permutations (row and column sums are exactly N)", () => {
-    expect(shuffles).toBe(N);
-    expect(malformed).toBe(0);
+    const { matrix, evenPairs, oddPairs } = first;
+    expect(first.shuffles).toBe(N);
+    expect(first.malformed).toBe(0);
     for (let a = 0; a < DECK; a++) {
       let row = 0;
       let column = 0;
@@ -634,19 +849,23 @@ describe("1,000,000 production shuffles (shuffledDeck)", () => {
 
   // (a) Row `position` counts which card sits there in each of N independent
   // shuffles: exactly Multinomial(N, 1/52), so Pearson ~ chi2(51).
-  it("(a) every position holds every card uniformly: 52 x chi2(51), Bonferroni, two-sided", () => {
-    const alpha = ALPHA_FAMILY / DECK;
-    console.info(`[rng] ${describeRows("(a) positions", stats.rows, stats.rowP, alpha)}`);
-    for (const p of stats.rowP) expect(p).toBeGreaterThan(alpha);
-  });
+  it("(a) every position holds every card uniformly: 52 x chi2(51), Bonferroni, two-sided, two-stage", () => {
+    expectFamilyPasses("(a) positions", evaluateLines(first, "positions"), () => {
+      const sample = repeat();
+      expect(sample.malformed).toBe(0);
+      return evaluateLines(sample, "positions");
+    });
+  }, 600_000);
 
   // (b) Column `card` counts where that card lands in each shuffle: also
   // exactly Multinomial(N, 1/52), Pearson ~ chi2(51).
-  it("(b) every card lands in every position uniformly: 52 x chi2(51), Bonferroni, two-sided", () => {
-    const alpha = ALPHA_FAMILY / DECK;
-    console.info(`[rng] ${describeRows("(b) cards", stats.columns, stats.columnP, alpha)}`);
-    for (const p of stats.columnP) expect(p).toBeGreaterThan(alpha);
-  });
+  it("(b) every card lands in every position uniformly: 52 x chi2(51), Bonferroni, two-sided, two-stage", () => {
+    expectFamilyPasses("(b) cards", evaluateLines(first, "cards"), () => {
+      const sample = repeat();
+      expect(sample.malformed).toBe(0);
+      return evaluateLines(sample, "cards");
+    });
+  }, 600_000);
 
   // (c) Global statistic S over all 2704 cells, E = N/52. With P_t the
   // permutation matrix of shuffle t and M = sum_t P_t:
@@ -659,12 +878,10 @@ describe("1,000,000 production shuffles (shuffledDeck)", () => {
   // E[S] = trace = n(n-1) = 2652 exactly. Every shuffle fixes all row and
   // column sums, which is why S is NOT chi2(2703). The test is two-sided: the
   // lower tail catches output that is too regular to be random.
-  it("(c) global 52x52 statistic: S * 51/52 ~ chi2(2601), two-sided", () => {
+  it("(c) global 52x52 statistic: S * 51/52 ~ chi2(2601), two-sided, two-stage", () => {
     expect(GLOBAL_DF).toBe(2601);
-    const { global, globalScaled, globalP } = stats;
-    console.info(`[rng] (c) global: S ${fmt(global, 2)} (E[S] = ${DECK * (DECK - 1)}), S*51/52 ${fmt(globalScaled, 2)} ~ chi2(${GLOBAL_DF}); lower p ${fmt(chiSquareCdf(globalScaled, GLOBAL_DF))}, upper p ${fmt(chiSquareSurvival(globalScaled, GLOBAL_DF))}, two-sided p ${fmt(globalP)}; alpha ${ALPHA_FAMILY.toExponential(2)}`);
-    expect(globalP).toBeGreaterThan(ALPHA_FAMILY);
-  });
+    expectFamilyPasses("(c) global", evaluateGlobal(first), () => evaluateGlobal(repeat()));
+  }, 600_000);
 
   // (d) Serial independence of successive shuffles, over all N - 1 successive
   // pairs (top card of shuffle k, top card of shuffle k+1) of the stream.
@@ -677,22 +894,16 @@ describe("1,000,000 production shuffles (shuffledDeck)", () => {
   // EXACTLY Multinomial(pairs, 1/2704) and its Pearson statistic ~ chi2(2703).
   // The two tables are Bonferroni-split (alpha/2 each; dependence between them
   // does not matter for the union bound). Every transition k -> k+1 is tested.
-  it("(d) top cards of successive shuffles are independent: 2 x chi2(2703) over all N-1 pairs, two-sided", () => {
+  it("(d) top cards of successive shuffles are independent: 2 x chi2(2703) over all N-1 pairs, two-sided, two-stage", () => {
     expect(PAIR_DF).toBe(2703);
-    const alpha = ALPHA_FAMILY / 2;
-    const results = [
-      { name: "pairs (2t,2t+1)", ...pairStatistic(evenPairs, N / 2), count: N / 2 },
-      { name: "pairs (2t+1,2t+2)", ...pairStatistic(oddPairs, N / 2 - 1), count: N / 2 - 1 },
-    ];
-    console.info(`[rng] (d) successive shuffles, top cards, df ${PAIR_DF}: ${results.map((r) => `${r.name}: ${r.count} disjoint pairs, X2 ${fmt(r.x, 2)}, two-sided p ${fmt(r.p)}`).join("; ")}; alpha/table ${alpha.toExponential(2)}`);
-    for (const r of results) expect(r.p).toBeGreaterThan(alpha);
-  });
+    expectFamilyPasses("(d) successive pairs", evaluatePairs(first), () => evaluatePairs(repeat()));
+  }, 600_000);
 });
 
 // (e) Whole-permutation uniformity: each production shuffle() of 5 items is
 // one draw from 120 equally likely permutations, Pearson ~ chi2(119).
-describe("permutation-level uniformity (shuffle of 5 items)", () => {
-  it("(e) 1,000,000 shuffle() calls hit all 120 permutations uniformly: chi2(119), two-sided", () => {
+describe("permutation-level uniformity (shuffle of 5 items), two-stage", () => {
+  it("(e) 1,000,000 shuffle() calls hit all 120 permutations uniformly: chi2(119), two-sided, two-stage", () => {
     const items = [0, 1, 2, 3, 4] as const;
     // The Lehmer index is a bijection onto 0..119 (every draw sequence enumerated).
     const indices = new Set<number>();
@@ -702,22 +913,13 @@ describe("permutation-level uniformity (shuffle of 5 items)", () => {
     }
     expect([...indices].sort((a, b) => a - b)).toEqual(Array.from({ length: 120 }, (_, i) => i));
 
-    const counts = new Int32Array(120);
-    let malformed = 0;
-    const started = performance.now();
-    for (let s = 0; s < N; s++) {
-      const p = shuffle(items);
-      let mask = 0;
-      for (const v of p) mask |= 1 << v;
-      if (p.length !== 5 || mask !== 0b11111) malformed++;
-      else counts[lehmerIndex(p)]! += 1;
-    }
-    const seconds = (performance.now() - started) / 1000;
-    expect(malformed).toBe(0);
-    const { x, p } = permutationStatistic(counts, N);
-    console.info(`[rng] (e) permutations of 5: X2 ${fmt(x, 2)} ~ chi2(119) over ${N} shuffles in ${seconds.toFixed(1)} s (min count ${Math.min(...counts)}, max ${Math.max(...counts)}, E ${fmt(N / 120, 1)}); two-sided p ${fmt(p)}; alpha ${ALPHA_FAMILY.toExponential(2)}`);
-    expect(p).toBeGreaterThan(ALPHA_FAMILY);
-  }, 300_000);
+    const draw = (): FamilyEvaluation => {
+      const { counts, malformed, seconds } = permutationSample(N);
+      expect(malformed).toBe(0);
+      return evaluatePermutations(counts, N, seconds);
+    };
+    expectFamilyPasses("(e) permutations", draw(), draw);
+  }, 600_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -945,7 +1147,8 @@ describe("continuous RNG health test (fault injection)", () => {
 // Static compliance scan of the certified sources.
 // ---------------------------------------------------------------------------
 describe("static compliance scan", () => {
-  const engineRoot = process.cwd(); // packages/engine under `npm test`
+  // packages/engine under `npm test`; the repository root when jest is run with --config packages/engine/jest.config.cjs.
+  const engineRoot = fs.existsSync(path.join(process.cwd(), "src", "rng.ts")) ? process.cwd() : path.join(process.cwd(), "packages", "engine");
   const engineSrc = path.join(engineRoot, "src");
   const sharedSrc = path.resolve(engineRoot, "../shared/src");
   const printer = ts.createPrinter({ removeComments: true });

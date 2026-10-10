@@ -1,0 +1,61 @@
+# Build context filter for apps/server/Dockerfile and apps/web/Dockerfile
+# (both are built from the repo root: docker build -f apps/<app>/Dockerfile .).
+#
+# Secrets: nothing secret may enter the build context, because anything in the
+# context can end up in an image layer. The root .env points at the LIVE
+# production database. Runtime configuration is injected by the orchestrator
+# or secret manager at container start, never baked in.
+.env
+.env.*
+**/.env
+**/.env.*
+!.env.example
+**/*.pem
+**/*.key
+**/*.p12
+**/*.pfx
+**/*.crt
+# Public CA bundle the server uses to verify the managed Postgres pooler's
+# certificate; it contains no private key.
+!apps/server/certs/supabase-pooler-root.pem
+.npmrc
+**/.npmrc
+
+# Dependencies and build output are produced inside the image.
+**/node_modules
+**/dist
+**/.next
+**/.next-*
+**/out
+**/*.tsbuildinfo
+.turbo
+.npm-cache
+apps/server/generated
+
+# Tests, reports, logs and review material are not part of any image.
+apps/*/test
+**/test-results
+**/playwright-report
+**/coverage
+**/*.log
+logs
+review
+graphify-out
+**/*.md
+.audit.json
+
+# Tooling and VCS metadata.
+.git
+.gitignore
+.github
+.cursor
+.claude
+.vscode
+.idea
+supabase
+scripts
+docker-compose.yml
+**/Dockerfile
+.dockerignore
+.DS_Store
+Thumbs.db

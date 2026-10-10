@@ -1,0 +1,48 @@
+{
+  "packages": 237,
+  "licenses": {
+    "MIT": 192,
+    "Apache-2.0 AND LGPL-3.0-or-later": 1,
+    "UNKNOWN": 8,
+    "Apache-2.0": 18,
+    "BSD-3-Clause": 6,
+    "BSD-2-Clause": 2,
+    "CC-BY-4.0": 1,
+    "ISC": 8,
+    "0BSD": 1
+  },
+  "unknown": [
+    {
+      "name": "@next/swc-darwin-arm64",
+      "version": "15.5.25"
+    },
+    {
+      "name": "@next/swc-darwin-x64",
+      "version": "15.5.25"
+    },
+    {
+      "name": "@next/swc-linux-arm64-gnu",
+      "version": "15.5.25"
+    },
+    {
+      "name": "@next/swc-linux-arm64-musl",
+      "version": "15.5.25"
+    },
+    {
+      "name": "@next/swc-linux-x64-gnu",
+      "version": "15.5.25"
+    },
+    {
+      "name": "@next/swc-linux-x64-musl",
+      "version": "15.5.25"
+    },
+    {
+      "name": "@next/swc-win32-arm64-msvc",
+      "version": "15.5.25"
+    },
+    {
+      "name": "xmlhttprequest-ssl",
+      "version": "2.1.2"
+    }
+  ]
+}

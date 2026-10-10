@@ -15,14 +15,22 @@ import { useAuthStore } from "@/stores/session";
  * compares the record with the commitments, audit-chain head and hole-card
  * digest it saw then.
  */
-export function FairnessAudit({ tableId, accessToken, snapshot }: {
+export function FairnessAudit({ tableId, accessToken, snapshot, className = "flex flex-col items-start gap-1", closed = false }: {
   tableId: string;
   accessToken: string;
   snapshot: PublicTableState;
+  className?: string;
+  /**
+   * The table has closed, so every hand it dealt has settled. `snapshot` may
+   * predate the closure (missed while reconnecting), so its hand number is a
+   * default, not a limit: a later hand can be chosen and the server decides
+   * (a hand that does not exist, or that this player was not dealt into, is
+   * refused like any other).
+   */
+  closed?: boolean;
 }) {
   const userId = useAuthStore((s) => s.user?.id ?? null);
-  const active = ["PREFLOP", "FLOP", "TURN", "RIVER"].includes(snapshot.phase);
-  const latestHand = snapshot.handNumber - (active ? 1 : 0);
+  const latestHand = auditableHand(snapshot, closed);
   const [selectedHand, setSelectedHand] = useState(String(latestHand));
   const [checking, setChecking] = useState(false);
   const [result, setResult] = useState<{ hand: number; message: string; valid: boolean } | null>(null);
@@ -31,8 +39,8 @@ export function FairnessAudit({ tableId, accessToken, snapshot }: {
 
   const check = async () => {
     const handNumber = Number(selectedHand);
-    if (!Number.isSafeInteger(handNumber) || handNumber < 1 || handNumber > latestHand) {
-      setResult({ hand: 0, valid: false, message: `Choose a hand from 1 to ${latestHand}.` });
+    if (!Number.isSafeInteger(handNumber) || handNumber < 1 || (!closed && handNumber > latestHand)) {
+      setResult({ hand: 0, valid: false, message: closed ? "Choose a hand number of 1 or more." : `Choose a hand from 1 to ${latestHand}.` });
       return;
     }
     if (!userId) {
@@ -63,21 +71,32 @@ export function FairnessAudit({ tableId, accessToken, snapshot }: {
   };
 
   return (
-    <div className="flex flex-col items-start gap-1">
-      <label className="flex items-center gap-2 text-xs text-emerald-100/80">
+    <div className={className}>
+      <label className="flex items-center gap-2 text-xs text-emerald-50">
         Hand
-        <input type="number" min={1} max={latestHand} value={selectedHand}
+        <input type="number" min={1} max={closed ? undefined : latestHand} value={selectedHand}
           onChange={(event) => { setSelectedHand(event.target.value); setResult(null); }}
           className="w-16 rounded-lg border border-white/20 bg-black/20 px-2 py-1 text-sm text-white" />
       </label>
       <button type="button" onClick={() => void check()} disabled={checking}
-        className="min-h-10 rounded-full border border-emerald-200/40 px-4 py-2 text-sm transition hover:bg-white/10 disabled:opacity-60">
+        className="min-h-10 rounded-full border border-emerald-200/60 px-4 py-2 text-sm transition hover:bg-white/10 disabled:opacity-60">
         {checking ? "Verifying…" : "Verify hand"}
       </button>
       {result && (result.hand === Number(selectedHand) || result.hand === 0) ?
         <span role="status" className={`max-w-64 text-xs ${result.valid ? "text-emerald-200" : "text-red-200"}`}>{result.message}</span> : null}
     </div>
   );
+}
+
+/**
+ * The latest hand that has finished (and so has an audit) in this snapshot;
+ * below 1 when none has. At a closed table the hand in progress has settled:
+ * closure finishes it before the table closes, even when this snapshot was
+ * taken mid-hand.
+ */
+export function auditableHand(snapshot: PublicTableState, closed = false): number {
+  const active = ["PREFLOP", "FLOP", "TURN", "RIVER"].includes(snapshot.phase);
+  return snapshot.handNumber - (active && !closed ? 1 : 0);
 }
 
 /**

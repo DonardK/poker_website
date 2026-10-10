@@ -1,0 +1,113 @@
+[WebServer] (node:76796) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:71224) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:129748) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+
+Running 10 tests using 1 worker
+
+(node:127416) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:115280) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  1 review\gpt-6.1-sol\repro\browser-defects.spec.ts:5:5 › optional sound storage failure prevents sending and leaves actions disabled (3.5s)
+[WebServer] (node:132044) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  x   2 review\gpt-6.1-sol\repro\browser-defects.spec.ts:11:5 › decimal raise stays selectable and is sent despite integer engine requirements (6.2s)
+(node:102176) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:117632) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  3 review\gpt-6.1-sol\repro\browser-defects.spec.ts:17:5 › browser clock skew empties a live turn clock (1.0s)
+[WebServer] (node:116888) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  x   4 review\gpt-6.1-sol\repro\browser-defects.spec.ts:23:5 › reduced motion collapses the live turn clock immediately (1.0s)
+(node:16300) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+  x   5 review\gpt-6.1-sol\repro\browser-defects.spec.ts:27:5 › lobby refresh can overwrite a newer wallet patch (6.3s)
+(node:70432) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+(Use `node --trace-warnings ...` to show where the warning was created)
+[WebServer] (node:138216) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  6 review\gpt-6.1-sol\repro\browser-defects.spec.ts:34:5 › actual token rotation resets the playable table while rejoining (2.9s)
+  ok  7 review\gpt-6.1-sol\repro\browser-defects.spec.ts:39:5 › warning started before lobby authentication is not shown (707ms)
+[WebServer] (node:80580) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+  ok  8 review\gpt-6.1-sol\repro\browser-defects.spec.ts:43:5 › fresh visit to a closed table loses the participant audit control (904ms)
+  ok  9 review\gpt-6.1-sol\repro\browser-defects.spec.ts:47:5 › web origin has no CSP or anti-frame policy headers (649ms)
+[WebServer] (node:117568) Warning: The 'NO_COLOR' env is ignored due to the 'FORCE_COLOR' env being set.
+[WebServer] (Use `node --trace-warnings ...` to show where the warning was created)
+CALL_CONTRAST {"contrast":3.1858692567863036,"fontSize":"16px","fontWeight":"400"}
+  ok 10 review\gpt-6.1-sol\repro\browser-defects.spec.ts:50:5 › call button text has insufficient normal-text contrast (992ms)
+
+
+  1) review\gpt-6.1-sol\repro\browser-defects.spec.ts:11:5 › decimal raise stays selectable and is sent despite integer engine requirements 
+
+    Error: expect(locator).toBeVisible() failed
+
+    Locator: getByText('Bet must be an integer')
+    Expected: visible
+    Timeout: 5000ms
+    Error: element(s) not found
+
+    Call log:
+      - Expect "toBeVisible" getByText('Bet must be an integer') with timeout 5000ms
+      - waiting for getByText('Bet must be an integer')
+
+
+      13 |  await page.getByLabel('Raise to',{exact:true}).fill('20.5');await page.getByRole('button',{name:'Raise to $20.5',exact:true}).click();
+      14 |  expect((await(await request.get(fixture+'/__test/actions')).json()).actionCount).toBe(1);
+    > 15 |  await expect(page.getByText('Bet must be an integer')).toBeVisible();
+         |                                                         ^
+      16 | });
+      17 | test('browser clock skew empties a live turn clock',async({page})=>{
+      18 |  await page.addInitScript(()=>{const now=Date.now;Date.now=()=>now()+3600000;});
+        at C:\Users\rronp\Documents\GitHub\Poker\poker_website\review\gpt-6.1-sol\repro\browser-defects.spec.ts:15:57
+
+    Error Context: review\gpt-6.1-sol\browser-results\browser-defects-decimal-ra-591d3-integer-engine-requirements\error-context.md
+
+  2) review\gpt-6.1-sol\repro\browser-defects.spec.ts:23:5 › reduced motion collapses the live turn clock immediately 
+
+    Error: expect(received).toBe(expected) // Object.is equality
+
+    Expected: "matrix(0, 0, 0, 1, 0, 0)"
+    Received: "matrix(0.998578, 0, 0, 1, 0, 0)"
+
+      23 | test('reduced motion collapses the live turn clock immediately',async({page})=>{
+      24 |  await page.emulateMedia({reducedMotion:'reduce'});await page.goto('/table/fixture-table');await expect(page.getByRole('button',{name:'Call $10',exact:true})).toBeEnabled();
+    > 25 |  await page.waitForTimeout(100);expect(await page.locator('.seat-hud--active .origin-left').evaluate(e=>getComputedStyle(e).transform)).toBe('matrix(0, 0, 0, 1, 0, 0)');
+         |                                                                                                                                         ^
+      26 | });
+      27 | test('lobby refresh can overwrite a newer wallet patch',async({page,request})=>{
+      28 |  await page.goto('/');await expect(page.getByText('$9,000',{exact:true})).toBeVisible();await page.waitForTimeout(400);
+        at C:\Users\rronp\Documents\GitHub\Poker\poker_website\review\gpt-6.1-sol\repro\browser-defects.spec.ts:25:137
+
+    Error Context: review\gpt-6.1-sol\browser-results\browser-defects-reduced-mo-22bc4-live-turn-clock-immediately\error-context.md
+
+  3) review\gpt-6.1-sol\repro\browser-defects.spec.ts:27:5 › lobby refresh can overwrite a newer wallet patch 
+
+    Error: expect(received).toBeGreaterThan(expected)
+
+    Expected: > 0
+    Received:   0
+
+    Call Log:
+    - Timeout 5000ms exceeded while waiting on the predicate
+
+      28 |  await page.goto('/');await expect(page.getByText('$9,000',{exact:true})).toBeVisible();await page.waitForTimeout(400);
+      29 |  await request.post(fixture+'/__test/hold-me');await page.getByRole('button',{name:'Refresh',exact:true}).click();
+    > 30 |  await expect.poll(async()=> (await(await request.get(fixture+'/__test/waiting-me')).json()).count).toBeGreaterThan(0);
+         |                                                                                                     ^
+      31 |  await request.post(fixture+'/__review/wallet');await expect(page.getByText('$10,000',{exact:true})).toBeVisible();
+      32 |  await request.post(fixture+'/__test/release-me');await expect(page.getByText('$9,000',{exact:true})).toBeVisible();
+      33 | });
+        at C:\Users\rronp\Documents\GitHub\Poker\poker_website\review\gpt-6.1-sol\repro\browser-defects.spec.ts:30:101
+
+    Error Context: review\gpt-6.1-sol\browser-results\browser-defects-lobby-refr-20dca-rwrite-a-newer-wallet-patch\error-context.md
+
+  3 failed
+    review\gpt-6.1-sol\repro\browser-defects.spec.ts:11:5 › decimal raise stays selectable and is sent despite integer engine requirements 
+    review\gpt-6.1-sol\repro\browser-defects.spec.ts:23:5 › reduced motion collapses the live turn clock immediately 
+    review\gpt-6.1-sol\repro\browser-defects.spec.ts:27:5 › lobby refresh can overwrite a newer wallet patch 
+  7 passed (37.9s)

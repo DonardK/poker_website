@@ -14,6 +14,7 @@ import { logger } from "../logger.js";
 import { EngineError } from "@poker/engine";
 import { buildParticipantAudit, rowBindingError, sealedAuditContext } from "../game/audit.js";
 import { decryptState } from "../game/encryption.js";
+import { tableManager } from "../game/manager.js";
 
 export const tablesRouter = Router();
 
@@ -200,5 +201,9 @@ tablesRouter.post("/", requireAuth, async (req: AuthedRequest, res) => {
     });
   }, { maxWait: 10_000, timeout: 20_000 });
 
+  // Start the idle clock now: a host who never opens the table still gets it
+  // closed and the buy-in returned. The table exists either way, so a failure
+  // here is logged and the timers start when anyone opens it.
+  void tableManager.track(table.id).catch((err) => logger.error({ err, tableId: table.id }, "could not start the new table's timers"));
   res.status(201).json({ tableId: table.id });
 });

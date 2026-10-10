@@ -1,0 +1,36 @@
+{
+  "findings": 52,
+  "severity": {
+    "S0": 7,
+    "S1": 22,
+    "S2": 19,
+    "S3": 3,
+    "S4": 1
+  },
+  "categories": {
+    "MONEY": 3,
+    "MISSING-CAPABILITY": 3,
+    "LEGAL-EXPOSURE": 3,
+    "FAIRNESS": 5,
+    "RELIABILITY": 9,
+    "CONCURRENCY": 3,
+    "SECURITY": 7,
+    "PRIVACY": 3,
+    "DATA": 1,
+    "TEST-GAP": 2,
+    "CONFIG": 3,
+    "UX": 4,
+    "A11Y": 3,
+    "DOCS-CLAIMS": 3
+  },
+  "confirmed": 30,
+  "likely": 22,
+  "coverage": {
+    "PARTIAL": 24,
+    "FULL": 136,
+    "NOT REVIEWED": 2
+  },
+  "productionSourceFiles": 71,
+  "preExistingFilesUnchanged": 199,
+  "diffSHA256": "f4fc753872628c3fe5cb501f21f93096526f7b4c8df8b140f86ab6c2e5e05315"
+}

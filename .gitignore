@@ -25,3 +25,6 @@ graphify-out/
 
 supabase/.temp/
 .audit.json
+
+# npm run dev:local keeps its own PostgreSQL here (local data and passwords)
+.local-db/

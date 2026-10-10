@@ -14,14 +14,14 @@ export function GameLog({ entries }: { entries: HandHistoryLogEntry[] }) {
 
   return (
     <aside className="flex h-72 flex-col rounded-2xl border border-white/10 bg-black/40 p-3 text-sm">
-      <h2 className="mb-2 text-xs uppercase tracking-[0.2em] text-amber-200/70">Hand log</h2>
+      <h2 className="mb-2 text-xs uppercase tracking-[0.2em] text-amber-200">Hand log</h2>
       <div ref={scroller} className="flex-1 space-y-1 overflow-y-auto pr-1">
         {entries.length === 0 ? (
-          <p className="text-emerald-100/50">Waiting for cards…</p>
+          <p className="text-emerald-50">Waiting for cards…</p>
         ) : (
           entries.map((e) => (
-            <p key={`${e.seq}-${e.at}`} className="text-emerald-100/80">
-              <span className="text-amber-100/70">{e.username}</span> {e.text.replace(`${e.username} `, "")}
+            <p key={`${e.seq}-${e.at}`} className="text-emerald-50">
+              <span className="text-amber-100">{e.username}</span> {e.text.replace(`${e.username} `, "")}
             </p>
           ))
         )}

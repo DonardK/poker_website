@@ -10,6 +10,12 @@ export const BOT_THINK_RIVER_RAISE_MS = [3_000, 6_000] as const;
 export const ACTION_RATE_LIMIT_WINDOW_MS = 2_000;
 export const ACTION_RATE_LIMIT_MAX = 8;
 export const TABLE_LOCK_TTL_MS = 5_000;
+/** A table with no voluntary player activity for this long gets the closing warning. */
+export const TABLE_IDLE_TIMEOUT_MS = 5 * 60_000;
+/** How long the closing warning is shown before an idle table closes. */
+export const TABLE_IDLE_WARNING_MS = 30_000;
+/** Why a table closed: IDLE = no activity (warning expired); EMPTY = every seat was released. */
+export type TableCloseReason = "IDLE" | "EMPTY";
 export const REFRESH_COOKIE_NAME = "poker_refresh";
 
 export const BOT_USERNAMES: Record<BotProfile, readonly string[]> = {
@@ -50,3 +56,11 @@ export type StreetAction =
   | "ALL_IN"
   | "TIMEOUT_FOLD"
   | "TIMEOUT_CHECK";
+
+// Rake and hand-audit constants (shared by the engine and the audit verifiers).
+/** Rake is quoted in basis points of the chips contested in a hand: 10_000 bps = 100%. */
+export const RAKE_BPS_DENOMINATOR = 10_000;
+/** Highest rake a table may be configured with: 1000 bps = 10%. */
+export const RAKE_MAX_BPS = 1_000;
+/** Longest staff reason a HAND_VOIDED audit event may carry (it is public to every participant). */
+export const HAND_VOID_REASON_MAX_LENGTH = 200;

@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "strict": false,
+    "skipLibCheck": true,
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["../../../../apps/web/src/*"],
+      "socket.io-client": ["./stubs/socket-io-client.ts"],
+      "next/navigation": ["./stubs/next-navigation.ts"],
+      "next/link": ["./stubs/next-link.ts"],
+      "framer-motion": ["./stubs/framer-motion.ts"]
+    }
+  }
+}
