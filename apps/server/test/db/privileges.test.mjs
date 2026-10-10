@@ -3,7 +3,8 @@
  * disposable embedded cluster of test/support/pg.mjs; never `.env`).
  *
  * Proves, from the catalogs AND by attempting the statements as the runtime
- * role (poker_server, exactly as the game server connects in production):
+ * login (poker_app, exactly as the game server connects in production; it
+ * inherits the NOLOGIN role poker_server):
  * - row level security is ENABLED and FORCED on every table in schema public
  *   (except Prisma's own _prisma_migrations), and every such table has a policy;
  * - PUBLIC holds no privilege on any table, sequence or SECURITY DEFINER
@@ -26,13 +27,14 @@ import pg from "pg";
 import { requireTestDatabase } from "./support.mjs";
 
 const { adminUrl, runtimeUrl } = requireTestDatabase();
-const RUNTIME_ROLE = "poker_server";
+const LOGIN_ROLE = "poker_app";
+const GRANTED_ROLE = "poker_server";
 const HISTORY = ["Hand", "HandPlayer", "HandAction", "HandPot"];
 const LEDGER = ["Asset", "LedgerAccount", "LedgerTransaction", "LedgerEntry"];
 const ALL = ["SELECT", "INSERT", "UPDATE", "DELETE"];
 const PRIVILEGES = ["SELECT", "INSERT", "UPDATE", "DELETE", "TRUNCATE", "REFERENCES", "TRIGGER"];
 
-/** What poker_server may do on each table; every table in public must be listed here. */
+/** What poker_server is granted, and what poker_app inherits; every public table is listed. */
 const EXPECTED = {
   User: ["SELECT", "INSERT", "UPDATE"],
   Session: ALL,
@@ -75,7 +77,7 @@ async function publicTables() {
   return rows;
 }
 
-/** Runs `sql` as poker_server inside a transaction that is always rolled back; resolves to the error (or null). */
+/** Runs `sql` as poker_app inside a transaction that is always rolled back; resolves to the error (or null). */
 async function asRuntime(sql, params = []) {
   await runtime.query("BEGIN");
   try { await runtime.query(sql, params); return null; } catch (error) { return error; } finally { await runtime.query("ROLLBACK"); }
@@ -83,18 +85,22 @@ async function asRuntime(sql, params = []) {
 
 async function refusedAsRuntime(sql, params = []) {
   const error = await asRuntime(sql, params);
-  assert.ok(error, `poker_server was allowed: ${sql}`);
+  assert.ok(error, `runtime login was allowed: ${sql}`);
   assert.equal(error.code, "42501", `expected permission denied (42501) for ${sql}, got ${error.code}: ${error.message}`);
 }
 
-test("the runtime connection really is poker_server, a plain role", async () => {
+test("the runtime connection is poker_app, inheriting NOLOGIN poker_server", async () => {
   const { rows: [who] } = await runtime.query("SELECT current_user AS name, session_user AS session");
-  assert.equal(who.name, RUNTIME_ROLE);
-  assert.equal(who.session, RUNTIME_ROLE);
-  const { rows: [role] } = await admin.query(`SELECT rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolinherit, rolreplication FROM pg_roles WHERE rolname = $1`, [RUNTIME_ROLE]);
-  assert.deepEqual(role, { rolsuper: false, rolbypassrls: false, rolcreaterole: false, rolcreatedb: false, rolinherit: false, rolreplication: false });
-  const { rows: memberships } = await admin.query(`SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid JOIN pg_roles u ON u.oid = m.member WHERE u.rolname = $1`, [RUNTIME_ROLE]);
-  assert.deepEqual(memberships, [], "poker_server is a member of no other role");
+  assert.equal(who.name, LOGIN_ROLE);
+  assert.equal(who.session, LOGIN_ROLE);
+  const { rows: [app] } = await admin.query(`SELECT rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolinherit, rolcanlogin, rolreplication FROM pg_roles WHERE rolname = $1`, [LOGIN_ROLE]);
+  assert.deepEqual(app, { rolsuper: false, rolbypassrls: false, rolcreaterole: false, rolcreatedb: false, rolinherit: true, rolcanlogin: true, rolreplication: false });
+  const { rows: [server] } = await admin.query(`SELECT rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolinherit, rolcanlogin, rolreplication FROM pg_roles WHERE rolname = $1`, [GRANTED_ROLE]);
+  assert.deepEqual(server, { rolsuper: false, rolbypassrls: false, rolcreaterole: false, rolcreatedb: false, rolinherit: false, rolcanlogin: false, rolreplication: false });
+  const { rows: memberships } = await admin.query(`SELECT r.rolname, m.inherit_option, m.set_option FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid JOIN pg_roles u ON u.oid = m.member WHERE u.rolname = $1 ORDER BY r.rolname`, [LOGIN_ROLE]);
+  assert.deepEqual(memberships, [{ rolname: "poker_server", inherit_option: true, set_option: true }]);
+  const { rows: serverMemberships } = await admin.query(`SELECT r.rolname FROM pg_auth_members m JOIN pg_roles r ON r.oid = m.roleid JOIN pg_roles u ON u.oid = m.member WHERE u.rolname = $1`, [GRANTED_ROLE]);
+  assert.deepEqual(serverMemberships, [], "poker_server is a member of no other role");
 });
 
 test("RLS is enabled AND forced on every table in schema public except _prisma_migrations, and each has a policy", async () => {
@@ -126,18 +132,23 @@ test("PUBLIC has no privilege on any table, sequence or SECURITY DEFINER functio
   assert.equal(schema.create, false, "PUBLIC has no CREATE on schema public");
 });
 
-test("poker_server's table privileges are exactly the expected matrix (catalog check)", async () => {
+test("poker_app's effective table privileges match poker_server's grants (catalog check)", async () => {
   const actual = {};
+  const direct = {};
   for (const name of Object.keys(EXPECTED)) {
     actual[name] = [];
+    direct[name] = [];
     for (const privilege of PRIVILEGES) {
-      const { rows: [row] } = await admin.query(`SELECT has_table_privilege($1, format('public.%I', $2::text), $3) AS ok`, [RUNTIME_ROLE, name, privilege]);
-      if (row.ok) actual[name].push(privilege);
+      const { rows: [inherited] } = await admin.query(`SELECT has_table_privilege($1, format('public.%I', $2::text), $3) AS ok`, [LOGIN_ROLE, name, privilege]);
+      const { rows: [granted] } = await admin.query(`SELECT has_table_privilege($1, format('public.%I', $2::text), $3) AS ok`, [GRANTED_ROLE, name, privilege]);
+      if (inherited.ok) actual[name].push(privilege);
+      if (granted.ok) direct[name].push(privilege);
     }
   }
-  assert.deepEqual(actual, EXPECTED);
+  assert.deepEqual(actual, EXPECTED, "poker_app inherits the matrix");
+  assert.deepEqual(direct, EXPECTED, "poker_server still holds the matrix");
   const { rows: columns } = await admin.query(`SELECT table_name, column_name, privilege_type FROM information_schema.column_privileges
-    WHERE grantee = $1 AND table_schema = 'public' AND privilege_type <> 'SELECT'`, [RUNTIME_ROLE]);
+    WHERE grantee = $1 AND table_schema = 'public' AND privilege_type <> 'SELECT'`, [GRANTED_ROLE]);
   const columnGrant = (c) => (EXPECTED_COLUMNS[c.table_name]?.[c.privilege_type] ?? []).includes(c.column_name);
   const extra = columns.filter((c) => !(EXPECTED[c.table_name] ?? []).includes(c.privilege_type) && !columnGrant(c));
   assert.deepEqual(extra, [], "no column-level grant goes beyond the table matrix and EXPECTED_COLUMNS");
@@ -145,6 +156,10 @@ test("poker_server's table privileges are exactly the expected matrix (catalog c
     for (const [privilege, expected] of Object.entries(byPrivilege)) {
       const granted = columns.filter((c) => c.table_name === table && c.privilege_type === privilege).map((c) => c.column_name).sort();
       assert.deepEqual(granted, [...expected].sort(), `${privilege} columns of ${table}`);
+      for (const column of expected) {
+        const { rows: [row] } = await admin.query(`SELECT has_column_privilege($1, format('public.%I', $2::text), $3, $4) AS ok`, [LOGIN_ROLE, table, column, privilege]);
+        assert.equal(row.ok, true, `poker_app inherits ${privilege} on ${table}.${column}`);
+      }
     }
   }
 });
@@ -194,12 +209,12 @@ test("poker_server cannot touch Prisma's migration history", async () => {
 });
 
 test("poker_server has no CREATE on schema public (no tables, views, functions or types of its own)", async () => {
-  const { rows: [row] } = await admin.query(`SELECT has_schema_privilege($1, 'public', 'CREATE') AS create, has_schema_privilege($1, 'public', 'USAGE') AS usage`, [RUNTIME_ROLE]);
+  const { rows: [row] } = await admin.query(`SELECT has_schema_privilege($1, 'public', 'CREATE') AS create, has_schema_privilege($1, 'public', 'USAGE') AS usage`, [LOGIN_ROLE]);
   assert.deepEqual(row, { create: false, usage: true });
   await refusedAsRuntime(`CREATE TABLE public.poker_server_probe (id int)`);
   await refusedAsRuntime(`CREATE VIEW public.poker_server_probe AS SELECT 1`);
   await refusedAsRuntime(`CREATE FUNCTION public.poker_server_probe() RETURNS int LANGUAGE sql AS 'SELECT 1'`);
-  const { rows: [db] } = await admin.query(`SELECT has_database_privilege($1, current_database(), 'CREATE') AS create`, [RUNTIME_ROLE]);
+  const { rows: [db] } = await admin.query(`SELECT has_database_privilege($1, current_database(), 'CREATE') AS create`, [LOGIN_ROLE]);
   assert.equal(db.create, false, "no CREATE SCHEMA in the database either");
 });
 
@@ -210,8 +225,8 @@ test("poker_server cannot change table structure, policies or RLS settings", asy
   await refusedAsRuntime(`ALTER TABLE public."LedgerEntry" DISABLE TRIGGER USER`);
 });
 
-test("among SECURITY DEFINER functions poker_server may execute only ledger_post and ledger_ensure_account", async () => {
+test("among SECURITY DEFINER functions the runtime login may execute only ledger_post and ledger_ensure_account", async () => {
   const { rows } = await admin.query(`SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-    WHERE n.nspname = 'public' AND p.prosecdef AND has_function_privilege($1, p.oid, 'EXECUTE') ORDER BY p.proname`, [RUNTIME_ROLE]);
+    WHERE n.nspname = 'public' AND p.prosecdef AND has_function_privilege($1, p.oid, 'EXECUTE') ORDER BY p.proname`, [LOGIN_ROLE]);
   assert.deepEqual(rows.map((row) => row.proname), ["ledger_ensure_account", "ledger_post"]);
 });

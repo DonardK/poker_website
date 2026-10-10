@@ -5,6 +5,7 @@ import { createServer } from 'node:http';
 import { once } from 'node:events';
 import { PrismaClient } from '@prisma/client';
 import { createApp } from '../dist/app.js';
+import { authConfig } from '../dist/config.js';
 import { prisma } from '../dist/db/prisma.js';
 import { TableManager, tableManager } from '../dist/game/manager.js';
 import { decryptState } from '../dist/game/encryption.js';
@@ -29,8 +30,10 @@ test('Supabase: transactions, recovery, encrypted history, audit trail routes, H
   const request = (path, body, token, cookie) => fetch(url + '/api' + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: 'Bearer ' + token } : {}), ...(cookie ? { Cookie: cookie } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
   let client;
   try {
-    const register = await request('/auth/register', { username: prefix, email: prefix + '@example.invalid', password: randomUUID() });
-    assert.equal(register.status, 201); const session = await register.json(); userIds.push(session.user.id);
+    const register = await request('/auth/register', { username: prefix, email: prefix + '@example.invalid', password: randomUUID(), acceptTerms: true, confirmAge: true, termsVersion: authConfig.termsVersion });
+    const registerBody = await register.text();
+    assert.equal(register.status, 201, registerBody);
+    const session = JSON.parse(registerBody); userIds.push(session.user.id);
     const cookie = register.headers.get('set-cookie').split(';')[0];
     assert.equal((await request('/auth/me', undefined, session.accessToken)).status, 200);
     const refreshes = await Promise.all([request('/auth/refresh', {}, null, cookie), request('/auth/refresh', {}, null, cookie)]);
@@ -73,7 +76,7 @@ test('Supabase: transactions, recovery, encrypted history, audit trail routes, H
     assert.equal(state.players.reduce((sum, p) => sum + (p?.stack ?? 0), 0), 2000);
     const history = await prisma.hand.findUnique({ where: { tableId_handNumber: { tableId, handNumber: 1 } }, include: { actions: true, players: true, pots: true } });
     assert.equal(history.fairnessRoot, root); assert.ok(history.actions.some((a) => a.street === 'RIVER'));
-    assert.ok(history.players.every((p) => p.holeCards.length === 0 && p.encryptedHoleCards.startsWith('v1.')));
+    assert.ok(history.players.every((p) => p.holeCards.length === 0 && p.encryptedHoleCards.startsWith('v2.')));
     assert.equal(history.players.reduce((sum, p) => sum + p.net, 0), 0);
     // Compliance audit columns, written in the settling transaction.
     assert.equal(history.fairnessAudit, null, 'the legacy commitment column is not written for audited hands');
@@ -121,7 +124,7 @@ test('Supabase: transactions, recovery, encrypted history, audit trail routes, H
     await manager.mutate(tableId, (current) => completeHand(current)); manager.stop();
     await manager.standUp(tableId, session.user.id); manager.stop();
     const bankroll = (await prisma.user.findUnique({ where: { id: session.user.id } })).bankroll;
-    await assert.rejects(manager.standUp(tableId, session.user.id));
+    assert.equal(await manager.standUp(tableId, session.user.id), false, 'a second stand-up finds an empty seat and pays nothing');
     assert.equal((await prisma.user.findUnique({ where: { id: session.user.id } })).bankroll, bankroll);
     client = connectSocket(url, { auth: { token: renewed.accessToken }, transports: ['websocket'], autoConnect: false });
     client.connect(); await once(client, 'connect');
@@ -134,10 +137,23 @@ test('Supabase: transactions, recovery, encrypted history, audit trail routes, H
   } finally {
     client?.disconnect(); for (const manager of managers) manager.stop(); tableManager.stop();
     await new Promise((r) => socketServer.close(r)); server.close();
-    // Runtime credentials deliberately cannot erase hand history through parent deletes.
-    if (cleanup && tableIds.length) await cleanup.table.deleteMany({ where: { id: { in: tableIds }, name: { startsWith: prefix } } });
-    if (cleanup && userIds.length) await cleanup.user.deleteMany({ where: { id: { in: userIds }, username: { startsWith: prefix } } });
-    if (cleanup) await cleanup.$disconnect();
+    // Hand history is append-only unless poker.break_glass is on, and deleting a
+    // table or user does not cascade into it. Clear the hands first, then the
+    // tables and users, in one transaction so the setting stays local.
+    if (cleanup) {
+      try {
+        await cleanup.$transaction(async (tx) => {
+          await tx.$queryRaw`SELECT set_config('poker.break_glass', 'on', true)`;
+          if (tableIds.length) {
+            await tx.hand.deleteMany({ where: { tableId: { in: tableIds }, table: { name: { startsWith: prefix } } } });
+            await tx.table.deleteMany({ where: { id: { in: tableIds }, name: { startsWith: prefix } } });
+          }
+          if (userIds.length) await tx.user.deleteMany({ where: { id: { in: userIds }, username: { startsWith: prefix } } });
+        });
+      } finally {
+        await cleanup.$disconnect();
+      }
+    }
     else console.log(JSON.stringify({ cleanupRequired: { prefix, tableIds, userIds } }));
     await prisma.$disconnect();
   }

@@ -1,5 +1,6 @@
-import "../config.js";
 import { PrismaClient } from "@prisma/client";
+import { env } from "../config.js";
+import { enforceRuntimeRole } from "./runtime-role.js";
 
 export const prisma = new PrismaClient({
   log: process.env.NODE_ENV === "development" ? ["warn", "error"] : ["error"],
@@ -39,4 +40,7 @@ export async function assertGameSchemaReady(): Promise<void> {
   if (missing.size > 0) {
     throw new Error(`Database is missing migration(s) ${[...missing].join(", ")}. Apply the pending migrations (README, "Database and migrations") before starting the game server.`, { cause: firstCause });
   }
+  // After the schema probes: a missing "Hand" is reported as a migration,
+  // and an administrator URL is refused only once the table exists to check.
+  await enforceRuntimeRole(env.NODE_ENV, async (sql) => prisma.$queryRawUnsafe<Array<Record<string, unknown>>>(sql));
 }

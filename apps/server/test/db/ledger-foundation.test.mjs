@@ -9,7 +9,8 @@
  * starts (and stops) its own cluster.
  * Run (from apps/server): node test/support/run-tests.mjs --import tsx test/db/ledger-foundation.test.mjs
  *
- * The runtime role (poker_server) is used exactly as production uses it; the
+ * The runtime login (poker_app, inheriting poker_server) is used exactly as
+ * production uses it; the
  * superuser only creates fixtures and inspects privileges.
  */
 import { after, before, test } from "node:test";
@@ -195,6 +196,9 @@ test("migration applies on a database with existing rows, leaves them untouched,
     const preRuntime = new pg.Client({ connectionString: withDatabase(runtimeUrl, db) });
     await preRuntime.connect();
     try {
+      // This database stops at the ledger migration, whose guards still compare
+      // current_user to poker_server. poker_app inherits that role and can assume it.
+      await preRuntime.query("SET ROLE poker_server");
       const db2 = sqlDb(preRuntime);
       await preRuntime.query("BEGIN");
       await grantPlay(db2, { key: "pre:grant", userId: "legacy1", amount: 500n, reason: "test" });
@@ -226,9 +230,11 @@ test("functions are SECURITY DEFINER with a pinned search_path and only poker_se
   const priv = await admin.query(`SELECT
       has_function_privilege('poker_server', 'public.ledger_post(text, text, jsonb, jsonb, text)', 'EXECUTE') AS rt_post,
       has_function_privilege('poker_server', 'public.ledger_ensure_account(text, text, text, text, text)', 'EXECUTE') AS rt_ensure,
+      has_function_privilege('poker_app', 'public.ledger_post(text, text, jsonb, jsonb, text)', 'EXECUTE') AS app_post,
+      has_function_privilege('poker_app', 'public.ledger_ensure_account(text, text, text, text, text)', 'EXECUTE') AS app_ensure,
       has_function_privilege('ledger_outsider', 'public.ledger_post(text, text, jsonb, jsonb, text)', 'EXECUTE') AS other_post,
       has_function_privilege('ledger_outsider', 'public.ledger_ensure_account(text, text, text, text, text)', 'EXECUTE') AS other_ensure`);
-  assert.deepEqual(priv.rows[0], { rt_post: true, rt_ensure: true, other_post: false, other_ensure: false });
+  assert.deepEqual(priv.rows[0], { rt_post: true, rt_ensure: true, app_post: true, app_ensure: true, other_post: false, other_ensure: false });
   const rls = await admin.query(`SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class
     WHERE relname IN ('Asset', 'LedgerAccount', 'LedgerTransaction', 'LedgerEntry') ORDER BY relname`);
   assert.equal(rls.rows.length, 4);

@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { once } from 'node:events';
+import { Prisma } from '@prisma/client';
 import { createApp } from '../dist/app.js';
 import { prisma, assertGameSchemaReady } from '../dist/db/prisma.js';
 import { signAccessToken } from '../dist/auth/jwt.js';
@@ -25,12 +26,26 @@ test('custom tables seat only the human host, reject bots, and do not debit an a
   let occupied = false;
   let debits = 0;
   let creation = null;
+  let uniqueTarget = null;
   replace(t, prisma.session, 'findUnique', async () => ({ userId: host.id, expiresAt: new Date(Date.now() + 60_000), absoluteExpiresAt: new Date(Date.now() + 86_400_000), revokedAt: null, user: host }));
   replace(t, prisma.user, 'findUnique', async () => host);
   replace(t, prisma, '$transaction', async (run) => run({
     tableSeat: { findFirst: async () => occupied ? { userId: host.id } : null },
     user: { updateMany: async () => { debits++; return { count: 1 }; } },
-    table: { create: async (args) => { creation = args.data; return { id: 'new-human-table' }; } },
+    table: { create: async (args) => {
+      if (uniqueTarget === 'missing') {
+        throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed on the (not available)', {
+          code: 'P2002', clientVersion: 'test',
+        });
+      }
+      if (uniqueTarget) {
+        throw new Prisma.PrismaClientKnownRequestError('Unique constraint failed', {
+          code: 'P2002', clientVersion: 'test', meta: { target: uniqueTarget },
+        });
+      }
+      creation = args.data;
+      return { id: 'new-human-table' };
+    } },
   }));
   const server = createServer(createApp());
   server.listen(0, '127.0.0.1');
@@ -59,4 +74,19 @@ test('custom tables seat only the human host, reject bots, and do not debit an a
   assert.equal(alreadySeated.status, 409);
   assert.match((await alreadySeated.json()).error, /Leave your current table/);
   assert.equal(debits, 1);
+
+  occupied = false;
+  uniqueTarget = ['userId'];
+  const raced = await post(body);
+  assert.equal(raced.status, 409);
+  assert.match((await raced.json()).error, /already seated/i);
+
+  uniqueTarget = ['email'];
+  const otherUnique = await post(body);
+  assert.equal(otherUnique.status, 500);
+
+  uniqueTarget = 'missing';
+  const unnamed = await post(body);
+  assert.equal(unnamed.status, 409);
+  assert.match((await unnamed.json()).error, /already seated/i);
 });

@@ -172,12 +172,13 @@ export class TableManager {
       // the same transaction, so no later load can pay them again.
       for (const cash of result.cashOuts) {
         const paid = await tx.user.updateMany({ where: { id: cash.userId, kind: "HUMAN" }, data: { bankroll: { increment: cash.stack } } });
-        // A human's credit must land exactly once, or the whole commit is undone
-        // and the seat keeps its chips (F09). Only a bot's cash-out credits
-        // nothing, by design.
+        // A human's credit must land on exactly one row, or the whole commit is
+        // undone and the seat keeps its chips (F09). updateMany reports zero
+        // rows when the user is missing; that used to clear the seat and
+        // destroy the chips. Only a bot's cash-out credits nothing, by design.
         if (paid.count !== 1) {
           const owner = await tx.user.findUnique({ where: { id: cash.userId }, select: { kind: true } });
-          if (!owner || owner.kind === "HUMAN") throw new EngineError("CASHOUT_FAILED", "A cash-out could not be credited; nothing was changed");
+          if (owner?.kind !== "BOT") throw new EngineError("CASHOUT_FAILED", "A cash-out could not be credited; nothing was changed");
         }
         paidUsers.add(cash.userId);
       }

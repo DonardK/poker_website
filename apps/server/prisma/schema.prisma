@@ -70,6 +70,10 @@ model User {
   role         UserRole    @default(PLAYER)
   kind         PlayerKind  @default(HUMAN)
   botProfile   BotProfile?
+  /// Play-money chips. Stays a 32-bit Int (Prisma BigInt becomes a TS bigint
+  /// and breaks JSON across the server and shared packages). Migration
+  /// 20261010120000_runtime_hardening caps it, and the other chip columns,
+  /// safely below 2^31.
   bankroll     Int         @default(10000)
   avatarHue    Int         @default(210)
   createdAt    DateTime    @default(now())
@@ -124,6 +128,8 @@ model Session {
   revokeReason      String?
 
   @@index([userId])
+  /// Expiry sweeps and "is this session still live" lookups.
+  @@index([expiresAt])
 }
 
 model Table {
@@ -157,6 +163,11 @@ model Table {
 
   @@index([status])
   @@index([hostId])
+  /// Lobby (GET /api/tables): public tables that are not CLOSED, newest first.
+  /// Composite rather than partial: Prisma 6 cannot model a WHERE index, and
+  /// migrate diff must match this file. (isPrivate, status, createdAt DESC)
+  /// is the prefix of that filter and sort.
+  @@index([isPrivate, status, createdAt(sort: Desc)])
 }
 
 /// An operator incident at a table (migration 20261003100000_game_reliability):
@@ -196,7 +207,10 @@ model TableSeat {
 model Hand {
   id         String    @id @default(cuid())
   tableId    String
-  table      Table     @relation(fields: [tableId], references: [id], onDelete: Cascade)
+  /// Deleting a table must not cascade-delete hand history (migration
+  /// 20261010120000_runtime_hardening). Append-only triggers block UPDATE
+  /// and DELETE unless poker.break_glass is on.
+  table      Table     @relation(fields: [tableId], references: [id], onDelete: Restrict)
   handNumber Int
   phase      HandPhase @default(COMPLETE)
   dealerSeat Int
@@ -235,7 +249,8 @@ model HandPlayer {
   handId        String
   hand          Hand        @relation(fields: [handId], references: [id], onDelete: Cascade)
   userId        String?
-  user          User?       @relation(fields: [userId], references: [id])
+  /// Deleting a user must not drop or null out their hand history.
+  user          User?       @relation(fields: [userId], references: [id], onDelete: Restrict)
   seatIndex     Int
   playerKind    PlayerKind
   botProfile    BotProfile?

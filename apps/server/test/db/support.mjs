@@ -4,7 +4,7 @@
  * These suites run ONLY through `npm run test:db`, which starts a disposable
  * embedded PostgreSQL (test/support/pg.mjs) and runs them through
  * test/support/run-tests.mjs with:
- * - POKER_TEST_DATABASE_URL       the least-privileged runtime role (poker_server):
+ * - POKER_TEST_DATABASE_URL       the least-privileged runtime login (poker_app):
  *                                 run-tests.mjs makes it DATABASE_URL, so the built
  *                                 server modules connect exactly as in production;
  * - POKER_TEST_ADMIN_DATABASE_URL the cluster superuser, for fixtures that the

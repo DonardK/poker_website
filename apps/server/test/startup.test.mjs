@@ -7,6 +7,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { connectDatabase, DatabaseConnectError, describeDatabaseFailure } from '../dist/db/connect.js';
 import { assertGameSchemaReady, prisma } from '../dist/db/prisma.js';
+import { assertRestrictedRuntimeRole, enforceRuntimeRole, RuntimeRoleError } from '../dist/db/runtime-role.js';
 import { serializeError } from '../dist/security/safe-log.js';
 
 const SUPABASE_DIRECT = 'postgresql://poker_server:s3cret-pass@db.abcdefghijklmnopqrst.supabase.co:5432/postgres?sslmode=require';
@@ -92,4 +93,28 @@ test('the schema check names every missing migration, passes a current database,
   await assertGameSchemaReady();
   prisma.$queryRaw = async () => { throw new Error('database offline'); };
   await assert.rejects(assertGameSchemaReady(), /database offline/);
+});
+
+const cleanRole = { currentUser: 'poker_app', superuser: false, bypassRls: false, handUpdate: false, handDelete: false };
+
+test('production refuses a superuser, BYPASSRLS, or UPDATE/DELETE on Hand', async () => {
+  await enforceRuntimeRole('development', async () => { throw new Error('should not query'); });
+  await enforceRuntimeRole('test', async () => { throw new Error('should not query'); });
+  assertRestrictedRuntimeRole(cleanRole);
+  await enforceRuntimeRole('production', async () => [cleanRole]);
+  for (const [patch, pattern] of [
+    [{ superuser: true }, /superuser/],
+    [{ bypassRls: true }, /BYPASSRLS/],
+    [{ handUpdate: true }, /UPDATE/],
+    [{ handDelete: true }, /DELETE/],
+    [{ superuser: 't', bypassRls: 'on' }, /superuser/],
+  ]) {
+    await assert.rejects(enforceRuntimeRole('production', async () => [{ ...cleanRole, ...patch }]), pattern);
+  }
+  await assert.rejects(enforceRuntimeRole('production', async () => []), RuntimeRoleError);
+  await assert.rejects(enforceRuntimeRole('production', async () => [{ currentUser: 'poker_app' }]), /did not return superuser/);
+  let seen = '';
+  await enforceRuntimeRole('production', async (sql) => { seen = sql; return [cleanRole]; });
+  assert.match(seen, /has_table_privilege/);
+  assert.match(seen, /"Hand"/);
 });

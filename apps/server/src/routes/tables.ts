@@ -11,6 +11,7 @@ import { env } from "../config.js";
 import { prisma } from "../db/prisma.js";
 import { requireAuth, type AuthedRequest } from "../auth/middleware.js";
 import { logger } from "../logger.js";
+import { uniqueViolation } from "../auth/errors.js";
 import { EngineError } from "@poker/engine";
 import { buildParticipantAudit, rowBindingError, sealedAuditContext } from "../game/audit.js";
 import { decryptState } from "../game/encryption.js";
@@ -176,30 +177,46 @@ tablesRouter.post("/", requireAuth, async (req: AuthedRequest, res) => {
     return;
   }
 
-  const table = await prisma.$transaction(async (tx) => {
-    if (await tx.tableSeat.findFirst({ where: { userId: host.id } })) throw new EngineError("ALREADY_SEATED", "Leave your current table before creating another");
-    const paid = await tx.user.updateMany({ where: { id: host.id, kind: "HUMAN", bankroll: { gte: body.buyIn } }, data: { bankroll: { decrement: body.buyIn } } });
-    if (!paid.count) throw new EngineError("BANKROLL", "Not enough bankroll");
+  let table: { id: string };
+  try {
+    table = await prisma.$transaction(async (tx) => {
+      if (await tx.tableSeat.findFirst({ where: { userId: host.id } })) throw new EngineError("ALREADY_SEATED", "Leave your current table before creating another");
+      const paid = await tx.user.updateMany({ where: { id: host.id, kind: "HUMAN", bankroll: { gte: body.buyIn } }, data: { bankroll: { decrement: body.buyIn } } });
+      if (!paid.count) throw new EngineError("BANKROLL", "Not enough bankroll");
 
-    return tx.table.create({
-      data: {
-        name: body.name ?? `${req.username ?? "Player"}'s Table`,
-        hostId: req.userId,
-        maxSeats,
-        smallBlind: body.smallBlind,
-        bigBlind: body.bigBlind,
-        minBuyIn: body.bigBlind * 20,
-        maxBuyIn: body.bigBlind * 200,
-        timeBankMs: env.TURN_TIME_BANK_MS,
-        seats: {
-          create: Array.from({ length: maxSeats }, (_, seatIndex) => seatIndex === 0
-            ? { seatIndex, status: "OCCUPIED" as const, playerKind: "HUMAN" as const, userId: req.userId, stack: body.buyIn }
-            : { seatIndex, status: "EMPTY" as const }),
+      return tx.table.create({
+        data: {
+          name: body.name ?? `${req.username ?? "Player"}'s Table`,
+          hostId: req.userId,
+          maxSeats,
+          smallBlind: body.smallBlind,
+          bigBlind: body.bigBlind,
+          minBuyIn: body.bigBlind * 20,
+          maxBuyIn: body.bigBlind * 200,
+          timeBankMs: env.TURN_TIME_BANK_MS,
+          seats: {
+            create: Array.from({ length: maxSeats }, (_, seatIndex) => seatIndex === 0
+              ? { seatIndex, status: "OCCUPIED" as const, playerKind: "HUMAN" as const, userId: req.userId, stack: body.buyIn }
+              : { seatIndex, status: "EMPTY" as const }),
+          },
         },
-      },
-      select: { id: true },
-    });
-  }, { maxWait: 10_000, timeout: 20_000 });
+        select: { id: true },
+      });
+    }, { maxWait: 10_000, timeout: 20_000 });
+  } catch (err) {
+    // Two creates for one user can both pass the seat lookup; the loser hits
+    // TableSeat.userId's unique index. That is "already seated", not a 500.
+    // Prisma 6 often reports that violation as "(not available)" with no
+    // column list. This create has no other unique key two requests can race
+    // on, so a P2002 with no target is the same race. A named target that is
+    // not userId stays a 500.
+    const clash = uniqueViolation(err);
+    const unnamed = clash != null && (clash.fields.length === 0 || clash.fields === "(not available)");
+    if (clash && (unnamed || /userId/i.test(clash.fields))) {
+      throw new EngineError("ALREADY_SEATED", "Already seated. Leave your current table before creating another");
+    }
+    throw err;
+  }
 
   // Start the idle clock now: a host who never opens the table still gets it
   // closed and the buy-in returned. The table exists either way, so a failure

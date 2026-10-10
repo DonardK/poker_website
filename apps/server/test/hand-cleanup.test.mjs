@@ -8,8 +8,6 @@
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import crypto from 'node:crypto';
-import { syncBuiltinESMExports } from 'node:module';
 import { applyAction, createTable, leaveSeat, legalActions, sitDown, startHand } from '@poker/engine';
 import { prisma } from '../dist/db/prisma.js';
 import { TableManager } from '../dist/game/manager.js';
@@ -38,7 +36,10 @@ function database(t, initial, { credit = () => 1, kindOf = () => 'HUMAN' } = {})
       tableSeat: { update: async (args) => args.data },
       user: {
         updateMany: async ({ where, data }) => { const count = credit(where.id); if (count) pending.push({ userId: where.id, amount: data.bankroll.increment }); return { count }; },
-        findUnique: async ({ where }) => ({ kind: kindOf(where.id) }),
+        findUnique: async ({ where }) => {
+          const kind = kindOf(where.id);
+          return kind == null ? null : { kind };
+        },
       },
       hand: { create: async ({ data }) => data },
       botStatistic: { updateMany: async () => ({ count: 0 }) },
@@ -66,9 +67,9 @@ test('a failed next deal cannot undo Hand Clean-up: the leaver is paid once, the
   const manager = new TableManager();
   t.after(() => manager.stop());
 
-  const realRandom = crypto.randomFillSync;
-  crypto.randomFillSync = () => { throw new Error('Synthetic RNG outage'); };
-  syncBuiltinESMExports();
+  // The engine draws from globalThis.crypto.getRandomValues, not randomFillSync.
+  const realRandom = globalThis.crypto.getRandomValues.bind(globalThis.crypto);
+  globalThis.crypto.getRandomValues = () => { throw new Error('Synthetic RNG outage'); };
   try {
     manager['armTimers'](table);
     for (let i = 0; i < 40 && db.state().phase === 'SHOWDOWN'; i++) await pause(25);
@@ -79,8 +80,7 @@ test('a failed next deal cannot undo Hand Clean-up: the leaver is paid once, the
     assert.equal(after.players.some((p) => p?.userId === leaver), false, 'the leaver\'s seat is released');
     assert.deepEqual(db.credits, [{ userId: leaver, amount: owed }], 'the leaver is paid exactly once');
   } finally {
-    crypto.randomFillSync = realRandom;
-    syncBuiltinESMExports();
+    globalThis.crypto.getRandomValues = realRandom;
   }
   await manager.tryStart(ID);
   assert.equal(db.state().handNumber, table.handNumber + 1, 'dealing resumes once the RNG is healthy');
@@ -90,6 +90,15 @@ test('a failed next deal cannot undo Hand Clean-up: the leaver is paid once, the
 test('a human cash-out that credits no row rolls the whole commit back (F09)', async (t) => {
   const table = seated(2);
   const db = database(t, table, { credit: () => 0, kindOf: () => 'HUMAN' });
+  const manager = new TableManager(); manager.stop();
+  await assert.rejects(manager.standUp(ID, 'player-1'), { code: 'CASHOUT_FAILED' });
+  assert.equal(db.state().players[1]?.userId, 'player-1', 'the seat keeps the player and the chips');
+  assert.deepEqual(db.credits, []);
+});
+
+test('a cash-out whose user row is missing rolls the whole commit back', async (t) => {
+  const table = seated(2);
+  const db = database(t, table, { credit: () => 0, kindOf: () => null });
   const manager = new TableManager(); manager.stop();
   await assert.rejects(manager.standUp(ID, 'player-1'), { code: 'CASHOUT_FAILED' });
   assert.equal(db.state().players[1]?.userId, 'player-1', 'the seat keeps the player and the chips');

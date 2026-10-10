@@ -3,7 +3,7 @@
  * PostgreSQL (the disposable embedded cluster of test/support/pg.mjs).
  *
  * The TableManager here is the production code path: its Prisma client
- * connects as the least-privileged runtime role (poker_server; run-tests.mjs
+ * connects as the least-privileged runtime login (poker_app; run-tests.mjs
  * makes POKER_TEST_DATABASE_URL the DATABASE_URL), and every command runs in
  * its own `mutate` transaction behind the Table row lock (SELECT ... FOR
  * UPDATE), paying bankrolls with conditional UPDATEs, exactly as in
@@ -54,7 +54,7 @@ before(async () => {
   await admin.connect();
   // The Prisma client really connects as the runtime role.
   const [{ current_user: role }] = await prisma.$queryRaw`SELECT current_user`;
-  assert.equal(role, "poker_server");
+  assert.equal(role, "poker_app");
 });
 
 after(async () => {

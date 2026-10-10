@@ -6,12 +6,13 @@
  * `embedded-postgres` binaries, no Docker) in a fresh temporary data directory
  * on a free 127.0.0.1 port, creates `poker_test`, applies EVERY migration in
  * prisma/migrations with the project's own Prisma CLI (`prisma migrate deploy`,
- * exactly as production is migrated), then gives the runtime role that the
- * migrations create NOLOGIN (`poker_server`) a random password so tests can
- * connect as the least-privileged application role.
+ * exactly as production is migrated), then gives the runtime login the
+ * migrations create (`poker_app`, member of NOLOGIN `poker_server`) a random
+ * password so tests connect as the least-privileged application role.
+ * poker_server stays NOLOGIN.
  * It returns { adminUrl, runtimeUrl, stop() }:
  * - adminUrl:   the cluster superuser (fixtures, privilege inspection, migrations);
- * - runtimeUrl: poker_server, the role the game server runs as in production;
+ * - runtimeUrl: poker_app, the role the game server runs as in production;
  * - stop():     stops the cluster and deletes its data directory (idempotent).
  * The data directory is also removed on SIGINT/SIGTERM, an uncaught error and
  * plain process exit, so an interrupted run leaves no cluster or files behind.
@@ -48,7 +49,7 @@ const requireFromServer = createRequire(join(serverDir, "package.json"));
 const LOOPBACK = "127.0.0.1";
 const DATABASE = "poker_test";
 const SUPERUSER = "postgres";
-const RUNTIME_ROLE = "poker_server";
+const RUNTIME_ROLE = "poker_app";
 
 /** Migration directory names in the order Prisma applies them (lexicographic). */
 export function migrationNames() {
@@ -264,9 +265,9 @@ export async function startTestDatabase({ log = () => {} } = {}) {
     await admin.connect();
     let version;
     try {
-      // The migrations create the runtime role NOLOGIN (production logs in with
-      // its own credentials); a random password lets tests connect as it.
-      await admin.query(`ALTER ROLE ${RUNTIME_ROLE} WITH LOGIN PASSWORD ${admin.escapeLiteral(runtimePassword)}`);
+      // Migrations create poker_app LOGIN with no password, and leave
+      // poker_server NOLOGIN. A random password lets tests connect as poker_app.
+      await admin.query(`ALTER ROLE ${RUNTIME_ROLE} WITH PASSWORD ${admin.escapeLiteral(runtimePassword)}`);
       version = (await admin.query("SHOW server_version")).rows[0].server_version;
     } finally { await admin.end(); }
     const runtimeUrl = `postgresql://${RUNTIME_ROLE}:${runtimePassword}@${LOOPBACK}:${instance.port}/${DATABASE}?sslmode=disable`;

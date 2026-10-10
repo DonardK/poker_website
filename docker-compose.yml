@@ -19,9 +19,16 @@
 # automatically for interpolation, so keep these values out of it), e.g.
 #   .env.compose:  POSTGRES_PASSWORD=<random>  REDIS_PASSWORD=<random>
 #   docker compose --env-file .env.compose up -d
-# then point your local apps/server/.env at
-#   DATABASE_URL=postgresql://poker:<POSTGRES_PASSWORD>@127.0.0.1:5432/poker?schema=public
+# then point your local apps/server/.env at the restricted login and keep the
+# docker superuser for migrations only (apps/server/prisma/RUNTIME_ROLE.md):
+#   DATABASE_URL=postgresql://poker_app:<POKER_APP_PASSWORD>@127.0.0.1:5432/poker?schema=public
+#   DIRECT_URL=postgresql://poker:<POSTGRES_PASSWORD>@127.0.0.1:5432/poker?schema=public
 #   REDIS_URL=redis://:<REDIS_PASSWORD>@127.0.0.1:6379
+# Optional, only for the first creation of the data volume: POKER_APP_PASSWORD
+# (letters and digits, at least 16) is applied by
+# apps/server/prisma/docker-init/01-poker-app-role.sh. An existing volume does
+# not re-run that script; set the password with ALTER ROLE instead.
+# dotenv does not override, so these must not also be set in the repo-root .env.
 # Generate passwords with:
 #   node -e "console.log(require('node:crypto').randomBytes(24).toString('hex'))"
 # POSTGRES_PASSWORD only takes effect when the data volume is first created.
@@ -37,12 +44,18 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-poker}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD (see the header of docker-compose.yml)}
       POSTGRES_DB: ${POSTGRES_DB:-poker}
+      # Optional. When set on a brand-new volume, docker-init creates poker_app
+      # with this password. Empty means the role is created by migrations and
+      # the password is set afterwards with ALTER ROLE.
+      POKER_APP_PASSWORD: ${POKER_APP_PASSWORD:-}
       # Password logins use SCRAM, never md5 or trust.
       POSTGRES_INITDB_ARGS: "--auth-host=scram-sha-256 --auth-local=scram-sha-256"
+    # 127.0.0.1 only. Do not publish Postgres on 0.0.0.0.
     ports:
       - "127.0.0.1:5432:5432"
     volumes:
       - poker_pg_data:/var/lib/postgresql/data
+      - ./apps/server/prisma/docker-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
       # $$ defers expansion to the container shell, so the check always uses
       # the values the server was actually started with.
@@ -68,6 +81,7 @@ services:
       - sh
       - -c
       - exec redis-server --appendonly yes --protected-mode yes --requirepass "$$REDIS_PASSWORD"
+    # 127.0.0.1 only. Do not publish Redis on 0.0.0.0.
     ports:
       - "127.0.0.1:6379:6379"
     volumes:
