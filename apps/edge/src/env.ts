@@ -26,6 +26,10 @@ export interface Env {
   ENABLE_LEGACY_BOTS: string;
   TURNSTILE_SITE_KEY: string;
   TABLE_DO_LOCATION_HINT: string;
+  /** Empty unless Cloudflare Access is configured for /api/admin. Not a secret. */
+  CF_ACCESS_AUD?: string;
+  /** Team subdomain only, for example "contoso" in https://contoso.cloudflareaccess.com. */
+  CF_ACCESS_TEAM_DOMAIN?: string;
   JWT_ACCESS_SECRET: string;
   JWT_REFRESH_SECRET: string;
   WS_TICKET_SECRET: string;
