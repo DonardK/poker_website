@@ -1,3 +1,5 @@
+> **Moved.** This was CLAUDE-REVIEW.md. Independent review of 30 September 2026 (CR-001–CR-041). Later status: [7 October recheck](../progress/11-october-7-review-recheck.md). Do not edit this report to mark findings fixed.
+
 # Claude review: defects in the Hold'em Live poker platform
 
 - **Date:** 30 September 2026 (started 29 September, 23:50 CEST)

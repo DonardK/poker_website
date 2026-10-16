@@ -1,6 +1,6 @@
 # Texas Hold'em Platform
 
-Play-chip multiplayer Texas Hold'em with a Next.js client, an authoritative Express/Socket.io server, and PostgreSQL transactions. New tables are for human players; legacy bot tables remain readable so seated players can finish or cash out. Supabase OnlinePoker stores the game data. Redis is optional for Socket.io fanout; it is not the source of game state.
+Play-chip multiplayer Texas Hold'em with a Next.js client, an authoritative Express/Socket.io server, and PostgreSQL transactions. What has been built, and what is still open, is in [docs/README.md](docs/README.md). New tables are for human players; legacy bot tables remain readable so seated players can finish or cash out. Supabase OnlinePoker stores the game data. Redis is optional for Socket.io fanout; it is not the source of game state.
 
 ## Run the configured project
 
@@ -76,7 +76,7 @@ Server timers only prompt a check. The decision to warn or close is taken inside
 
 ## Security and fairness
 
-See [COMPLIANCE.md](COMPLIANCE.md) for the requirement-by-requirement dossier and measured test results, and [SECURITY-REVIEW.md](SECURITY-REVIEW.md) for the threat model.
+See [COMPLIANCE.md](COMPLIANCE.md) for the requirement-by-requirement dossier and measured test results, and [the fairness model](docs/reviews/2026-09-24-fairness-model.md) for the threat model.
 
 Every hand is shuffled with an unbiased Fisher-Yates (Durstenfeld) shuffle. Each swap index comes from the operating system's CSPRNG through Web Crypto (`crypto.getRandomValues`) with explicit rejection sampling, so there is no modulo bias. The code has no `Math.random` and no seeded generator. Before any blind is posted or card dealt, the engine assigns the hand a UUID v4 and computes a salted SHA-256 commitment to the complete deck order plus a salted Merkle root. Both are published in the first snapshot of the hand. Community cards leave the server-only deck only when their betting round starts. Each player receives only their own hole cards and a Merkle proof for every card they can see. A fail-closed guard, with an exact schema allow-list and a card-token check, refuses to send any snapshot that contains more. Every in-hand action and state transition, from hand start to settlement, is appended to a SHA-256 hash chain. The chain is sealed with a post-hand verification hash and linked to the previous hand at the table. Newcomers and players returning after missed blinds wait for the big blind. A player who leaves mid-hand has their hand folded on their turn.
 

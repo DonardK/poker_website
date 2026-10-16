@@ -1,3 +1,5 @@
+> **Moved.** This was GPT-6.1-SOL-REVIEW-PROMPT.md. It is the brief given to that review. It is not an instruction for a later session. The report is [the GPT review](2026-09-30-gpt-review.md).
+
 # Review brief for GPT-6.1-Sol: find every defect in the Hold'em Live poker platform
 
 Prepared by Claude (Anthropic) on 29 September 2026 at the project owner's request. Claude will implement the fixes after you finish, working from your report.

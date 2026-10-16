@@ -1,5 +1,5 @@
 /**
- * Username policy (DECISIONS.md D7). Usernames are shown to every player at a
+ * Username policy (docs/product/DECISIONS.md D7). Usernames are shown to every player at a
  * table, so they must not impersonate the operator or its staff, and they are
  * unique case-insensitively (User.usernameCanonical = lower(username), a
  * generated column with a unique index), so "Alice" and "alice" can never be

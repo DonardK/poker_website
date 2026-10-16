@@ -1,6 +1,8 @@
+> **Moved.** This was SECURITY-REVIEW.md. It is the fairness model (shuffle, isolation, audit), not the vulnerability-reporting policy. Reporting is [SECURITY.md](../../SECURITY.md). The dossier is [COMPLIANCE.md](../../COMPLIANCE.md).
+
 # Card randomness, isolation and audit review
 
-This review describes the current model (2026-09-24). The previous player-nonce, "provably fair" shuffle was deliberately replaced to meet a strict GLI-19/MGA-style specification. That design revealed the full shuffle seed after every hand, which exposed opponents' mucked hole cards and the undealt deck to every participant. [COMPLIANCE.md](COMPLIANCE.md) maps each requirement to the code and to measured test evidence.
+This review describes the current model (2026-09-24). The previous player-nonce, "provably fair" shuffle was deliberately replaced to meet a strict GLI-19/MGA-style specification. That design revealed the full shuffle seed after every hand, which exposed opponents' mucked hole cards and the undealt deck to every participant. [COMPLIANCE.md](../../COMPLIANCE.md) maps each requirement to the code and to measured test evidence.
 
 ## Randomness
 

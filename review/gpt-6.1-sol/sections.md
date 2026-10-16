@@ -1,3 +1,5 @@
+> **Working fragment.** Notes that were copied into the published report, now [docs/reviews/2026-09-30-gpt-review.md](../../docs/reviews/2026-09-30-gpt-review.md). This file is not a second review.
+
 ## 5. Status of earlier findings
 
 All 22 earlier findings remain OPEN in the reviewed tree. This table adds only evidence/limits from this pass; the complete remediation records are in section 6. F21 is split into command delivery and readiness because the fixes differ. Neither this review nor the concurrent Claude review changed the application.

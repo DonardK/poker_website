@@ -1,3 +1,5 @@
+> **Moved.** This was GPT-6.1-SOL-REVIEW.md. Review of 30 September 2026 (SOL-001–SOL-052). Later status: [7 October recheck](../progress/11-october-7-review-recheck.md). Citations use the filenames of that day.
+
 # GPT-6.1-SOL-REVIEW
 
 ## 1. Header

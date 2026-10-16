@@ -1,3 +1,5 @@
+> **Moved.** This was opuswork.md in the repository root. It is the working log of 7 October 2026, not a specification. Current status: [progress index](../progress/README.md). Citations inside this file use the filenames of that day.
+
 # Opus work log: Hold'em Live poker platform
 
 Everything Claude (Opus 5.5) did, changed and found in this session, from 29 September to 7 October 2026. All times are local (CEST, UTC+2).
@@ -5,9 +7,9 @@ Everything Claude (Opus 5.5) did, changed and found in this session, from 29 Sep
 - **Repository:** `poker_website`, branch `main` at `38be8a7`, plus a large uncommitted working tree. Nothing was committed or pushed in this session.
 - **Live database:** nothing was ever written to the live Supabase database. Reads were limited to the 30 September checks in section 6.3 and one project-status call on 7 October; a later read-only probe was refused and not attempted again.
 - **Companion files:**
-  - [`CLAUDE-REVIEW.md`](CLAUDE-REVIEW.md): the 30 September review, reproduced in full in Appendix A;
-  - [`GPT-6.1-SOL-REVIEW.md`](GPT-6.1-SOL-REVIEW.md): GPT-6.1-Sol's review;
-  - [`progress.md`](progress.md): the team log (entries dated 2026-10-07).
+  - [`CLAUDE-REVIEW.md`](2026-09-30-claude-review.md): the 30 September review, reproduced in full in Appendix A;
+  - [`GPT-6.1-SOL-REVIEW.md`](2026-09-30-gpt-review.md): GPT-6.1-Sol's review;
+  - [`progress.md`](../progress/README.md): the team log (entries dated 2026-10-07).
 
 **Contents**
 
@@ -4300,7 +4302,7 @@ Every change is listed in `opuswork.md` section 9.3.
 
 #### 2026-10-07 (evening) - "Game server unavailable" in the lobby; joining tables fixed (NEW-1)
 
-**Status: the code fixes are made and verified on disposable databases. The owner's dev game server still has to be restarted, and the live database's migration state was not checked (see below).** Full details, including every file changed in this session: [opuswork.md](opuswork.md).
+**Status: the code fixes are made and verified on disposable databases. The owner's dev game server still has to be restarted, and the live database's migration state was not checked (see below).** Full details, including every file changed in this session: [opuswork.md](2026-10-07-session-log.md).
 
 **What happened.** The lobby showed "Game server unavailable. Start both services with npm run dev, then retry." The web app (port 3000) was running, but nothing answered on port 4000.
 - `npm run dev` started at 16:42, 2½ minutes after the PC booted. Its game server exited shortly after, and `tsx watch` then waits for a file change without restarting it.
@@ -4355,9 +4357,9 @@ No application code, tests or databases were changed by this review or the re-ch
 
 - **Claude (Anthropic)** reviewed every production file of the engine, shared package, server, web app, schema and migrations (159 files) on 2026-09-29/30.
   - It ran the existing suites, a 28,273-hand lifecycle fuzz and its own repro scripts.
-  - Full report: [CLAUDE-REVIEW.md](CLAUDE-REVIEW.md), with findings CR-001 to CR-041, decisions D1–D12 and legal register L1–L10. Repro scripts: `review/claude/repro/`.
-- **GPT-6.1-Sol** reviewed the same tree at the same time, from the brief in [GPT-6.1-SOL-REVIEW-PROMPT.md](GPT-6.1-SOL-REVIEW-PROMPT.md).
-  - Its report: [GPT-6.1-SOL-REVIEW.md](GPT-6.1-SOL-REVIEW.md) (SOL-001 to SOL-052). Its scripts: `review/gpt-6.1-sol/repro/`.
+  - Full report: [CLAUDE-REVIEW.md](2026-09-30-claude-review.md), with findings CR-001 to CR-041, decisions D1–D12 and legal register L1–L10. Repro scripts: `review/claude/repro/`.
+- **GPT-6.1-Sol** reviewed the same tree at the same time, from the brief in [GPT-6.1-SOL-REVIEW-PROMPT.md](2026-09-29-gpt-review-brief.md).
+  - Its report: [GPT-6.1-SOL-REVIEW.md](2026-09-30-gpt-review.md) (SOL-001 to SOL-052). Its scripts: `review/gpt-6.1-sol/repro/`.
   - Claude re-ran GPT's scripts. All 10 of its findings that Claude had not found reproduced, and they were adopted as CR-032 to CR-041.
 - **Between 2026-10-01 and 2026-10-06, another session fixed many findings.** That work is uncommitted and has no progress.md entry of its own. It includes:
   - three migrations (`auth_hardening`, `ledger_foundation`, `game_reliability`);
@@ -5985,7 +5987,7 @@ All entries below mean **verify with counsel**, not a legal conclusion or findin
 | Accessible service | Measured 3.19:1 button, reduced-motion clock, absent turn announcements (SOL-041–043) | Verify with counsel: European Accessibility Act/Maltese implementation scope and exemptions for the actual consumer service. WCAG observations are technical findings, not legal determinations. | [Directive (EU) 2019/882](https://eur-lex.europa.eu/legal-content/EN/TXT/?qid=1750773214845&uri=CELEX%3A32019L0882), [WCAG 2.2](https://www.w3.org/TR/WCAG22/). Official directive search text available; direct PDF anti-bot blocked full retrieval. |
 | Claims, bots and currency | Dollar demo labels; AI metadata; broad tamper wording (SOL-025,048,051) | Verify with counsel: advertise only the actual game/asset and measured assurances; no “certified”, “compliant” or guaranteed fairness/security claims without supporting approval. | [MGA player protection](https://www.mga.org.mt/licensee-hub/compliance/player-protection/); implementation claims compared in section 9. |
 | Reporting/audit assurance | Two fully audited live hands; 54 legacy hands, no cutover gap seen | Verify with counsel/lab: required records, technical assessment, reporting and approval process for the actual cash service. | [MGA reporting requirements](https://www.mga.org.mt/licensee-hub/compliance/licensees-information-reporting-requirements/reporting-requirements/), [GLI standards](https://gaminglabs.com/gli-standards/). A standard document is not a certificate. |
-| Open-source obligations | 237 production lock entries; LGPL-bearing native package; 8 unknown manifests | Verify with counsel: distribution/linkage notices, source/relocation obligations where applicable and complete deployment SBOM. UNKNOWN does not mean unlicensed. | Local [license inventory](review/gpt-6.1-sol/production-licenses.json), installed package manifests/LICENSE evidence; no legal clearance performed. |
+| Open-source obligations | 237 production lock entries; LGPL-bearing native package; 8 unknown manifests | Verify with counsel: distribution/linkage notices, source/relocation obligations where applicable and complete deployment SBOM. UNKNOWN does not mean unlicensed. | Local [license inventory](../../review/gpt-6.1-sol/production-licenses.json), installed package manifests/LICENSE evidence; no legal clearance performed. |
 
 #### 9. Claims check
 

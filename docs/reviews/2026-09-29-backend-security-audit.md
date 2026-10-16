@@ -1,3 +1,5 @@
+> **Moved.** This was BACKEND-SECURITY-AUDIT.md. Review of 29 September 2026 (F01–F22). Later status: [7 October recheck](../progress/11-october-7-review-recheck.md).
+
 # Backend security and real-money readiness review
 
 Review date: 29 September 2026. Target: Malta, real-money and crypto poker. Custody model and player countries remain undecided.

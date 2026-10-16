@@ -55,7 +55,7 @@ const GUEST_NAME_ATTEMPTS = 5;
 const passwordSchema = z.string().min(12).max(72).refine((v) => Buffer.byteLength(v, "utf8") <= 72);
 /**
  * Sign-up (guest or registered) requires accepting the CURRENT terms version
- * and confirming 18+ (DECISIONS.md D9/D10); both are stored on the account.
+ * and confirming 18+ (docs/product/DECISIONS.md D9/D10); both are stored on the account.
  */
 const termsSchema = z.object({ acceptTerms: z.literal(true), confirmAge: z.literal(true), termsVersion: z.string().min(1).max(64) });
 
