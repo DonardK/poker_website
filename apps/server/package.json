@@ -2,7 +2,7 @@
   "name": "@poker/server",
   "version": "0.1.0",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "MIT",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
