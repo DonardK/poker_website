@@ -201,8 +201,11 @@ jobs:
           NEXT_PUBLIC_SOCKET_URL: https://poker.example.invalid
           NEXT_PUBLIC_TURNSTILE_SITE_KEY: 1x00000000000000000000AA
       # Not deployed. Production builds again in the deploy job with the real public vars.
+      # Next.js 15 passed its two-year support date on 2026-10-21, so OpenNext refuses it without
+      # --dangerouslyUseUnsupportedNextVersion (also in apps/web package.json deploy/preview).
+      # 15.5.x still receives security releases; the move to Next.js 16 removes the flag.
       - name: OpenNext Cloudflare build
-        run: (cd apps/web && npx --no-install opennextjs-cloudflare build)
+        run: (cd apps/web && npx --no-install opennextjs-cloudflare build --dangerouslyUseUnsupportedNextVersion)
         env:
           NEXT_PUBLIC_API_URL: https://poker.example.invalid
           NEXT_PUBLIC_SOCKET_URL: https://poker.example.invalid
@@ -361,7 +364,7 @@ jobs:
         run: |
           set -euo pipefail
           node .github/workflows/support/assert-ci-offline.mjs --allow-cloudflare
-          (cd apps/web && npx --no-install opennextjs-cloudflare build)
+          (cd apps/web && npx --no-install opennextjs-cloudflare build --dangerouslyUseUnsupportedNextVersion)
           (cd apps/web && npx --no-install wrangler deploy --env preview) 2>&1 | tee -a "$RUNNER_TEMP/preview-wrangler.txt"
       - name: Comment preview URLs
         env:
