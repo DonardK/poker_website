@@ -146,6 +146,15 @@ export function AuthHydrator({ children }: { children: React.ReactNode }) {
 
     const refresh = async (): Promise<void> => {
       window.clearTimeout(retryTimer);
+      // SECURITY (G4): every trigger comes through here (interval, visibility,
+      // back online, "Try again", a socket the server closed). While this
+      // browser's sign-out is pending, refreshing would sign back in with the
+      // old cookie: this browser is signed out, so finish the sign-out instead.
+      if (readPendingLogout()) {
+        signOut();
+        retryPendingLogout();
+        return;
+      }
       const startedWithToken = useAuthStore.getState().accessToken;
       const startedWithWalletVersion = useAuthStore.getState().walletVersion;
       // Another tab's result, a sign-in or a sign-out replaced the session meanwhile: this outcome is not newer.

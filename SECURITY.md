@@ -57,6 +57,26 @@ best-practice headers without an exploit, and sign-up refusing a username or
 email address that is already taken (it must; sign-up is behind Turnstile and
 rate limits).
 
+Known and accepted for now (a report that only restates one of these is out
+of scope; a way around the mitigation it names is in scope):
+
+- A "This wasn't me" link works for 7 days for whoever can read the mailbox it
+  was sent to, and it hands out a password-reset token. Redeeming one voids
+  every other such link sent since its incident, so an owner who recovers with
+  the link from their own mailbox also kills the links an attacker's address
+  received. Recovering another way (for example signing in with a passkey and
+  changing the email back) leaves links mailed to the replaced address usable
+  until they expire.
+- The second-factor counter of a known device (one that signed in before) is
+  kept per Cloudflare isolate, like the familiar-address password counter, so
+  the owner is not locked out by someone else's guesses. Guesses from such a
+  device spread over many isolates are not held to one account-wide count.
+  Removing the device under account security makes it unknown again.
+- A first TOTP or passkey added after a password-only confirmation does not
+  need the emailed code; it holds withdrawals for `SECURITY_HOLD_HOURS`
+  (default 24) and mails a "This wasn't me" notice instead. Setting the hold
+  to 0 removes that protection.
+
 ## Safe harbour
 
 We will not pursue legal action or ask anyone else to, for research that:

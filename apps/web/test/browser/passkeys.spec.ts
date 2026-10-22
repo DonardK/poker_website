@@ -72,9 +72,13 @@ test("after signing out, the passkey signs straight back in (no password, no cod
   await page.locator("#passkeys").getByRole("button", { name: "Add a passkey" }).click();
   await expect(page.locator("main").getByText(/^Passkey added/)).toBeVisible();
 
+  // Sign-out lands on /login. The software authenticator may answer the passkey autofill there at once, and that
+  // sign-in leaves /login with a full page load (leaveAuthPage), so the visit is recorded rather than polled for.
+  const visited: string[] = [];
+  page.on("framenavigated", (frame) => { if (frame === page.mainFrame()) visited.push(new URL(frame.url()).pathname); });
   await openAccountMenu(page);
   await page.getByRole("button", { name: "Sign out", exact: true }).click();
-  await expect(page).toHaveURL(/\/login/);
+  await expect.poll(() => visited.includes("/login")).toBe(true);
   // The software authenticator answers the username field's passkey autofill by itself (a person picks the passkey
   // there); otherwise the button does it. Either way it is the passkey route, with no password.
   await Promise.race([

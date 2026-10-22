@@ -200,6 +200,31 @@ test.describe("lobby", () => {
     await expect.poll(() => page.evaluate(() => localStorage.getItem("poker-pending-logout")), { timeout: 10_000 }).toBeNull();
   });
 
+  test("a sign-out made while the server was unreachable is not undone when the connection comes back", async ({ page, request }) => {
+    await request.post(`${fixture}/__test/reset`, { data: { mode: "unseated" } });
+    await page.goto("/");
+    await expectSignedIn(page);
+    // The server stops answering: a refresh fails and the app marks itself offline (the session is kept).
+    await page.route(`${fixture}/api/auth/refresh`, (route) => route.fulfill({ status: 503, json: { error: "Service temporarily unavailable", retryable: true } }));
+    await page.waitForFunction(() => "__pokerSession" in window);
+    await page.evaluate(() => (window as unknown as { __pokerSession: { refresh: () => Promise<void> } }).__pokerSession.refresh());
+    await expectSignedIn(page);
+    // Signing out cannot reach the server either.
+    await page.route(`${fixture}/api/auth/logout`, (route) => route.abort("internetdisconnected"));
+    await openAccountMenu(page);
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
+    await expectOnLogin(page);
+    // Back online, a refresh with the old cookie would succeed: no trigger (back online, the offline retry) may send one.
+    await page.unroute(`${fixture}/api/auth/refresh`);
+    let refreshes = 0;
+    await page.route(`${fixture}/api/auth/refresh`, (route) => { refreshes++; return route.continue(); });
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await page.waitForTimeout(2_500);
+    expect(refreshes).toBe(0);
+    await expect(accountMenuButton(page)).toHaveCount(0);
+    expect(await page.evaluate(() => localStorage.getItem("poker-pending-logout"))).toContain('"v":1');
+  });
+
   test("table status labels are written for people", async ({ page, request }) => {
     await request.post(`${fixture}/__test/reset`, { data: { mode: "spectator" } });
     await page.goto("/");

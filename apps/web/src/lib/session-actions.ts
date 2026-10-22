@@ -48,6 +48,8 @@ export async function signOut(opts: { reason: "logout" | "switch"; exitTo?: stri
   writePendingLogout();
   resetClientState();
   const store = useAuthStore.getState();
+  // Signed out, not "server unavailable": the gate shows the sign-in page, never a "Try again" that would refresh.
+  store.setApiOffline(false);
   store.setSignOutNotice(null);
   store.setExitTo(opts.exitTo ?? (opts.reason === "switch" ? "/login?switch=1" : "/login"));
   broadcastSignedOut(opts.reason);
