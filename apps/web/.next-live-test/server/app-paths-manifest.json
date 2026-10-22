@@ -1,0 +1,9 @@
+{
+  "/icon.svg/route": "app/icon.svg/route.js",
+  "/apple-icon/route": "app/apple-icon/route.js",
+  "/(auth)/login/page": "app/(auth)/login/page.js",
+  "/(auth)/signup/page": "app/(auth)/signup/page.js",
+  "/(app)/table/[id]/page": "app/(app)/table/[id]/page.js",
+  "/(app)/(shell)/welcome/page": "app/(app)/(shell)/welcome/page.js",
+  "/(app)/(shell)/page": "app/(app)/(shell)/page.js"
+}

@@ -246,3 +246,10 @@ body {
   font-family: var(--font-sans), ui-sans-serif, system-ui, sans-serif;
   overflow-wrap: break-word;
 }
+
+/* Printing backup codes ("Print" in the backup codes panel): only that panel goes on paper. */
+@media print {
+  body.printing-codes * { visibility: hidden; }
+  body.printing-codes [data-print-area], body.printing-codes [data-print-area] * { visibility: visible; color: #000; background: #fff; }
+  body.printing-codes [data-print-area] { position: absolute; top: 0; left: 0; width: 100%; padding: 1rem; }
+}

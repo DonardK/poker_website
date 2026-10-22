@@ -17,6 +17,29 @@ export const TABLE_IDLE_WARNING_MS = 30_000;
 /** Why a table closed: IDLE = no activity (warning expired); EMPTY = every seat was released. */
 export type TableCloseReason = "IDLE" | "EMPTY";
 export const REFRESH_COOKIE_NAME = "poker_refresh";
+/**
+ * Set and cleared together with the refresh cookie (Path=/, HttpOnly, same lifetime).
+ * Only a redirect hint for the web middleware, never an authenticator.
+ */
+export const SESSION_HINT_COOKIE_NAME = "poker_session_hint";
+
+// Account security (docs/cloudflare/ARCHITECTURE.md §5).
+/** Step-up freshness: account changes need a sign-in or re-auth this recent (Session.reauthAt). */
+export const STEP_UP_WINDOW_MS = 5 * 60_000;
+export const PASSWORD_MIN_LENGTH = 12;
+export const PASSWORD_MAX_BYTES = 72;
+/** Longest login identifier: an email address (RFC 5321 path limit). */
+export const LOGIN_IDENTIFIER_MAX_LENGTH = 254;
+export const TOTP_DIGITS = 6;
+export const BACKUP_CODE_COUNT = 10;
+/** Usernames this device remembers for quick re-login (localStorage only; never passwords or tokens). */
+export const RECENT_ACCOUNTS_MAX = 5;
+/** A money step-up grant lives at most this long (the database enforces it) and is used once. */
+export const STEP_UP_GRANT_TTL_MS = 5 * 60_000;
+/** The emailed step-up code: digits, lifetime and wrong tries allowed (the database enforces the last two). */
+export const STEP_UP_EMAIL_CODE_DIGITS = 6;
+export const STEP_UP_EMAIL_CODE_TTL_MS = 10 * 60_000;
+export const STEP_UP_EMAIL_CODE_MAX_ATTEMPTS = 5;
 
 export const BOT_USERNAMES: Record<BotProfile, readonly string[]> = {
   TAG: ["Bot_Alice", "Bot_Vera"],

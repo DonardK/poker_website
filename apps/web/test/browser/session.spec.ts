@@ -1,6 +1,6 @@
-import { test, expect, type APIRequestContext, type Page } from "@playwright/test";
-
-const fixture = "http://127.0.0.1:4107";
+import type { APIRequestContext, Page } from "@playwright/test";
+import { expectOnLogin, expectSignedIn } from "../support/auth";
+import { expect, fixture, test } from "../support/fixtures";
 
 interface SessionStats {
   refreshMode: string;
@@ -32,7 +32,7 @@ async function settle(page: Page) {
 
 async function signedInLobby(page: Page) {
   await page.goto("/");
-  await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+  await expectSignedIn(page);
 }
 
 test("two tabs refreshing at the same moment both stay signed in", async ({ context, request }) => {
@@ -59,8 +59,8 @@ test("two tabs refreshing at the same moment both stay signed in", async ({ cont
   expect((await sessionStats(request)).refreshStats.refused).toBe(0);
   for (const page of [first, second]) {
     await settle(page);
-    await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Play as guest" })).toHaveCount(0);
+    await expectSignedIn(page);
+    await expect(page).not.toHaveURL(/\/login/);
   }
 });
 
@@ -71,7 +71,7 @@ test("a 401 caused by another tab's rotation is re-checked before signing out", 
   await refreshNow(page);
   const stats = await sessionStats(request);
   expect(stats.refreshStats).toMatchObject({ refused: 1, ok: 1 });
-  await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+  await expectSignedIn(page);
 });
 
 test("a refresh answered 401 twice signs out", async ({ page, request }) => {
@@ -80,7 +80,8 @@ test("a refresh answered 401 twice signs out", async ({ page, request }) => {
   await setSession(request, { refreshMode: "unauthorized" });
   await refreshNow(page);
   expect((await sessionStats(request)).refreshStats.refused).toBe(2);
-  await expect(page.getByRole("button", { name: "Play as guest" })).toBeVisible();
+  // The gate sends the visitor to sign in, coming back here afterwards.
+  await expectOnLogin(page, "%2F");
 });
 
 test("a refresh answered 503 keeps the session and recovers when the server is back", async ({ page, request }) => {
@@ -90,13 +91,13 @@ test("a refresh answered 503 keeps the session and recovers when the server is b
   await refreshNow(page);
   const offline = page.getByText("This page will reconnect automatically.", { exact: false });
   await expect(offline).toBeVisible();
-  await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+  await expectSignedIn(page);
   await expect(page.getByText("10,000 chips", { exact: true })).toBeVisible();
 
   // Retry-After: 1 is honoured: the retry comes in about a second, not at the next fixed interval.
   await setSession(request, { refreshMode: "rotate" });
   await expect(offline).toBeHidden({ timeout: 4_000 });
-  await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+  await expectSignedIn(page);
   expect((await sessionStats(request)).refreshStats.ok).toBeGreaterThanOrEqual(1);
 });
 
@@ -151,7 +152,7 @@ test("SESSION_RENEW refused as unauthorized signs out", async ({ page, request }
   await page.goto("/table/fixture-table");
   await expect(page.getByRole("button", { name: "Call 10", exact: true })).toBeEnabled();
   await refreshNow(page);
-  await expect(page.getByRole("heading", { name: "Sign in to sit down" })).toBeVisible();
+  await expectOnLogin(page, "%2Ftable%2Ffixture-table");
 });
 
 test("a server-initiated disconnect refreshes the session and reconnects", async ({ page, request }) => {
@@ -179,7 +180,7 @@ test("a server-initiated disconnect whose session is over signs out", async ({ p
   await expect(page.getByRole("button", { name: "Call 10", exact: true })).toBeEnabled();
   await setSession(request, { refreshMode: "unauthorized" });
   await request.post(`${fixture}/__test/disconnect`);
-  await expect(page.getByRole("heading", { name: "Sign in to sit down" })).toBeVisible({ timeout: 10_000 });
+  await expect(page).toHaveURL(/\/login\?next=%2Ftable%2Ffixture-table/, { timeout: 10_000 });
 });
 
 test("SESSION_REVOKED signs out, clears live evidence and says why once", async ({ page, request }) => {
@@ -192,7 +193,7 @@ test("SESSION_REVOKED signs out, clears live evidence and says why once", async 
   await request.post(`${fixture}/__test/revoke`, { data: { reason: "PASSWORD_CHANGED" } });
   const alert = page.getByRole("alert").filter({ hasText: "Your password was changed" });
   await expect(alert).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Sign in to sit down" })).toBeVisible();
+  await expectOnLogin(page, "%2Ftable%2Ffixture-table");
   expect(await page.evaluate(() => Object.keys(sessionStorage).filter((k) => k.startsWith("poker-live-evidence:")).length)).toBe(0);
   await alert.getByRole("button", { name: "Dismiss" }).click();
   await expect(alert).toHaveCount(0);

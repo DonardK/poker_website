@@ -3,6 +3,32 @@
 import type { HandHistoryLogEntry, PublicTableState, PublicUser, SessionEndReason, TableCloseReason } from "@poker/shared";
 import { create } from "zustand";
 
+/**
+ * Account-security facts about the signed-in user. Login, register, MFA,
+ * passkey sign-in and /me send them; a refresh does not, so the last known
+ * value is kept for the same user. Undefined means unknown: no banner or
+ * prompt is shown for it. `termsVersion` (the version the account last
+ * accepted) not matching this build's TERMS_VERSION shows the terms update
+ * prompt.
+ */
+export type SessionUser = PublicUser;
+
+/** The fields `patchUser` may change without a new session. */
+export type UserPatch = Partial<Pick<SessionUser,
+  "email" | "emailVerified" | "twoFactorEnabled" | "passkeyCount" | "termsVersion" | "avatarHue">>;
+
+const KEPT_FOR_SAME_USER = ["emailVerified", "twoFactorEnabled", "passkeyCount", "termsVersion"] as const;
+
+/** A refreshed user record keeps the security facts it does not carry. */
+function mergeKnownFacts(previous: SessionUser | null, next: SessionUser): SessionUser {
+  if (!previous || previous.id !== next.id) return next;
+  const merged: SessionUser = { ...next };
+  for (const key of KEPT_FOR_SAME_USER) {
+    if (merged[key] === undefined && previous[key] !== undefined) (merged as unknown as Record<string, unknown>)[key] = previous[key];
+  }
+  return merged;
+}
+
 /** A table the user was seated at closed and paid them out while they may not have been watching. */
 export interface TableClosedNotice {
   tableId: string;
@@ -22,7 +48,7 @@ export interface TableIdleNotice {
 }
 
 interface AuthState {
-  user: PublicUser | null;
+  user: SessionUser | null;
   accessToken: string | null;
   hydrated: boolean;
   apiOffline: boolean;
@@ -49,6 +75,21 @@ interface AuthState {
   acknowledgedClosedTableId: string | null;
   /** Shown as a floating warning on every page except that table's own. */
   tableIdleNotice: TableIdleNotice | null;
+  /**
+   * The table this user holds a seat at, from AUTH_OK.activeTableId and the
+   * table page; cleared by that table's cash-out. Signing out or switching
+   * account asks for confirmation while it is set.
+   */
+  activeTableId: string | null;
+  /** A sign-out message for /login (e.g. the server could not be reached). Survives clearSession; cleared by the next sign-in. */
+  signOutNotice: string | null;
+  /** Where the gate sends this tab after a deliberate sign-out ("/login", or "/login?switch=1"); cleared by the next sign-in. */
+  exitTo: string | null;
+  setActiveTableId: (tableId: string | null) => void;
+  setSignOutNotice: (notice: string | null) => void;
+  setExitTo: (exitTo: string | null) => void;
+  /** Update account facts of the signed-in user (no-op when signed out). */
+  patchUser: (patch: UserPatch) => void;
   setLeavingTableId: (tableId: string | null) => void;
   setTableClosedNotice: (notice: TableClosedNotice) => void;
   /** Clear the notice when it is about `tableId` (or any table when omitted); another table's closure is still news. */
@@ -56,7 +97,7 @@ interface AuthState {
   setTableIdleNotice: (notice: TableIdleNotice) => void;
   /** Clear the warning when it is about `tableId`: a late "warning over" for another table must not hide this one. */
   clearTableIdleNotice: (tableId: string) => void;
-  setSession: (user: PublicUser, accessToken: string) => void;
+  setSession: (user: SessionUser, accessToken: string) => void;
   clearSession: () => void;
   markHydrated: () => void;
   setApiOffline: (apiOffline: boolean) => void;
@@ -85,6 +126,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   tableClosedNotice: null,
   acknowledgedClosedTableId: null,
   tableIdleNotice: null,
+  activeTableId: null,
+  signOutNotice: null,
+  exitTo: null,
+  setActiveTableId: (activeTableId) => set({ activeTableId }),
+  setSignOutNotice: (signOutNotice) => set({ signOutNotice }),
+  setExitTo: (exitTo) => set({ exitTo }),
+  patchUser: (patch) => set((state) => (state.user ? { user: { ...state.user, ...patch } } : state)),
   setLeavingTableId: (leavingTableId) => set({ leavingTableId }),
   setTableClosedNotice: (notice) => set((state) =>
     state.acknowledgedClosedTableId === notice.tableId ? state : { tableClosedNotice: notice }),
@@ -102,14 +150,17 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   }),
   clearTableIdleNotice: (tableId) => set((state) =>
     state.tableIdleNotice?.tableId === tableId ? { tableIdleNotice: null } : state),
-  setSession: (user, accessToken) => set((state) => ({ user, accessToken, hydrated: true, apiOffline: false,
+  setSession: (user, accessToken) => set((state) => ({ user: mergeKnownFacts(state.user, user), accessToken, hydrated: true, apiOffline: false,
     walletVersion: state.user?.id === user.id ? state.walletVersion : 0,
+    exitTo: null,
     ...(state.user?.id === user.id ? {} : {
       serverWalletVersion: null, sessionEndedReason: null, transientNotice: null,
       tableClosedNotice: null, acknowledgedClosedTableId: null, tableIdleNotice: null,
+      activeTableId: null, signOutNotice: null,
     }) })),
   clearSession: () => set({ user: null, accessToken: null, hydrated: true, leavingTableId: null, walletVersion: 0,
-    serverWalletVersion: null, transientNotice: null, tableClosedNotice: null, acknowledgedClosedTableId: null, tableIdleNotice: null }),
+    serverWalletVersion: null, transientNotice: null, tableClosedNotice: null, acknowledgedClosedTableId: null, tableIdleNotice: null,
+    activeTableId: null }),
   markHydrated: () => set({ hydrated: true }),
   setApiOffline: (apiOffline) => set({ apiOffline }),
   patchBankroll: (bankroll, serverVersion) => {

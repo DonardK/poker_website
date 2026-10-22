@@ -14,6 +14,11 @@
  *   Table rows cannot be deleted, the ledger tables are read-only (balances
  *   change only through public.ledger_post), _prisma_migrations is untouchable,
  *   and nothing grants TRUNCATE, REFERENCES or TRIGGER;
+ * - account security (20261019100000_account_security): the runtime role
+ *   updates only the columns the auth flows change, so a stored TOTP secret,
+ *   passkey public key, token hash or code hash can never be rewritten; the
+ *   security history is append-only; a StepUpGrant can be minted but never
+ *   consumed, changed or deleted by poker_server (the payments role consumes it);
  * - poker_server cannot CREATE in schema public, is not a superuser, cannot
  *   bypass RLS, create roles or databases, and is a member of no other role;
  * - poker_server may execute only the two ledger entry points among the
@@ -54,11 +59,42 @@ const EXPECTED = {
   // Incidents are recorded, never rewritten or deleted; only their resolution
   // columns may be updated (EXPECTED_COLUMNS).
   TableIncident: ["SELECT", "INSERT"],
+  // Account security. Secrets and hashes are replaced by delete-then-insert;
+  // only the columns in EXPECTED_COLUMNS may be updated.
+  KnownDevice: ["SELECT", "INSERT", "DELETE"],
+  UserTotp: ["SELECT", "INSERT", "DELETE"],
+  UserBackupCode: ["SELECT", "INSERT", "DELETE"],
+  WebAuthnCredential: ["SELECT", "INSERT", "DELETE"],
+  EmailToken: ["SELECT", "INSERT", "DELETE"],
+  AuthNonce: ["SELECT", "INSERT", "DELETE"],
+  // Append-only security history (also refused by a trigger for every role).
+  AccountSecurityEvent: ["SELECT", "INSERT"],
+  // The API mints money step-up grants; only the payments role consumes them.
+  StepUpGrant: ["SELECT", "INSERT"],
+  StepUpEmailChallenge: ["SELECT", "INSERT", "DELETE"],
   _prisma_migrations: [],
 };
 /** Column-level grants beyond the table matrix, exactly: table -> privilege -> columns. */
 const EXPECTED_COLUMNS = {
   TableIncident: { UPDATE: ["resolvedAt", "resolvedBy"] },
+  KnownDevice: { UPDATE: ["label", "userAgent", "lastIp", "country", "lastSeenAt"] },
+  UserTotp: { UPDATE: ["enabledAt", "disabledAt", "lastUsedStep"] },
+  UserBackupCode: { UPDATE: ["usedAt"] },
+  WebAuthnCredential: { UPDATE: ["counter", "lastUsedAt", "name", "backedUp", "deviceType", "removedAt"] },
+  EmailToken: { UPDATE: ["consumedAt"] },
+  StepUpEmailChallenge: { UPDATE: ["attempts", "consumedAt"] },
+};
+/** Columns of each account-security table the runtime role must never UPDATE (the complement of EXPECTED_COLUMNS). */
+const FROZEN_COLUMNS = {
+  KnownDevice: ["id", "userId", "deviceHash", "firstSeenAt"],
+  UserTotp: ["userId", "secretCiphertext", "createdAt"],
+  UserBackupCode: ["id", "userId", "codeHash", "createdAt"],
+  WebAuthnCredential: ["id", "userId", "credentialId", "publicKey", "transports", "aaguid", "rpId", "createdAt"],
+  EmailToken: ["id", "userId", "purpose", "tokenHash", "email", "credentialsVersion", "data", "expiresAt", "createdAt"],
+  AuthNonce: ["id", "purpose", "expiresAt", "createdAt"],
+  AccountSecurityEvent: ["id", "userId", "type", "sessionId", "ip", "userAgent", "country", "data", "createdAt"],
+  StepUpGrant: ["id", "userId", "sessionId", "purpose", "bindHash", "method", "createdAt", "expiresAt", "consumedAt"],
+  StepUpEmailChallenge: ["id", "userId", "sessionId", "purpose", "bindHash", "codeHash", "email", "createdAt", "expiresAt"],
 };
 
 let admin;
@@ -174,6 +210,34 @@ test("poker_server can resolve a TableIncident but never rewrite or delete one",
   }
   await refusedAsRuntime(`DELETE FROM public."TableIncident" WHERE false`);
   await refusedAsRuntime(`TRUNCATE public."TableIncident"`);
+});
+
+test("account security: poker_server updates only the columns the auth flows change, never a secret, hash or binding", async () => {
+  const { rows } = await admin.query(`SELECT table_name, column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = ANY($1)`,
+    [Object.keys(FROZEN_COLUMNS)]);
+  for (const [table, frozen] of Object.entries(FROZEN_COLUMNS)) {
+    const columns = rows.filter((row) => row.table_name === table).map((row) => row.column_name).sort();
+    const updatable = EXPECTED_COLUMNS[table]?.UPDATE ?? [];
+    assert.deepEqual(columns, [...frozen, ...updatable].sort(), `${table}: every column is either frozen or in EXPECTED_COLUMNS`);
+    for (const column of frozen) await refusedAsRuntime(`UPDATE public."${table}" SET "${column}" = "${column}" WHERE false`);
+    for (const column of updatable) assert.equal(await asRuntime(`UPDATE public."${table}" SET "${column}" = "${column}" WHERE false`), null, `UPDATE ${table}.${column}`);
+    await refusedAsRuntime(`TRUNCATE public."${table}"`);
+  }
+});
+
+test("poker_server can mint a StepUpGrant but never consume, change or delete one, and cannot rewrite security history", async () => {
+  // INSERT ... SELECT ... WHERE false checks the privilege without a fixture row.
+  assert.equal(await asRuntime(`INSERT INTO public."StepUpGrant" (id, "userId", "sessionId", purpose, "bindHash", method, "createdAt", "expiresAt")
+    SELECT 'g', 'u', 's', 'withdrawal', repeat('a', 64), 'TOTP', now(), now() + interval '1 minute' WHERE false`), null);
+  await refusedAsRuntime(`UPDATE public."StepUpGrant" SET "consumedAt" = now() WHERE false`);
+  await refusedAsRuntime(`DELETE FROM public."StepUpGrant" WHERE false`);
+  await refusedAsRuntime(`UPDATE public."AccountSecurityEvent" SET type = type WHERE false`);
+  await refusedAsRuntime(`DELETE FROM public."AccountSecurityEvent" WHERE false`);
+  // Nothing is granted to a payments role by the auth migration (the wallet migration creates it).
+  const { rows } = await admin.query(`SELECT grantee, table_name, privilege_type FROM information_schema.table_privileges
+    WHERE table_schema = 'public' AND table_name = ANY($1) AND grantee NOT IN ('poker_server', current_user)`,
+    [Object.keys(FROZEN_COLUMNS)]);
+  assert.deepEqual(rows, [], "account-security tables are granted to poker_server only");
 });
 
 test("poker_server cannot UPDATE or DELETE hand history (Hand, HandPlayer, HandAction, HandPot)", async () => {

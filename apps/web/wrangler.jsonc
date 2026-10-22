@@ -19,10 +19,15 @@
   // Empty on purpose. The browser uses window.location.origin so the
   // workers.dev subdomain is not baked in at build time. Set both to an
   // absolute origin only for a split-host deploy.
+  // AUTH_HINT_REDIRECT is read at request time by the middleware: "1" sends
+  // signed-out visits to protected pages to /login before rendering, using the
+  // poker_session_hint cookie the API sets. Turn it on once the API that sets
+  // the hint is deployed; the client gate is the authority either way.
   "vars": {
     "NEXT_PUBLIC_API_URL": "",
     "NEXT_PUBLIC_SOCKET_URL": "",
-    "NEXT_PUBLIC_TURNSTILE_SITE_KEY": "0x4AAAAAAFTUqOe5Dq9a5IdE"
+    "NEXT_PUBLIC_TURNSTILE_SITE_KEY": "0x4AAAAAAFTUqOe5Dq9a5IdE",
+    "AUTH_HINT_REDIRECT": "0"
   },
   "env": {
     "preview": {
@@ -35,7 +40,8 @@
       "vars": {
         "NEXT_PUBLIC_API_URL": "",
         "NEXT_PUBLIC_SOCKET_URL": "",
-        "NEXT_PUBLIC_TURNSTILE_SITE_KEY": ""
+        "NEXT_PUBLIC_TURNSTILE_SITE_KEY": "",
+        "AUTH_HINT_REDIRECT": "0"
       }
     }
   }

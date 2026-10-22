@@ -45,13 +45,17 @@ Of particular interest:
 - seeing or inferring hidden information (hole cards, the deck, a seed before it is revealed);
 - creating, duplicating, or moving chips or funds, or breaking ledger integrity;
 - acting as another player or an administrator, or bypassing session revocation;
+- getting past a second factor (TOTP, backup code or passkey), reusing a one-time code, sign-in ticket, passkey challenge or email link, or minting or reusing a step-up grant for a money action it was not issued for;
+- learning whether an email address or username has an account from the sign-in, password-reset or email-change answers;
 - bypassing rate limits, responsible-gambling limits, or self-exclusion;
 - injection, SSRF, request smuggling, or header spoofing at the edge.
 
 Out of scope: denial of service by volume, findings that require a compromised
 device or browser, social engineering of staff or players, physical attacks,
-reports from automated scanners without a demonstrated impact, and missing
-best-practice headers without an exploit.
+reports from automated scanners without a demonstrated impact, missing
+best-practice headers without an exploit, and sign-up refusing a username or
+email address that is already taken (it must; sign-up is behind Turnstile and
+rate limits).
 
 ## Safe harbour
 

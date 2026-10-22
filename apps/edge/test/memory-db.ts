@@ -17,6 +17,12 @@ export function outage(): Error {
   return err;
 }
 
+function notFound(): Error {
+  const err = new Error("Record not found");
+  err.name = "PrismaClientKnownRequestError";
+  return Object.assign(err, { code: "P2025" });
+}
+
 interface UserRow {
   id: string;
   email: string | null;
@@ -37,7 +43,35 @@ interface UserRow {
   termsVersion: string | null;
   termsAcceptedAt: Date | null;
   ageConfirmedAt: Date | null;
+  emailVerifiedAt: Date | null;
+  credentialsVersion: number;
+  passwordChangedAt: Date | null;
+  passwordResetRequired: boolean;
+  mfaFailedCount: number;
+  mfaLockedUntil: Date | null;
+  securityHoldUntil: Date | null;
+  webauthnUserId: string | null;
 }
+
+/** Defaults of the account-security user columns (migration 20261019100000_account_security). */
+const USER_SECURITY_DEFAULTS = {
+  emailVerifiedAt: null,
+  credentialsVersion: 0,
+  passwordChangedAt: null,
+  passwordResetRequired: false,
+  mfaFailedCount: 0,
+  mfaLockedUntil: null,
+  securityHoldUntil: null,
+  webauthnUserId: null,
+} as const;
+
+const sessionSecurityDefaults = () => ({
+  deviceId: null,
+  persistent: true,
+  authMethods: [] as string[],
+  reauthAt: null,
+  reauthMethods: [] as string[],
+});
 
 interface SessionRow {
   id: string;
@@ -53,7 +87,48 @@ interface SessionRow {
   rotatedAt: Date | null;
   revokedAt: Date | null;
   revokeReason: string | null;
+  deviceId: string | null;
+  persistent: boolean;
+  authMethods: string[];
+  reauthAt: Date | null;
+  reauthMethods: string[];
 }
+
+/** A row of one of the account-security tables. */
+export type Row = Record<string, any> & { id: string };
+
+/** The account-security tables, by AppDb delegate name. */
+export const SECURITY_TABLES = [
+  "knownDevice", "userTotp", "userBackupCode", "webAuthnCredential", "emailToken", "authNonce",
+  "accountSecurityEvent", "stepUpGrant", "stepUpEmailChallenge",
+] as const;
+export type SecurityTable = (typeof SECURITY_TABLES)[number];
+
+/** Columns each table fills in when an insert leaves them out (schema.prisma defaults). */
+const TABLE_DEFAULTS: Record<SecurityTable, (now: Date) => Record<string, unknown>> = {
+  knownDevice: (now) => ({ label: null, userAgent: null, lastIp: null, country: null, firstSeenAt: now, lastSeenAt: now }),
+  userTotp: (now) => ({ enabledAt: null, disabledAt: null, lastUsedStep: 0, createdAt: now }),
+  userBackupCode: (now) => ({ usedAt: null, createdAt: now }),
+  webAuthnCredential: (now) => ({ counter: 0, transports: [], backedUp: false, aaguid: null, createdAt: now, lastUsedAt: null, removedAt: null }),
+  emailToken: (now) => ({ data: {}, consumedAt: null, createdAt: now }),
+  authNonce: (now) => ({ createdAt: now }),
+  accountSecurityEvent: (now) => ({ sessionId: null, ip: null, userAgent: null, country: null, data: {}, createdAt: now }),
+  stepUpGrant: () => ({ consumedAt: null }),
+  stepUpEmailChallenge: () => ({ attempts: 0, consumedAt: null }),
+};
+
+/** Unique keys per table (single columns or composites), as in the migration. */
+const TABLE_UNIQUE: Record<SecurityTable, string[][]> = {
+  knownDevice: [["id"], ["userId", "deviceHash"]],
+  userTotp: [["userId"]],
+  userBackupCode: [["id"], ["userId", "codeHash"]],
+  webAuthnCredential: [["id"], ["credentialId"]],
+  emailToken: [["id"], ["tokenHash"]],
+  authNonce: [["id"]],
+  accountSecurityEvent: [["id"]],
+  stepUpGrant: [["id"]],
+  stepUpEmailChallenge: [["id"]],
+};
 
 interface SeatRow {
   id: string;
@@ -89,22 +164,55 @@ interface DbState {
   sessions: Map<string, SessionRow>;
   seats: Map<string, SeatRow>;
   tables: Map<string, TableRow>;
+  security: Record<SecurityTable, Map<string, Row>>;
+}
+
+function emptySecurity(): Record<SecurityTable, Map<string, Row>> {
+  return Object.fromEntries(SECURITY_TABLES.map((name) => [name, new Map<string, Row>()])) as Record<SecurityTable, Map<string, Row>>;
+}
+
+const OPERATORS = new Set(["not", "in", "notIn", "gt", "gte", "lt", "lte", "equals"]);
+
+function comparable(value: unknown): unknown {
+  return value instanceof Date ? value.getTime() : typeof value === "bigint" ? Number(value) : value;
+}
+
+function equal(value: unknown, target: unknown): boolean {
+  if (target instanceof Date) return value instanceof Date && value.getTime() === target.getTime();
+  return comparable(value) === comparable(target);
+}
+
+/** Prisma filter semantics for the operators the routes use; several operators on one field all apply. */
+function matchesCondition(value: unknown, cond: unknown): boolean {
+  if (cond === null) return value == null;
+  if (cond instanceof Date || typeof cond !== "object" || Array.isArray(cond)) return equal(value, cond);
+  const ops = cond as Record<string, unknown>;
+  if (!Object.keys(ops).every((key) => OPERATORS.has(key))) return JSON.stringify(value) === JSON.stringify(cond);
+  return Object.entries(ops).every(([op, target]) => {
+    const a = comparable(value) as number;
+    const b = comparable(target) as number;
+    switch (op) {
+      case "not":
+        if (target === null) return value != null;
+        if (typeof target === "object" && !(target instanceof Date)) return !matchesCondition(value, target);
+        return !equal(value, target);
+      case "in": return (target as unknown[]).some((entry) => equal(value, entry));
+      case "notIn": return !(target as unknown[]).some((entry) => equal(value, entry));
+      case "equals": return equal(value, target);
+      case "gt": return value != null && a > b;
+      case "gte": return value != null && a >= b;
+      case "lt": return value != null && a < b;
+      case "lte": return value != null && a <= b;
+      default: return false;
+    }
+  });
 }
 
 function matches(row: Record<string, unknown>, where: Record<string, unknown> = {}): boolean {
   return Object.entries(where).every(([key, cond]) => {
-    const value = row[key];
-    if (cond === null) return value == null;
-    if (cond instanceof Date) return value instanceof Date && value.getTime() === cond.getTime();
-    if (typeof cond === "object" && cond !== null) {
-      const op = cond as { not?: unknown; in?: unknown[]; gt?: unknown; gte?: unknown; lt?: unknown };
-      if ("not" in op) return value !== op.not;
-      if ("in" in op) return (op.in ?? []).includes(value);
-      if ("gt" in op) return value != null && (value as number) > (op.gt as number);
-      if ("gte" in op) return value != null && (value as number) >= (op.gte as number);
-      if ("lt" in op) return value != null && (value as number) < (op.lt as number);
-    }
-    return value === cond;
+    if (key === "OR") return (cond as Record<string, unknown>[]).some((branch) => matches(row, branch));
+    if (key === "AND") return (cond as Record<string, unknown>[]).every((branch) => matches(row, branch));
+    return matchesCondition(row[key], cond);
   });
 }
 
@@ -114,16 +222,35 @@ function pick(row: object, select?: Record<string, boolean>): unknown {
   return Object.fromEntries(Object.keys(select).filter((key) => select[key]).map((key) => [key, (clone as Record<string, unknown>)[key]]));
 }
 
-function apply(row: Record<string, unknown>, data: Record<string, unknown>): void {
-  for (const [key, value] of Object.entries(data)) {
-    if (value && typeof value === "object" && !(value instanceof Date) && "increment" in (value as object)) {
-      row[key] = (row[key] as number) + (value as { increment: number }).increment;
-    } else if (value && typeof value === "object" && !(value instanceof Date) && "decrement" in (value as object)) {
-      row[key] = (row[key] as number) - (value as { decrement: number }).decrement;
-    } else {
-      row[key] = value;
+function sortRows<T extends object>(rows: T[], orderBy: unknown): T[] {
+  const orders = (Array.isArray(orderBy) ? orderBy : orderBy ? [orderBy] : []) as Record<string, "asc" | "desc">[];
+  if (orders.length === 0) return rows;
+  return [...rows].sort((a, b) => {
+    for (const order of orders) {
+      for (const [key, dir] of Object.entries(order)) {
+        const x = comparable((a as Record<string, unknown>)[key]) as number;
+        const y = comparable((b as Record<string, unknown>)[key]) as number;
+        if (x === y) continue;
+        if (x == null) return 1;
+        if (y == null) return -1;
+        return (x < y ? -1 : 1) * (dir === "desc" ? -1 : 1);
+      }
     }
+    return 0;
+  });
+}
+
+function applyData(row: Record<string, unknown>, data: Record<string, unknown>): void {
+  for (const [key, value] of Object.entries(data)) {
+    const op = value && typeof value === "object" && !(value instanceof Date) && !Array.isArray(value) ? value as Record<string, number> : null;
+    if (op && "increment" in op) row[key] = (row[key] as number) + op.increment!;
+    else if (op && "decrement" in op) row[key] = (row[key] as number) - op.decrement!;
+    else row[key] = structuredClone(value);
   }
+}
+
+function apply(row: Record<string, unknown>, data: Record<string, unknown>): void {
+  applyData(row, data);
   row.updatedAt = new Date();
 }
 
@@ -149,13 +276,35 @@ export interface MemoryDb {
   addUser(overrides?: Record<string, unknown> & { username?: string; password?: string }): UserRow;
   addSession(userId: string, overrides?: Record<string, unknown>): Promise<{ id: string; refreshToken: string; accessToken: string }>;
   revokeRow(id: string, reason?: string): void;
+  /** Rows of an account-security table (live objects: tests may edit them). */
+  rows(table: SecurityTable): Row[];
+  /** Insert a row directly (defaults and unique keys apply). */
+  insert(table: SecurityTable, data: Record<string, unknown>): Row;
 }
 
 export function createMemoryDb(secrets: MemorySecrets): MemoryDb {
-  let state: DbState = { users: new Map(), sessions: new Map(), seats: new Map(), tables: new Map() };
+  let state: DbState = { users: new Map(), sessions: new Map(), seats: new Map(), tables: new Map(), security: emptySecurity() };
   const failures = new Map<string, number>();
   const holds = new Map<string, { count: number; waiting: Array<() => void> }>();
   const createHooks: Array<(data: Record<string, unknown>) => void | Promise<void>> = [];
+
+  const checkSecurityUnique = (table: SecurityTable, next: Row, self: Row | null) => {
+    for (const key of TABLE_UNIQUE[table]) {
+      if (key.some((field) => next[field] == null)) continue;
+      for (const other of state.security[table].values()) {
+        if (other !== self && key.every((field) => equal(other[field], next[field]))) throw uniqueViolation(key);
+      }
+    }
+  };
+
+  const insertRow = (table: SecurityTable, data: Record<string, unknown>): Row => {
+    const row = { id: crypto.randomUUID(), ...TABLE_DEFAULTS[table](new Date()), ...structuredClone(data) } as Row;
+    if (table === "userTotp") row.id = String(row.userId);
+    checkSecurityUnique(table, row, null);
+    state.security[table].set(row.id, row);
+    return row;
+  };
+
   const db: MemoryDb = {
     api: undefined as unknown as AppDb,
     down: false,
@@ -190,6 +339,7 @@ export function createMemoryDb(secrets: MemorySecrets): MemoryDb {
         termsVersion: null,
         termsAcceptedAt: null,
         ageConfirmedAt: null,
+        ...USER_SECURITY_DEFAULTS,
         ...(rest as Partial<UserRow>),
         username,
         usernameCanonical: username.toLowerCase(),
@@ -217,6 +367,7 @@ export function createMemoryDb(secrets: MemorySecrets): MemoryDb {
         rotatedAt: null,
         revokedAt: null,
         revokeReason: null,
+        ...sessionSecurityDefaults(),
         ...(overrides as Partial<SessionRow>),
         refreshToken: await hashRefresh(refreshToken),
       };
@@ -228,6 +379,8 @@ export function createMemoryDb(secrets: MemorySecrets): MemoryDb {
       const row = state.sessions.get(id);
       if (row) Object.assign(row, { revokedAt: new Date(), revokeReason: reason });
     },
+    rows: (table) => [...state.security[table].values()],
+    insert: (table, data) => insertRow(table, data),
   };
 
   const gate = async (key: string) => {
@@ -256,6 +409,79 @@ export function createMemoryDb(secrets: MemorySecrets): MemoryDb {
         if (other.id !== row.id && other[field] === row[field]) throw uniqueViolation([field]);
       }
     }
+  };
+  const users = () => state.users as unknown as Map<string, { id: string } & Record<string, unknown>>;
+  /** Apply an update to a copy first, so a unique violation leaves the row unchanged (as Postgres does). */
+  const updateUser = (row: UserRow, data: Record<string, unknown>) => {
+    const next = structuredClone(row);
+    apply(next as unknown as Record<string, unknown>, data);
+    unique(users(), next as unknown as { id: string } & Record<string, unknown>, ["email", "webauthnUserId"]);
+    apply(row as unknown as Record<string, unknown>, data);
+  };
+
+  /** Prisma-like delegates over the account-security tables. */
+  const securityDelegate = (table: SecurityTable) => {
+    const found = (where: Record<string, unknown> | undefined) => [...state.security[table].values()].filter((row) => matches(row, where ?? {}));
+    const key = (method: string) => `${table}.${method}`;
+    return {
+      findUnique: async ({ where, select }: any) => {
+        await gate(key("findUnique"));
+        const row = found(where)[0];
+        return row ? pick(row, select) : null;
+      },
+      findFirst: async ({ where, select, orderBy }: any = {}) => {
+        await gate(key("findFirst"));
+        const row = sortRows(found(where), orderBy)[0];
+        return row ? pick(row, select) : null;
+      },
+      findMany: async ({ where, select, orderBy, take }: any = {}) => {
+        await gate(key("findMany"));
+        let rows = sortRows(found(where), orderBy);
+        if (typeof take === "number") rows = rows.slice(0, take);
+        return rows.map((row) => pick(row, select));
+      },
+      count: async ({ where }: any = {}) => {
+        await gate(key("count"));
+        return found(where).length;
+      },
+      create: async ({ data, select }: any) => {
+        await gate(key("create"));
+        return pick(insertRow(table, data), select);
+      },
+      createMany: async ({ data }: any) => {
+        await gate(key("createMany"));
+        const list = Array.isArray(data) ? data : [data];
+        for (const entry of list) insertRow(table, entry);
+        return { count: list.length };
+      },
+      update: async ({ where, data, select }: any) => {
+        await gate(key("update"));
+        const row = found(where)[0];
+        if (!row) throw notFound();
+        const next = structuredClone(row);
+        applyData(next, data);
+        checkSecurityUnique(table, next, row);
+        applyData(row, data);
+        return pick(row, select);
+      },
+      updateMany: async ({ where, data }: any) => {
+        await gate(key("updateMany"));
+        const rows = found(where);
+        for (const row of rows) applyData(row, data);
+        return { count: rows.length };
+      },
+      deleteMany: async ({ where }: any = {}) => {
+        await gate(key("deleteMany"));
+        const rows = found(where);
+        for (const row of rows) state.security[table].delete(row.id);
+        if (table === "knownDevice") {
+          // Session.deviceId is ON DELETE SET NULL.
+          const gone = new Set(rows.map((row) => row.id));
+          for (const session of state.sessions.values()) if (session.deviceId && gone.has(session.deviceId)) session.deviceId = null;
+        }
+        return { count: rows.length };
+      },
+    };
   };
 
   const api: AppDb = {
@@ -287,28 +513,25 @@ export function createMemoryDb(secrets: MemorySecrets): MemoryDb {
           termsVersion: null,
           termsAcceptedAt: null,
           ageConfirmedAt: null,
+          ...USER_SECURITY_DEFAULTS,
           ...structuredClone(data),
           usernameCanonical: String(data.username).toLowerCase(),
         };
-        unique(state.users as unknown as Map<string, { id: string } & Record<string, unknown>>, row as unknown as { id: string } & Record<string, unknown>, ["username", "usernameCanonical", "email"]);
+        unique(users(), row as unknown as { id: string } & Record<string, unknown>, ["username", "usernameCanonical", "email", "webauthnUserId"]);
         state.users.set(row.id, row);
         return structuredClone(row);
       },
       update: async ({ where, data, select }) => {
         await gate("user.update");
         const row = state.users.get(where.id);
-        if (!row) {
-          const err = new Error("Record not found");
-          err.name = "PrismaClientKnownRequestError";
-          throw Object.assign(err, { code: "P2025" });
-        }
-        apply(row as unknown as Record<string, unknown>, data);
+        if (!row) throw notFound();
+        updateUser(row, data);
         return pick(row, select);
       },
       updateMany: async ({ where, data }) => {
         await gate("user.updateMany");
         const rows = [...state.users.values()].filter((user) => matches(user as unknown as Record<string, unknown>, where));
-        for (const row of rows) apply(row as unknown as Record<string, unknown>, data);
+        for (const row of rows) updateUser(row, data);
         return { count: rows.length };
       },
     },
@@ -326,6 +549,7 @@ export function createMemoryDb(secrets: MemorySecrets): MemoryDb {
           rotatedAt: null,
           revokedAt: null,
           revokeReason: null,
+          ...sessionSecurityDefaults(),
           ...structuredClone(data),
         } as SessionRow;
         unique(state.sessions as unknown as Map<string, { id: string } & Record<string, unknown>>, row as unknown as { id: string } & Record<string, unknown>, ["id", "refreshToken"]);
@@ -344,23 +568,19 @@ export function createMemoryDb(secrets: MemorySecrets): MemoryDb {
       },
       findMany: async ({ where, select, orderBy }) => {
         await gate("session.findMany");
-        let rows = [...state.sessions.values()].filter((session) => matches(session as unknown as Record<string, unknown>, where ?? {}));
-        if (orderBy?.lastUsedAt) {
-          const dir = orderBy.lastUsedAt === "desc" ? -1 : 1;
-          rows = rows.sort((a, b) => (a.lastUsedAt.getTime() - b.lastUsedAt.getTime()) * dir);
-        }
+        const rows = sortRows([...state.sessions.values()].filter((session) => matches(session as unknown as Record<string, unknown>, where ?? {})), orderBy);
         return rows.map((row) => pick(row, select));
       },
       updateMany: async ({ where, data }) => {
         await gate("session.updateMany");
         const rows = [...state.sessions.values()].filter((session) => matches(session as unknown as Record<string, unknown>, where));
-        for (const row of rows) Object.assign(row, structuredClone(data));
+        for (const row of rows) applyData(row as unknown as Record<string, unknown>, data);
         return { count: rows.length };
       },
       updateManyAndReturn: async ({ where, data, select }) => {
         await gate("session.updateManyAndReturn");
         const rows = [...state.sessions.values()].filter((session) => matches(session as unknown as Record<string, unknown>, where));
-        for (const row of rows) Object.assign(row, structuredClone(data));
+        for (const row of rows) applyData(row as unknown as Record<string, unknown>, data);
         return rows.map((row) => pick(row, select));
       },
     },
@@ -456,6 +676,7 @@ export function createMemoryDb(secrets: MemorySecrets): MemoryDb {
         return null;
       },
     },
+    ...(Object.fromEntries(SECURITY_TABLES.map((table) => [table, securityDelegate(table)])) as unknown as Pick<AppDb, SecurityTable>),
     $transaction: async (run) => {
       const snapshot = structuredClone(state);
       try {

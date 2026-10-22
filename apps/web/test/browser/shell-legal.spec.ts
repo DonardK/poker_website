@@ -1,12 +1,17 @@
-import { test, expect, type Page, type Route } from "@playwright/test";
+import type { Page, Route } from "@playwright/test";
+import { accountMenuButton, expectOnLogin, expectSignedIn, openAccountMenu, signInViaUi } from "../support/auth";
+import { expect, fixture, test, TERMS_VERSION } from "../support/fixtures";
 
-const fixture = "http://127.0.0.1:4107";
-const TERMS_VERSION = "2026-10-01";
 const PLAY_CHIPS_NOTICE = "Play chips have no cash value and cannot be redeemed.";
 
 const LEGAL_PAGES = [
-  { path: "/terms", title: "Terms of Service", mustSay: ["at least 18 years old", PLAY_CHIPS_NOTICE, "cannot be recovered on another device"] },
-  { path: "/privacy", title: "Privacy Notice", mustSay: ["IP address and browser user agent", "password hash", "hand history", "For counsel review"] },
+  { path: "/terms", title: "Terms of Service", mustSay: ["at least 18 years old", PLAY_CHIPS_NOTICE, "two-step verification", "This wasn't me"] },
+  {
+    path: "/privacy", title: "Privacy Notice", mustSay: [
+      "IP address and browser user agent", "password hash", "PBKDF2-SHA256", "passkey", "backup codes", "Resend", "usernames of up to five accounts",
+      "hand history", "For counsel review",
+    ],
+  },
   {
     path: "/rules", title: "House Rules", mustSay: [
       "forward-moving big blind with a dead button", "waits for the big blind", "you wait for the big blind",
@@ -31,13 +36,6 @@ const LEGAL_PAGES = [
 async function fulfillWith(route: Route, status: number, json: unknown) {
   await route.fulfill({ response: await route.fetch(), status, json });
 }
-
-/** No session: the refresh cookie is missing or expired, as for a first visit. */
-async function signedOut(page: Page) {
-  await page.route(`${fixture}/api/auth/refresh`, (route) => fulfillWith(route, 401, { error: "No refresh session" }));
-}
-
-const guestUser = { id: "fixture-player-0", username: "Guest_0a1b2c3d4e", kind: "HUMAN", role: "PLAYER", isGuest: true, bankroll: 10_000, avatarHue: 0 };
 
 /** Lets a test hide/show the page: document.visibilityState is read-only and headless pages are always "visible". */
 async function controllableVisibility(page: Page) {
@@ -136,7 +134,7 @@ test.describe("legal pages", () => {
 
   test("every page links every legal document in its footer", async ({ page, request }) => {
     await request.post(`${fixture}/__test/reset`, { data: { mode: "waiting" } });
-    for (const path of ["/", "/login", "/table/fixture-table", "/rules"]) {
+    for (const path of ["/", "/login", "/signup", "/table/fixture-table", "/rules", "/account/security", "/verify-email", "/reset-password"]) {
       await page.goto(path);
       const footer = page.getByRole("navigation", { name: "Legal" });
       for (const doc of LEGAL_PAGES) {
@@ -157,111 +155,6 @@ test.describe("legal pages", () => {
   });
 });
 
-test.describe("age and terms gate", () => {
-  test("a guest account needs 18+ and terms, sends the acceptance as JSON, and is told it cannot be recovered", async ({ page, request }) => {
-    // A brand-new guest holds no seat and the full starting bankroll. Without this reset the fixture's
-    // hero is still seated from its default state (9,000 chips), and the lobby's first wallet refresh
-    // replaced the 10,000 shown at sign-up before the check below could see it (flaky on desktop).
-    await request.post(`${fixture}/__test/reset`, { data: { mode: "unseated" } });
-    await signedOut(page);
-    let sent: { body: unknown; contentType: string | undefined } | null = null;
-    await page.route(`${fixture}/api/auth/guest`, async (route) => {
-      sent = { body: route.request().postDataJSON(), contentType: route.request().headers()["content-type"] };
-      await fulfillWith(route, 201, { user: guestUser, accessToken: "browser-fixture-token" });
-    });
-    await page.goto("/");
-    const guest = page.getByRole("button", { name: "Play as guest" });
-    const age = page.getByLabel("I confirm that I am 18 years of age or older.");
-    const terms = page.getByLabel(/I accept the Terms of Service/);
-    await expect(age).not.toBeChecked();
-    await expect(terms).not.toBeChecked();
-    await expect(guest).toBeDisabled();
-    await expect(page.locator('a[href="/terms"]').first()).toBeVisible();
-    await expect(page.getByRole("link", { name: "Privacy Notice" })).toHaveAttribute("href", "/privacy");
-    await expect(page.getByText("it cannot be recovered: it is lost if you sign out, clear this browser's data or switch device", { exact: false })).toBeVisible();
-
-    await age.check();
-    await expect(guest).toBeDisabled();
-    await age.uncheck();
-    await terms.check();
-    await expect(guest).toBeDisabled();
-    await age.check();
-    await expect(guest).toBeEnabled();
-    await guest.click();
-
-    await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
-    expect(sent).not.toBeNull();
-    expect(sent!.body).toEqual({ acceptTerms: true, confirmAge: true, termsVersion: TERMS_VERSION });
-    expect(sent!.contentType).toContain("application/json");
-    await expect(page.getByText("10,000 chips", { exact: true })).toBeVisible();
-    await expect(page.getByText(PLAY_CHIPS_NOTICE).first()).toBeVisible();
-    await expect(page.getByText("Guest account: it cannot be recovered on another device", { exact: false })).toBeVisible();
-  });
-
-  test("terms refusals from the server are explained", async ({ page }) => {
-    await signedOut(page);
-    let reply: { status: number; json: unknown } = { status: 409, json: { error: "Terms version is outdated", code: "TERMS_OUTDATED", currentVersion: "2026-11-01" } };
-    await page.route(`${fixture}/api/auth/guest`, (route) => fulfillWith(route, reply.status, reply.json));
-    await page.goto("/");
-    await page.getByLabel("I confirm that I am 18 years of age or older.").check();
-    await page.getByLabel(/I accept the Terms of Service/).check();
-    await page.getByRole("button", { name: "Play as guest" }).click();
-    await expect(pageAlert(page)).toContainText("Our terms have been updated");
-    await expect(pageAlert(page)).toContainText("Reload the page");
-
-    reply = { status: 400, json: { error: "You must accept the terms and confirm your age", code: "TERMS_REQUIRED" } };
-    await page.getByRole("button", { name: "Play as guest" }).click();
-    await expect(pageAlert(page)).toHaveText("To continue, confirm that you are 18 or older and accept the Terms of Service and Privacy Notice.");
-    await expect(page.getByRole("button", { name: "Sign out" })).toHaveCount(0);
-  });
-
-  test("registration needs 18+ and terms and sends the acceptance; other conflicts keep their own message", async ({ page }) => {
-    await signedOut(page);
-    const bodies: unknown[] = [];
-    // The server's own answers (apps/server/src/auth/routes.ts): a taken name is 409 "Username unavailable"; any other
-    // clash (e.g. the e-mail) is a deliberately generic 409 that names no field.
-    let reply: { status: number; json: unknown } = { status: 409, json: { error: "Username unavailable" } };
-    await page.route(`${fixture}/api/auth/register`, async (route) => {
-      bodies.push(route.request().postDataJSON());
-      await fulfillWith(route, reply.status, reply.json);
-    });
-    await page.goto("/login");
-    await page.getByRole("button", { name: "Register" }).click();
-    await page.getByLabel("Username").fill("river_rat");
-    await page.getByLabel("Email").fill("river@example.test");
-    await page.getByLabel("Password").fill("a-long-enough-password");
-    const create = page.getByRole("button", { name: "Create account" });
-    await expect(create).toBeDisabled();
-    await page.getByLabel("I confirm that I am 18 years of age or older.").check();
-    await expect(create).toBeDisabled();
-    await page.getByLabel(/I accept the Terms of Service/).check();
-    await expect(create).toBeEnabled();
-    await create.click();
-    await expect(pageAlert(page)).toHaveText("Username unavailable");
-    expect(bodies[0]).toEqual({
-      username: "river_rat", email: "river@example.test", password: "a-long-enough-password",
-      acceptTerms: true, confirmAge: true, termsVersion: TERMS_VERSION,
-    });
-
-    // Another 409 that is not about the terms keeps its own (generic) message.
-    reply = { status: 409, json: { error: "Registration could not be completed with these details" } };
-    await create.click();
-    await expect(pageAlert(page)).toHaveText("Registration could not be completed with these details");
-
-    reply = {
-      status: 409,
-      json: { error: "The terms have been updated; please review and accept the current version", code: "TERMS_OUTDATED", currentVersion: "2026-11-01" },
-    };
-    await create.click();
-    await expect(pageAlert(page)).toContainText("Our terms have been updated (version 2026-11-01)");
-
-    // Login is not account creation: no gate.
-    await page.getByRole("button", { name: "Login" }).click();
-    await expect(page.getByLabel("I confirm that I am 18 years of age or older.")).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Continue" })).toBeEnabled();
-  });
-});
-
 test.describe("lobby", () => {
   test("sign-out clears the session, socket and evidence first and still signs out offline", async ({ page, request }) => {
     await request.post(`${fixture}/__test/reset`, { data: { mode: "unseated" } });
@@ -272,22 +165,39 @@ test.describe("lobby", () => {
       logout = route;
     });
     await page.goto("/");
-    await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+    await expectSignedIn(page);
     await page.evaluate(() => sessionStorage.setItem("poker-live-evidence:fixture-table:1", "{}"));
-    const sockets = () => page.evaluate(() => performance.getEntriesByType("resource").length);
-    await sockets();
 
-    await page.getByRole("button", { name: "Sign out" }).click();
+    await openAccountMenu(page);
+    await page.getByRole("button", { name: "Sign out", exact: true }).click();
     // Signed out here while the server has not answered yet.
-    await expect(page.getByRole("button", { name: "Play as guest" })).toBeVisible();
+    await expectOnLogin(page);
     await expect.poll(() => logout !== null).toBe(true);
     expect(logoutAuth).toBe("Bearer browser-fixture-token");
     expect(await page.evaluate(() => sessionStorage.getItem("poker-live-evidence:fixture-table:1"))).toBeNull();
+    // SECURITY (G4): until the server confirms, this browser must not sign back in with the old cookie.
+    expect(await page.evaluate(() => localStorage.getItem("poker-pending-logout"))).toContain('"v":1');
 
+    // Still offline for the retries (the newest handler runs first), then the first request fails.
+    await page.route(`${fixture}/api/auth/logout`, (route) => route.abort("internetdisconnected"));
     await logout!.abort("internetdisconnected");
-    await expect(page.getByText("You are signed out on this device, but the server could not be reached", { exact: false })).toBeVisible();
-    await expect(page.getByRole("button", { name: "Sign out" })).toHaveCount(0);
+    await expect(page.locator("main").getByText("You're signed out on this device. We couldn't reach the server to end the session", { exact: false })).toBeVisible();
+    await expect(accountMenuButton(page)).toHaveCount(0);
     await expect(page.getByText("Open tables")).toHaveCount(0);
+
+    // A reload keeps it signed out: no refresh is attempted while the sign-out is pending.
+    let refreshes = 0;
+    await page.route(`${fixture}/api/auth/refresh`, (route) => { refreshes++; return route.continue(); });
+    await page.reload();
+    await expectOnLogin(page);
+    await page.waitForTimeout(1_500);
+    expect(refreshes).toBe(0);
+    await expect(accountMenuButton(page)).toHaveCount(0);
+
+    // Back online: the retry ends the server session and the marker goes.
+    await page.unroute(`${fixture}/api/auth/logout`);
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
+    await expect.poll(() => page.evaluate(() => localStorage.getItem("poker-pending-logout")), { timeout: 10_000 }).toBeNull();
   });
 
   test("table status labels are written for people", async ({ page, request }) => {
@@ -401,36 +311,80 @@ test.describe("lobby", () => {
   });
 });
 
+/** The CSP and hardening headers every rendered page carries. */
+function expectHardened(headers: Record<string, string>, html: string) {
+  const csp = headers["content-security-policy"] ?? "";
+  const nonce = /'nonce-([A-Za-z0-9+/=]+)'/.exec(csp)?.[1];
+  expect(nonce, csp).toBeTruthy();
+  expect(csp).toContain(`script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`);
+  expect(csp).toContain("style-src 'self' 'unsafe-inline'");
+  expect(csp).toContain("connect-src 'self' http://127.0.0.1:4107 ws://127.0.0.1:4107");
+  for (const directive of ["img-src 'self' data: blob:", "font-src 'self'", "frame-ancestors 'none'", "object-src 'none'",
+    "base-uri 'none'", "form-action 'self'", "default-src 'self'"]) expect(csp).toContain(directive);
+  // Next.js stamps this request's nonce on its own scripts.
+  expect(html).toContain(`nonce="${nonce}"`);
+  expect(headers["x-frame-options"]).toBe("DENY");
+  expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
+  expect(headers["x-content-type-options"]).toBe("nosniff");
+  expect(headers["permissions-policy"]).toBe("camera=(), microphone=(), geolocation=(), payment=()");
+  expect(headers["cross-origin-opener-policy"]).toBe("same-origin");
+  // Development server: no HSTS (production only).
+  expect(headers["strict-transport-security"]).toBeUndefined();
+  return nonce!;
+}
+
+const HINT = { cookie: "poker_session_hint=1" };
+
 test.describe("security headers", () => {
-  for (const path of ["/", "/login", "/table/x"]) {
+  for (const path of ["/login", "/signup", "/rules", "/reset-password"]) {
     test(`${path} sends a nonce-based CSP and the hardening headers`, async ({ request }) => {
-      const first = await request.get(path);
-      const second = await request.get(path);
-      const csp = first.headers()["content-security-policy"] ?? "";
-      const nonce = /'nonce-([A-Za-z0-9+/=]+)'/.exec(csp)?.[1];
-      expect(nonce, csp).toBeTruthy();
-      expect(second.headers()["content-security-policy"]).not.toContain(nonce!);
-      expect(csp).toContain(`script-src 'self' 'nonce-${nonce}' 'strict-dynamic'`);
-      expect(csp).toContain("style-src 'self' 'unsafe-inline'");
-      expect(csp).toContain("connect-src 'self' http://127.0.0.1:4107 ws://127.0.0.1:4107");
-      for (const directive of ["img-src 'self' data: blob:", "font-src 'self'", "frame-ancestors 'none'", "object-src 'none'",
-        "base-uri 'none'", "form-action 'self'", "default-src 'self'"]) expect(csp).toContain(directive);
-      // Next.js stamps this request's nonce on its own scripts.
-      const html = await first.text();
-      expect(html).toContain(`nonce="${nonce}"`);
-      const headers = first.headers();
-      expect(headers["x-frame-options"]).toBe("DENY");
-      expect(headers["referrer-policy"]).toBe("strict-origin-when-cross-origin");
-      expect(headers["x-content-type-options"]).toBe("nosniff");
-      expect(headers["permissions-policy"]).toBe("camera=(), microphone=(), geolocation=(), payment=()");
-      expect(headers["cross-origin-opener-policy"]).toBe("same-origin");
-      // Development server: no HSTS (production only).
-      expect(headers["strict-transport-security"]).toBeUndefined();
+      const first = await request.get(path, { maxRedirects: 0 });
+      const second = await request.get(path, { maxRedirects: 0 });
+      expect(first.status()).toBe(200);
+      const nonce = expectHardened(first.headers(), await first.text());
+      expect(second.headers()["content-security-policy"]).not.toContain(nonce);
     });
   }
 
-  test("a lobby → table → legal page journey raises no CSP violation", async ({ page, request }) => {
+  for (const path of ["/", "/table/x"]) {
+    test(`${path} sends a signed-out visitor to sign in before rendering, and renders hardened with a session hint`, async ({ request }) => {
+      const redirect = await request.get(path, { maxRedirects: 0 });
+      expect(redirect.status()).toBe(307);
+      // On the host the browser asked for (cookies and storage are per host).
+      expect(new URL(redirect.headers()["location"]!, "http://127.0.0.1:3107").href).toBe(`http://127.0.0.1:3107/login?next=${encodeURIComponent(path)}`);
+      expect(redirect.headers()["cache-control"]).toContain("no-store");
+      expect(redirect.headers()["set-cookie"]).toContain("poker_gate_bounce=1");
+      // The loop breaker: within its 30 s the page renders and the client gate decides.
+      const bounced = await request.get(path, { maxRedirects: 0, headers: { cookie: "poker_gate_bounce=1" } });
+      expect(bounced.status()).toBe(200);
+
+      const rendered = await request.get(path, { maxRedirects: 0, headers: HINT });
+      expect(rendered.status()).toBe(200);
+      expectHardened(rendered.headers(), await rendered.text());
+    });
+  }
+
+  test("the Turnstile script is rendered only on the forms that use it", async ({ request }) => {
+    for (const path of ["/login", "/signup", "/reset-password"]) {
+      expect(await (await request.get(path, { maxRedirects: 0 })).text(), path).toContain("challenges.cloudflare.com/turnstile/v0/api.js");
+    }
+    for (const path of ["/", "/table/x", "/account/security", "/rules", "/verify-email"]) {
+      const html = await (await request.get(path, { maxRedirects: 0, headers: HINT })).text();
+      expect(html, path).not.toContain("challenges.cloudflare.com/turnstile/v0/api.js");
+    }
+  });
+
+  test("the hint cookie only skips the redirect: a forged one still meets the sign-in gate", async ({ page, request }) => {
+    await request.post(`${fixture}/__test/auth`, { data: { signedOut: true } });
+    await page.goto("/account/security");
+    await expectOnLogin(page, "%2Faccount%2Fsecurity");
+    await expect(page.getByRole("heading", { name: "Two-step verification" })).toHaveCount(0);
+  });
+
+  test("a sign-in → lobby → table → security page → legal page journey raises no CSP violation", async ({ page, context, request }) => {
     await request.post(`${fixture}/__test/reset`, { data: { mode: "unseated" } });
+    await request.post(`${fixture}/__test/auth`, { data: { signedOut: true } });
+    await context.clearCookies();
     await page.addInitScript(() => {
       const seen: string[] = [];
       (window as unknown as { __cspViolations: string[] }).__cspViolations = seen;
@@ -441,6 +395,10 @@ test.describe("security headers", () => {
     const violations = () => page.evaluate(() => (window as unknown as { __cspViolations: string[] }).__cspViolations);
 
     await page.goto("/");
+    await expectOnLogin(page, "%2F");
+    await signInViaUi(page, { identifier: "Player-0", password: "fixture-password-0" });
+    await expectSignedIn(page, "Player-0");
+    await expect(page).toHaveURL(/3107\/$/);
     await page.getByRole("button", { name: "Custom table" }).click();
     await page.getByLabel("Seats").selectOption("2");
     await page.getByRole("button", { name: "Open table" }).click();
@@ -448,6 +406,14 @@ test.describe("security headers", () => {
     await expect(page.getByText("Waiting for another person to take a seat.", { exact: false })).toBeVisible();
     await settle(page);
     expect(await violations()).toEqual([]);
+
+    await page.goto("/account/security");
+    await page.getByRole("button", { name: "Set up" }).click();
+    await expect(page.getByRole("img", { name: "QR code for your authenticator app" })).toBeVisible();
+    await page.getByRole("button", { name: "Cancel" }).click();
+    await settle(page);
+    expect(await violations()).toEqual([]);
+
     await page.getByRole("navigation", { name: "Legal" }).getByRole("link", { name: "Fairness" }).click();
     await expect(page.getByRole("heading", { level: 1, name: "Game Fairness" })).toBeVisible();
     await settle(page);
@@ -457,13 +423,15 @@ test.describe("security headers", () => {
 });
 
 test.describe("contrast", () => {
-  test("lobby, login and legal pages meet WCAG AA text contrast", async ({ page, request }) => {
+  test("signed-in pages meet WCAG AA text contrast", async ({ page, request }) => {
     await request.post(`${fixture}/__test/reset`, { data: { mode: "spectator" } });
     await page.goto("/");
-    await expect(page.getByRole("button", { name: "Sign out" })).toBeVisible();
+    await expectSignedIn(page);
     await page.getByRole("button", { name: "Custom table" }).click();
     await expect(page.getByText("Hand in progress", { exact: true })).toBeVisible();
     expect(await lowContrastTexts(page)).toEqual([]);
+    await openAccountMenu(page);
+    expect(await lowContrastTexts(page), "account menu").toEqual([]);
 
     for (const path of ["/terms", "/privacy", "/rules", "/fairness", "/responsible-gaming", "/complaints"]) {
       await page.goto(path);
@@ -471,13 +439,38 @@ test.describe("contrast", () => {
       expect(await lowContrastTexts(page), path).toEqual([]);
     }
 
-    await signedOut(page);
-    await page.goto("/");
-    await expect(page.getByRole("button", { name: "Play as guest" })).toBeVisible();
-    expect(await lowContrastTexts(page)).toEqual([]);
-    await page.goto("/login");
-    await page.getByRole("button", { name: "Register" }).click();
-    await expect(page.getByLabel("I confirm that I am 18 years of age or older.")).toBeVisible();
-    expect(await lowContrastTexts(page)).toEqual([]);
+    await request.post(`${fixture}/__test/auth`, { data: { emailVerified: false } });
+    await page.goto("/welcome");
+    await expect(page.getByRole("heading", { name: "Protect your account" })).toBeVisible();
+    expect(await lowContrastTexts(page), "/welcome").toEqual([]);
+    await page.goto("/account");
+    await expect(page.getByRole("heading", { name: "Email", exact: true })).toBeVisible();
+    expect(await lowContrastTexts(page), "/account").toEqual([]);
+    await page.goto("/account/security");
+    await expect(page.getByRole("heading", { name: "Where you're signed in" })).toBeVisible();
+    await expect(page.getByTestId("session-row").first()).toBeVisible();
+    expect(await lowContrastTexts(page), "/account/security").toEqual([]);
+    await page.getByRole("button", { name: "Set up" }).click();
+    await expect(page.getByRole("img", { name: "QR code for your authenticator app" })).toBeVisible();
+    expect(await lowContrastTexts(page), "TOTP setup").toEqual([]);
+  });
+
+  test.describe("signed out", () => {
+    test.use({ session: "signed-out" });
+
+    test("sign-in, sign-up and email-link pages meet WCAG AA text contrast", async ({ page }) => {
+      await page.goto("/login");
+      await expect(page.getByLabel("Username or email")).toBeVisible();
+      expect(await lowContrastTexts(page), "/login").toEqual([]);
+      await page.goto("/signup");
+      await expect(page.getByLabel("I confirm that I am 18 years of age or older.")).toBeVisible();
+      await page.getByLabel("Password", { exact: true }).fill("short");
+      expect(await lowContrastTexts(page), "/signup").toEqual([]);
+      for (const path of ["/reset-password", "/verify-email", "/email-change", "/auth/not-me"]) {
+        await page.goto(path);
+        await expect(page.getByRole("heading", { level: 1 })).toBeVisible();
+        expect(await lowContrastTexts(page), path).toEqual([]);
+      }
+    });
   });
 });

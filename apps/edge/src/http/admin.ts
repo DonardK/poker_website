@@ -1,7 +1,8 @@
 import type { Hono } from "hono";
 import type { Env } from "../env";
 import { accessJwtValid, accessSettings } from "../auth/access";
-import { authed, type Ctx } from "./guard";
+import { stepUpUntil } from "../auth/step-up";
+import { authed, type Ctx, type GateOk } from "./guard";
 import { errBrief, logError, logWarn } from "./log";
 import { readRegulatorAudit } from "./tables";
 
@@ -16,8 +17,18 @@ export function registerAdmin(app: Hono<{ Bindings: Env }>): void {
       logWarn({ security: "ADMIN_DENIED", userId: gate.userId, method: c.req.method, path: new URL(c.req.url).pathname.slice(0, 200) }, "admin route denied");
       return c.json({ error: "Forbidden" }, 403);
     }
+    if (c.get("config")!.adminRequirePasskey && !signedInWithPasskey(gate)) {
+      logWarn({ security: "ADMIN_PASSKEY_REQUIRED", userId: gate.userId, path: new URL(c.req.url).pathname.slice(0, 200) }, "admin route needs a passkey sign-in");
+      return c.json({ error: "Sign in with a passkey to use admin tools.", code: "ADMIN_PASSKEY_REQUIRED" }, 403);
+    }
     return readRegulatorAudit(c, gate.userId);
   });
+}
+
+/** ADMIN_REQUIRE_PASSKEY: the session signed in with a passkey, or stepped up with one in the last 5 minutes. */
+function signedInWithPasskey(gate: GateOk): boolean {
+  if (gate.session.authMethods.includes("passkey")) return true;
+  return stepUpUntil(gate.session) !== null && gate.session.reauthMethods.includes("passkey");
 }
 
 async function requireAccess(c: Ctx): Promise<Response | null> {

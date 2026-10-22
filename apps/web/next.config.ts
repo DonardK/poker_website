@@ -31,6 +31,9 @@ const nextConfig = (phase: string): NextConfig => ({
   reactStrictMode: true,
   poweredByHeader: false,
   distDir: process.env.POKER_TEST_DIST_DIR ?? (phase === PHASE_DEVELOPMENT_SERVER ? ".next-dev" : ".next"),
+  // Browser tests only (playwright.config.ts): their host is 127.0.0.1, which Next.js would rewrite to
+  // "localhost" in the middleware's sign-in redirect. Real hosts are never loopback addresses.
+  skipMiddlewareUrlNormalize: process.env.POKER_SKIP_MIDDLEWARE_URL_NORMALIZE === "1",
   async headers() {
     return [{ source: "/:path*", headers: securityHeaders(phase) }];
   },

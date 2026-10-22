@@ -149,6 +149,24 @@ The row is inserted in the **same** Postgres transaction as the bankroll change,
 
 Runtime DB role: `INSERT` and `SELECT` on `GameCommand`. No `UPDATE` or `DELETE` (same posture as append-only hand history).
 
+### Account security tables (migration `20261019100000_account_security`)
+
+New columns on `User` (`emailVerifiedAt`, `credentialsVersion`, `passwordChangedAt`, `passwordResetRequired`, `mfaFailedCount`, `mfaLockedUntil`, `securityHoldUntil`, `webauthnUserId`) and `Session` (`deviceId`, `persistent`, `authMethods`, `reauthAt`, `reauthMethods`), and nine tables. RLS is forced on all of them. The runtime role gets column-level `UPDATE` only, so it can never rewrite a secret, a hash or a binding (replacement is delete-then-insert):
+
+| Table | Holds | Runtime role |
+|---|---|---|
+| `KnownDevice` | SHA-256 of the `poker_device` cookie, coarse IP, label, country | SELECT, INSERT, DELETE; UPDATE label, userAgent, lastIp, country, lastSeenAt |
+| `UserTotp` | TOTP secret sealed with the auth key ring (section 7), pending until `enabledAt` | SELECT, INSERT, DELETE; UPDATE enabledAt, disabledAt, lastUsedStep |
+| `UserBackupCode` | HMAC of each backup code | SELECT, INSERT, DELETE; UPDATE usedAt |
+| `WebAuthnCredential` | Passkey id, COSE public key, counter, RP ID; soft delete | SELECT, INSERT, DELETE; UPDATE counter, lastUsedAt, name, backedUp, deviceType, removedAt |
+| `EmailToken` | SHA-256 of email-link tokens (verify, reset, email change, lockdown) | SELECT, INSERT, DELETE; UPDATE consumedAt |
+| `AuthNonce` | Used MFA-ticket and passkey-challenge ids | SELECT, INSERT, DELETE |
+| `AccountSecurityEvent` | Append-only security history (`type` is a `SecurityEventType`) | SELECT, INSERT (a trigger refuses UPDATE/DELETE for every role) |
+| `StepUpGrant` | Single-use, 5-minute grant for one money action: `purpose`, `bindHash`, `method`, `sessionId` | SELECT, INSERT only: the API mints, the payments role consumes |
+| `StepUpEmailChallenge` | HMAC of the emailed step-up code: 10 minutes, 5 tries, bound to session, purpose and bindHash | SELECT, INSERT, DELETE; UPDATE attempts, consumedAt |
+
+The database also enforces the money step-up policy: a `StepUpGrant` with method `PASSWORD` is refused for every money purpose, an `admin_payments` grant needs `PASSKEY`, `expiresAt` is at most 5 minutes after `createdAt` (the issuer writes both from one clock reading), and a trigger lets `consumedAt` be set once, before expiry, with nothing else ever changing (`poker.break_glass` is the maintenance hatch). The migration also revokes every guest session that had not ended (`GUEST_RETIRED`). The wallet migration grants `poker_payments` SELECT and UPDATE (`consumedAt`) on `StepUpGrant`, and SELECT on `AccountSecurityEvent`.
+
 ## 4. Wrangler
 
 Replace `example.com` and every `<…>` id at deploy time. Do not commit real ids if they are account-private; ids are not secrets, but placeholders keep the repo deployable for any account.
@@ -173,10 +191,10 @@ Compatibility date `2026-10-01` or newer. From that line, `nodejs_compat` is alr
   "placement": { "region": "aws:eu-central-1" },
   "vars": {
     "CLIENT_ORIGIN": "https://example.com",
-    "TERMS_VERSION": "2026-10-01",
+    "TERMS_VERSION": "2026-10-19",
     "JWT_ACCESS_TTL": "15m",
     "JWT_REFRESH_TTL": "7d",
-    "SESSION_IDLE_TTL": "7d",
+    "SESSION_IDLE_TTL": "14d",
     "SESSION_ABSOLUTE_TTL": "30d",
     "DEFAULT_STARTING_BANKROLL": "10000",
     "TURN_TIME_BANK_MS": "20000",
@@ -212,10 +230,13 @@ Compatibility date `2026-10-01` or newer. From that line, `nodejs_compat` is alr
     { "name": "RL_CREDENTIALS", "namespace_id": "1002", "simple": { "limit": 15, "period": 60 } },
     { "name": "RL_REFRESH", "namespace_id": "1003", "simple": { "limit": 30, "period": 60 } },
     { "name": "RL_ADMIN", "namespace_id": "1004", "simple": { "limit": 30, "period": 60 } },
-    { "name": "RL_WS", "namespace_id": "1005", "simple": { "limit": 30, "period": 60 } }
+    { "name": "RL_WS", "namespace_id": "1005", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RL_EMAIL", "namespace_id": "1006", "simple": { "limit": 5, "period": 60 } }
   ]
 }
 ```
+
+Account-security vars (all optional; blank means the default): `WEBAUTHN_RP_ID` (blank = the `CLIENT_ORIGIN` host; otherwise that host or a parent domain, never an IP or a public suffix such as `workers.dev`), `WEBAUTHN_RP_NAME` and `TOTP_ISSUER` (default `Hold'em Live`), `WEBAUTHN_EXTRA_ORIGINS` (comma list of https origins), `MAIL_FROM` and `MAIL_REPLY_TO` (required with `RESEND_API_KEY`), `PASSWORD_BREACH_CHECK` (`true`), `SECURITY_HOLD_HOURS` (`24`, 0-168) and `ADMIN_REQUIRE_PASSKEY` (`false`). `SESSION_IDLE_TTL` is 14 days when "Keep me signed in" is on; off gives a browser-session cookie with 12 h idle and 24 h absolute.
 
 `placement.region` must be the region of the Neon primary (the example `aws:eu-central-1` is a placeholder). Every table mutation is several sequential queries; placement keeps the Worker near Hyperdrive's pool. Change the value to the real Neon region before the first deploy. `TABLE_DO_LOCATION_HINT` is a Durable Object location hint (`weur`, `eeur`, `enam`, `wnam`, …) passed to `getByName(id, { locationHint })` only when the DO is first created. Use the hint closest to that same region.
 
@@ -251,6 +272,12 @@ Set with `wrangler secret put <NAME>` from `apps/edge`. Never print the value. N
 | `GAME_ENCRYPTION_KEYS` | Same ring format as today: `kid:hex64,kid:hex64`. |
 | `GAME_ENCRYPTION_ACTIVE_KEY_ID` | Active `kid`. |
 | `TURNSTILE_SECRET_KEY` | Siteverify secret. |
+| `AUTH_HMAC_SECRET` | Optional. Keys MFA tickets, passkey challenge tokens and code HMACs. ≥32 characters, ≥16 distinct, distinct from the JWT and ticket secrets. |
+| `AUTH_ENCRYPTION_KEYS` | Optional. Auth key ring (seals TOTP secrets), same format as the game ring, no key shared with it. |
+| `AUTH_ENCRYPTION_ACTIVE_KEY_ID` | Optional. Active auth `kid`. Set all three `AUTH_*` or none. |
+| `RESEND_API_KEY` | Optional. Email delivery (`re_…`); needs `MAIL_FROM`. Blank: no email (an http origin logs links). |
+
+The `AUTH_*` secrets are optional so that a missing value never breaks play (the Durable Objects read the same config): without them TOTP, passkeys, MFA sign-in and money step-up are off and fail closed with 503, and the API logs one error per isolate on https. A present but malformed value fails the request with 500, as for any secret. On an https `CLIENT_ORIGIN`, `readEdgeConfig` also refuses published placeholder, low-entropy or reused keys in the game and auth rings (`assertProductionSecrets`).
 
 The database password lives only in the Hyperdrive configuration, not in a Worker secret. There is no `DATABASE_URL` secret on the Worker.
 
@@ -337,15 +364,46 @@ Errors: `EngineError` → 409 and `{ error: message }` as today. Auth credential
 |---|---|---|---|---|
 | GET | `/api/health` | none | `src/health.ts` | `{ ok, service: "poker-edge", timestamp }`. No database. `redis` field omitted. |
 | GET | `/api/ready` | none | `src/health.ts` | `SELECT 1` through Hyperdrive. 200 `{ ready: true }` or 503 `{ ready: false, reasons }`. |
-| POST | `/api/auth/register` | Turnstile + credential limit | `http/auth.ts` | Port `auth/routes.ts`. 201 `{ user, accessToken }` + `Set-Cookie`. |
-| POST | `/api/auth/login` | Turnstile + credential limit | `http/auth.ts` | Same dummy-bcrypt and lockout behavior. |
-| POST | `/api/auth/guest` | Turnstile + credential limit | `http/auth.ts` | |
-| POST | `/api/auth/refresh` | refresh cookie + refresh limit | `http/auth.ts` | Rotation and reuse detection unchanged. |
-| POST | `/api/auth/logout` | cookie optional | `http/auth.ts` | Revoke row, clear cookie, 204, then `UserSessions.revoke`. |
+| GET | `/api/auth/config` | none | `http/auth.ts` | 200 `AuthClientConfig`: what this deployment offers (`emailEnabled`, `passkeysEnabled`, `totpEnabled`, terms version, step-up window). |
+| POST | `/api/auth/register` | Turnstile + credential limit | `http/auth.ts` | `{ username, email, password, remember?, acceptTerms, confirmAge, termsVersion }`. 201 `{ user, accessToken }` + refresh, hint and device cookies; sends the verification email. 400 `PASSWORD_WEAK` / `PASSWORD_BREACHED` / `TERMS_REQUIRED`; 409 `TERMS_OUTDATED`, username or registration conflict. |
+| POST | `/api/auth/login` | Turnstile + credential limit | `http/auth.ts` | `{ identifier, password, remember? }` (`identifier` is a username or an email; `username` is a deprecated alias). One PBKDF2 per request, lockout as before, the same 401 for every failure. 200 `{ user, accessToken }`, or 200 `MfaChallenge` (no session yet) when TOTP is on. 403 `PASSWORD_RESET_REQUIRED` (only after the right password); 503 `SECURITY_NOT_CONFIGURED` for a TOTP account without the `AUTH_*` secrets. |
+| POST | `/api/auth/login/mfa` | MFA ticket + credential limit | `http/auth.ts` | `{ mfaTicket, method: "totp" \| "backup_code", code, remember? }`. 200 `{ user, accessToken }`. 401 `MFA_TICKET_INVALID` (expired, used, other browser, credentials changed) or `MFA_INVALID`; 429 `MFA_LOCKED` + `Retry-After`. |
+| POST | `/api/auth/passkey/options` | none | `http/auth-passkey.ts` | 200 `{ options, challengeToken }` (discoverable, user verification required). Writes nothing. 503 `PASSKEYS_UNAVAILABLE`. |
+| POST | `/api/auth/passkey/login` | challenge + credential limit | `http/auth-passkey.ts` | `{ challengeToken, credential, remember? }`. 200 `{ user, accessToken }`, `authMethods: ["passkey"]` (counts as two factors; allowed while a reset is required). 400 `CHALLENGE_INVALID`; 401 `PASSKEY_INVALID` (one body for every credential problem). |
+| POST | `/api/auth/password/forgot` | Turnstile + credential + email limits | `http/auth-recovery.ts` | `{ email }`. Always 202 `{ ok: true }` (no enumeration); 3 links per account per hour. |
+| POST | `/api/auth/password/reset` | email token + credential limit | `http/auth-recovery.ts` | `{ token, newPassword }`. 204: every session revoked (`PASSWORD_CHANGED`), cookies cleared, nobody signed in, TOTP still required. 400 `TOKEN_INVALID` / `PASSWORD_WEAK` / `PASSWORD_BREACHED` (a weak password does not use up the link). |
+| POST | `/api/auth/email/verify` | email token + credential limit | `http/auth-recovery.ts` | `{ token }`. 200 `{ emailVerified: true }`. 400 `TOKEN_INVALID`. |
+| POST | `/api/auth/email/change/confirm` | email token + credential limit | `http/auth-recovery.ts` | `{ token }`. 200 `{ email }`; notice with a revert link to the old address. 400 `TOKEN_INVALID`; 409 `EMAIL_UNAVAILABLE`. |
+| POST | `/api/auth/security/lockdown` | email token + credential limit | `http/auth-recovery.ts` | "This wasn't me": `{ token }`. 200 `{ secured: true, resetToken, expiresAt }`, cookies cleared (section 10.7). 400 `TOKEN_INVALID`. |
+| POST | `/api/auth/refresh` | refresh cookie + refresh limit | `http/auth.ts` | Rotation and reuse detection unchanged; keeps a non-persistent session non-persistent; refuses a retired guest (`GUEST_RETIRED`). |
+| POST | `/api/auth/logout` | cookie optional | `http/auth.ts` | Revoke row, clear the refresh and hint cookies, 204, then `UserSessions.revoke`. |
 | GET | `/api/auth/sessions` | Bearer | `http/auth.ts` | Coarse IP display unchanged. |
 | DELETE | `/api/auth/sessions/:id` | Bearer | `http/auth.ts` | 404 if not owned. Revoke + fanout. |
 | POST | `/api/auth/logout-all` | Bearer | `http/auth.ts` | `{ exceptCurrent?: true }`. |
-| GET | `/api/auth/me` | Bearer | `http/auth.ts` | |
+| GET | `/api/auth/me` | Bearer | `http/auth.ts` | `{ user }` with `emailVerified`, `twoFactorEnabled`, `passkeyCount`. Every user record (sign-in, refresh, `/me`) also carries `termsVersion`, the version the account last accepted (null: never). |
+| POST | `/api/auth/terms/accept` | Bearer | `http/auth.ts` | `{ acceptTerms, confirmAge, termsVersion }` from an account on older terms (the web asks before anything else). Records the version and time like registration. 200 `{ user }`; 400 `TERMS_REQUIRED`; 409 `TERMS_OUTDATED`. |
+| POST | `/api/auth/reauth/password` | Bearer + credential limit | `http/auth-reauth.ts` | `{ password }`. 200 `{ reauthenticatedUntil }`, or `MfaChallenge` for a TOTP account. 401 `Invalid credentials` (counts toward the lock). |
+| POST | `/api/auth/reauth/mfa` | Bearer + ticket + credential limit | `http/auth-reauth.ts` | `{ mfaTicket, method, code }`. 200 `{ reauthenticatedUntil }`. |
+| POST | `/api/auth/reauth/passkey/options` | Bearer | `http/auth-reauth.ts` | `{}`, or `{ purpose, bind }` for a money grant. 200 `{ options, challengeToken }`; 409 `NO_PASSKEYS`. |
+| POST | `/api/auth/reauth/passkey` | Bearer + challenge + credential limit | `http/auth-reauth.ts` | `{ challengeToken, credential }`. 200 `{ reauthenticatedUntil }`. |
+| POST | `/api/auth/step-up/email-code` | Bearer + email limit | `http/auth-step-up.ts` | `{ purpose, bind }`, only for an account with neither TOTP nor a passkey. 202 `{ emailChallengeToken, expiresAt }`; 5 codes per account per hour (429). |
+| POST | `/api/auth/step-up` | Bearer + credential limit | `http/auth-step-up.ts` | `{ purpose, bind, proof }`. 200 `{ stepUpGrantId, expiresAt }`: a single-use 5-minute `StepUpGrant` for one money action (section 10.7). |
+| GET | `/api/account/security` | Bearer | `http/account.ts` | 200 `AccountSecurity`. |
+| GET | `/api/account/events` | Bearer | `http/account.ts` | `?before=<ISO>&limit=1-50`. 200 `{ events, next }`. |
+| GET | `/api/account/devices` | Bearer | `http/account.ts` | 200 `{ devices }` (`current` = this session's device). |
+| DELETE | `/api/account/devices/:id` | Bearer | `http/account.ts` | Revokes that device's sessions; 204 (cookies cleared if it is this browser); 404 if not owned. |
+| POST | `/api/account/password` | Bearer + step-up with the password | `http/account.ts` | `{ newPassword }`. 200 `{ revokedSessions }` (the other sessions). |
+| POST | `/api/account/email` | Bearer + step-up + email limit | `http/account.ts` | `{ newEmail }`. 202 `{ ok: true, pendingEmail }` whether or not the address is taken. |
+| POST | `/api/account/email/verification` | Bearer + email limit | `http/account.ts` | 202 `{ ok: true }`; 409 `EMAIL_ALREADY_VERIFIED` / `EMAIL_MISSING`; 503 `MAIL_UNAVAILABLE`. |
+| POST | `/api/account/2fa/totp/setup` | Bearer + step-up | `http/account.ts` | 200 `{ secret, otpauthUri, expiresAt }` (15 minutes to confirm). 409 `TOTP_ALREADY_ENABLED`. |
+| POST | `/api/account/2fa/totp/enable` | Bearer + credential limit | `http/account.ts` | `{ code }`. 200 `{ backupCodes }` (shown once). 400 `TOTP_INVALID`; 409 `TOTP_NOT_PENDING`. |
+| DELETE | `/api/account/2fa/totp` | Bearer + step-up with a second factor | `http/account.ts` | 204; withdrawals held. 409 `TOTP_NOT_ENABLED`. |
+| POST | `/api/account/2fa/backup-codes` | Bearer + step-up with a second factor | `http/account.ts` | 200 `{ backupCodes }`. 409 `TOTP_NOT_ENABLED`. |
+| GET | `/api/account/passkeys` | Bearer | `http/account.ts` | 200 `{ passkeys }`. |
+| POST | `/api/account/passkeys/options` | Bearer + step-up | `http/account.ts` | 200 `{ options, challengeToken }`; 409 `PASSKEY_LIMIT` (20). |
+| POST | `/api/account/passkeys` | Bearer + step-up | `http/account.ts` | `{ challengeToken, credential, name? }`. 201 `{ passkey }`. 400 `CHALLENGE_INVALID` / `PASSKEY_INVALID`; 409 `PASSKEY_ALREADY_REGISTERED`. |
+| POST | `/api/account/passkeys/:id/rename` | Bearer | `http/account.ts` | `{ name }`. 200 `{ passkey }`; 404. |
+| DELETE | `/api/account/passkeys/:id` | Bearer + step-up | `http/account.ts` | Soft delete; 204; 404. |
 | GET | `/api/tables` | Bearer | `http/tables.ts` | Same query as `routes/tables.ts` (open, not private, no bot seats, limit 50, plus the caller's seat if older). |
 | GET | `/api/tables/:id` | Bearer | `http/tables.ts` | 404 for unknown and for private tables the caller is not in. |
 | GET | `/api/tables/:id/hands/:handNumber/audit` | Bearer | `http/tables.ts` | Participant audit. Fail closed. Port `game/audit.ts` usage, not the rules. |
@@ -353,7 +411,7 @@ Errors: `EngineError` → 409 and `{ error: message }` as today. Auth credential
 | GET | `/api/admin/hands/:handUuid/audit` | Bearer + DB role `ADMIN` + Cloudflare Access | `http/admin.ts` | Full sealed record. See section 10.5. |
 | POST | `/api/ws-ticket` | Bearer + general limit | `http/ws-ticket.ts` | Sets `poker_ws`. Empty 204 body. |
 
-There is no other Express route. Do not add payment routes.
+`POST /api/auth/guest` was removed (owner decision 2026-10-18: no guest play); it is a 404. Request and response bodies are typed in `packages/shared/src/account.ts`. Errors are `{ error, code? }`; a step-up route answers 403 `{ code: "REAUTH_REQUIRED", methods, needs? }` (never 401) when the session has not confirmed it is the user in the last 5 minutes, or not with the methods the change needs. There are no payment routes on this Worker; the money step-up grant above is consumed by the payments Worker.
 
 `POST /api/tables` today calls `tableManager.track` after commit. The edge equivalent is `env.TABLES.getByName(id, { locationHint }).track()`, which arms the idle alarm. If that RPC fails, the table row still exists; the next viewer or a ready-check alarm must arm it. Log the failure. Do not fail the HTTP create (same as today).
 
@@ -361,7 +419,9 @@ There is no other Express route. Do not add payment routes.
 
 | Cookie | Path | Max-Age | Flags in production |
 |---|---|---|---|
-| `poker_refresh` | `/api/auth` | until `Session.expiresAt` | `HttpOnly; Secure; SameSite=Strict` |
+| `poker_refresh` | `/api/auth` | until `Session.expiresAt`; none (a browser-session cookie) when "Keep me signed in" is off | `HttpOnly; Secure; SameSite=Strict` |
+| `poker_session_hint` | `/` | the same as `poker_refresh` | `HttpOnly; Secure; SameSite=Lax`. Value `1`. Set and cleared with `poker_refresh`. A redirect hint for the web middleware, never an authenticator. |
+| `poker_device` | `/api/auth` | 34560000 (400 days) | `HttpOnly; Secure; SameSite=Strict`. `d1.<43 base64url>`; only its SHA-256 is stored (`KnownDevice`). Names the browser for new-sign-in alerts and the familiar-device lockout exemption. |
 | `poker_ws` | `/ws` | 60 | `HttpOnly; Secure; SameSite=Strict` |
 
 Development (`wrangler dev` on http): `SameSite=Lax`, omit `Secure`.
@@ -374,7 +434,7 @@ Development (`wrangler dev` on http): `SameSite=Lax`, omit `Secure`.
 
 `exp` is 60 seconds from issue. The ticket is not stored. Replay inside 60 seconds only helps someone who already has the cookie. The DO still loads the session row and rejects a revoked session.
 
-Clear `poker_refresh` with `Set-Cookie` `Max-Age=0` and the same `Path`. Do not set a domain attribute (host-only).
+Clear `poker_refresh` with `Set-Cookie` `Max-Age=0` and the same `Path`, and clear `poker_session_hint` in the same response. Every cookie is host-only (no Domain attribute). Every cookie is appended (`c.header(..., { append: true })`), so one response can carry several. Session lifetime: 14 days idle and 30 days absolute when remembered; 12 hours idle and 24 hours absolute when not. A new sign-in revokes the session of any refresh cookie sent with it ("sign out, then sign in").
 
 ### 5.4 Access tokens
 
@@ -385,7 +445,7 @@ Clear `poker_refresh` with `Set-Cookie` `Max-Age=0` and the same `Path`. Do not 
 
 Do not bundle `jsonwebtoken`. It works under `nodejs_compat` but pulls Node-specific paths the edge port does not need. `node:crypto` is available for the hash and the cipher (section 10.1) and is what the ported key ring should call.
 
-Bearer parsing: `Authorization: Bearer`, token length 1–4096. `authenticate()` checks the signature, then the session row (revoked, idle expiry, absolute expiry, `kind === "HUMAN"`). A database error propagates as 503, not 401.
+Bearer parsing: `Authorization: Bearer`, token length 1–4096. `authenticate()` checks the signature, then the session row (revoked, idle expiry, absolute expiry, `kind === "HUMAN"`, not a retired guest). A database error propagates as 503, not 401. The same guest refusal (`GUEST_RETIRED`) runs at refresh and at both socket session checks (`lobby/auth.ts`, `game/session.ts`).
 
 ### 5.5 Config object
 
@@ -498,6 +558,7 @@ Keep the key ring (`apps/server/src/security/key-ring.ts` behavior, copied into 
 - Engine state: `table:${tableId}`
 - Sealed hand audit: existing `sealedAuditContext(tableId, handNumber)`
 - Hole cards on `HandPlayer.encryptedHoleCards`: existing per-seat context
+- TOTP secrets on `UserTotp.secretCiphertext`: `user-totp:${userId}`, under the separate auth ring (`AUTH_ENCRYPTION_KEYS`, `authRingFromConfig`), never the game ring
 
 `node:crypto` `createCipheriv` / `createDecipheriv` with `aes-256-gcm`, `createHash('sha256')`, `randomBytes`, and `randomUUID` are part of the Workers `node:crypto` implementation (full API except the documented gaps: no DSA/DH `generateKeyPair`, no `argon2`, no `ed448`/`x448`). Use them. Do not reimplement GCM.
 
@@ -762,7 +823,7 @@ Middleware stays on the Edge-compatible path. It uses `crypto.getRandomValues` a
 
 CSP changes in `contentSecurityPolicy` (section 10.2).
 
-Turnstile widget: new `apps/web/src/components/turnstile-widget.tsx`. `login/page.tsx` (register and login) and the guest call on `page.tsx` send `turnstileToken` in the JSON body. Site key: `NEXT_PUBLIC_TURNSTILE_SITE_KEY`. The widget script is `https://challenges.cloudflare.com/turnstile/v0/api.js` with the CSP nonce (`strict-dynamic` propagates it if the script tag carries the nonce). Do not enable Turnstile pre-clearance.
+Turnstile widget: `apps/web/src/components/turnstile-widget.tsx`. Sign-in (`/login`), sign-up (`/signup`) and the forgot-password form (`/reset-password`) send `turnstileToken` in the JSON body; the root layout renders the script tag on those three pages only. Site key: `NEXT_PUBLIC_TURNSTILE_SITE_KEY`. The widget script is `https://challenges.cloudflare.com/turnstile/v0/api.js` with the CSP nonce (`strict-dynamic` propagates it if the script tag carries the nonce). Do not enable Turnstile pre-clearance.
 
 Local dummy keys (no siteverify round trip): site `1x00000000000000000000AA`, secret `1x0000000000000000000000000000000AA` (always passes) and site `2x00000000000000000000AB`, secret `2x0000000000000000000000000000000AA` (always blocks). Use the pass pair in local `.dev.vars` and Playwright.
 
@@ -795,10 +856,13 @@ Binding (per location, eventually consistent, period only 10 or 60):
 | Binding | Key | Limit |
 |---|---|---|
 | `RL_GENERAL` | `user:<sub>` if the bearer verifies, else `ip:<cf-connecting-ip>` | 120 / 60s |
-| `RL_CREDENTIALS` | `ip:<cf-connecting-ip>` always | 15 / 60s on register, login, guest |
+| `RL_CREDENTIALS` | `ip:<cf-connecting-ip>` always | 15 / 60s on the credential routes below |
 | `RL_REFRESH` | `refresh:<sha256(cookie)>` if the refresh JWT verifies, else IP | 30 / 60s |
 | `RL_ADMIN` | IP | 30 / 60s |
 | `RL_WS` | IP | 30 / 60s upgrades |
+| `RL_EMAIL` | same key as `RL_GENERAL` | 5 / 60s on routes that send email (the database also caps per account) |
+
+`RL_CREDENTIALS` applies to every POST that checks a password, a code, a passkey assertion or an emailed token: `login`, `register`, `login/mfa`, `passkey/login`, `password/forgot`, `password/reset`, `email/verify`, `email/change/confirm`, `security/lockdown`, `reauth/password`, `reauth/mfa`, `reauth/passkey`, `step-up` (all under `/api/auth/`) and `/api/account/2fa/totp/enable`. `RL_EMAIL` applies to `/api/auth/password/forgot`, `/api/account/email`, `/api/account/email/verification` and `/api/auth/step-up/email-code`. Per-account caps in Postgres: reset links 3 per hour, verification links 5, email changes 3, security notices and alerts 20 per day, emailed step-up codes 5 per hour; over a cap the request still succeeds silently (no enumeration), except step-up codes (429).
 
 Respond 429 with `Retry-After`. These limits are **per Cloudflare location**, so they are a backstop, not a global budget. The Postgres login lockout is the global control for passwords. The DO buckets are the global control for a single table (one DO worldwide).
 
@@ -807,7 +871,7 @@ Health probes skip `RL_GENERAL`.
 ### 10.4 WAF (operator suggestions, not app code)
 
 - Managed ruleset and bot fight mode on the zone.
-- A zone rate-limiting rule on `POST /api/auth/login`, `/register`, and `/guest` as a second layer in front of the binding.
+- A zone rate-limiting rule on `POST /api/auth/login`, `/register`, `/login/mfa`, `/passkey/login` and `/password/forgot` as a second layer in front of the binding.
 - Do not cache `/api/*` or `/ws/*` at the CDN (`Cache-Control` already says so; add a cache rule if a product override appears).
 
 ### 10.5 Admin
@@ -818,18 +882,33 @@ Health probes skip `RL_GENERAL`.
 2. A valid player session (Bearer), then `User.role === "ADMIN"` read from Postgres on every request.
 3. `RL_ADMIN`.
 4. The existing access log and `REGULATOR_HAND_AUDIT_ACCESS` / `ADMIN_DENIED` / `AUDIT_INTEGRITY` log lines.
+5. With `ADMIN_REQUIRE_PASSKEY=true` (recommended before real money): a session that signed in with a passkey, or stepped up with one in the last 5 minutes; otherwise 403 `ADMIN_PASSKEY_REQUIRED`.
 
 Access is not a substitute for the role check. The role check is not a substitute for Access.
 
 ### 10.6 Turnstile
 
-`POST` register, login, and guest require JSON `turnstileToken` (string, max 2048). The server `POST`s `https://challenges.cloudflare.com/turnstile/v0/siteverify` with `{ secret, response: token, remoteip: cf-connecting-ip }` before any user lookup and before bcrypt. Tokens are single-use and expire in 5 minutes.
+`POST` register, login and password/forgot require JSON `turnstileToken` (string, max 2048). The second sign-in step (`login/mfa`), passkey sign-in, step-up and the email-link routes do not: the MFA ticket, the signed challenge or the emailed token proves the earlier step, and they are rate limited as credential routes. The server `POST`s `https://challenges.cloudflare.com/turnstile/v0/siteverify` with `{ secret, response: token, remoteip: cf-connecting-ip }` before any user lookup and before bcrypt. Tokens are single-use and expire in 5 minutes.
 
 - Siteverify failure or `success !== true` → 403 `{ error: "Verification failed", code: "TURNSTILE_FAILED" }`. No session cookie change. No user lookup.
 - Network failure talking to siteverify → 503 retryable. Do not treat it as a bad password.
 - On success, the rest of the handler is unchanged, including the dummy hash.
 
 Refresh, logout, and table routes do not use Turnstile.
+
+### 10.7 Account security
+
+Design: the account-security blueprint (routes in section 5.2, types in `packages/shared/src/account.ts`). Code: `apps/edge/src/auth/*` and `http/{auth,auth-passkey,auth-recovery,auth-reauth,auth-step-up,account,session-issue}.ts`, mail in `src/mail/*`.
+
+- **Sign-in.** Username or email plus password (one PBKDF2 per request, lockout unchanged), then, when TOTP is on, a signed 5-minute MFA ticket (`AUTH_HMAC_SECRET` subkey; bound to the `poker_device` cookie and to `User.credentialsVersion`; single use through `AuthNonce`) and a TOTP or backup code with its own lock (`mfaFailedCount` / `mfaLockedUntil`, or a per-device counter on a known device). A passkey with user verification signs in alone. Every sign-in writes `Session.authMethods`, opens the step-up window and records `SIGN_IN` or `SIGN_IN_NEW_DEVICE`.
+- **TOTP.** RFC 6238 (SHA-1, 6 digits, 30 s, ±1 step), in house on Web Crypto. A code is accepted only for a step above `UserTotp.lastUsedStep` (one conditional UPDATE), so a code works once and the enrolment code cannot sign in. The secret is sealed with the auth key ring (section 7). 10 backup codes, stored as HMACs.
+- **Passkeys.** `@simplewebauthn/server` 14.0.3 (exact pin, imported lazily), discoverable credentials, user verification required, attestation `none`, ES256/RS256. The challenge travels in a signed 5-minute token; an options request writes nothing. RP ID is the `CLIENT_ORIGIN` host (or `WEBAUTHN_RP_ID`); an IP-address origin turns passkeys off. The edge test suite registers and signs in with a software authenticator inside workerd.
+- **Step-up.** Account changes need `Session.reauthAt` within 5 minutes (`/api/auth/reauth/*`); a password change needs the password in it, and a TOTP account always needs a second factor in it. A refresh never renews it. Money needs more: a single-use `StepUpGrant` (5 minutes) bound to the session, the purpose (`withdrawal`, `payout_destination`, `admin_payments`) and `bind`, the SHA-256 of the canonical action. Proofs: a passkey assertion whose challenge was issued for that purpose and bind; the password plus a TOTP or backup code; or, only for an account with neither, the password plus a 6-digit emailed code (10 minutes, 5 tries, HMAC at rest). `PASSWORD` alone never authorises money, and `admin_payments` needs a passkey (the database enforces both). The payments Worker consumes the grant. `requireMoneyAuth` (`auth/step-up.ts`) is the session-level check payments routes add: verified email, fresh second-factor step-up, no security hold.
+- **Email links.** 32 random bytes in the URL fragment (`#t=`), SHA-256 at rest, single use: verify (24 h, `/verify-email`), reset (30 min, `/reset-password`), email change (1 h, `/email-change`), "This wasn't me" (7 days, `/auth/not-me`). Reset revokes every session and signs nobody in. Mail goes through Resend with an idempotency key per message, sent after the response (`waitUntil`); without `RESEND_API_KEY` it is logged on an http origin and dropped on https (`/api/auth/config` says `emailEnabled: false`).
+- **Notices and lockdown.** Every credential or factor change, and a sign-in from a new device, emails a verified address with a "This wasn't me" link. Redeeming it revokes every session (`SECURITY_LOCKDOWN`), requires a password reset (password sign-in answers 403 `PASSWORD_RESET_REQUIRED` only after the right password), removes passkeys, TOTP and devices added since the incident, restores passkeys and TOTP removed since, reverts an email change, voids outstanding links and codes, holds withdrawals, and returns a fresh reset token. `onAccountLockdown` (`auth/lockdown.ts`) is the hook the payments phase wires to `env.PAYMENTS.securityLockdown(userId)`; it is a no-op until then.
+- **Security hold.** Password reset or change, email change, TOTP off and a lockdown set `User.securityHoldUntil` (`SECURITY_HOLD_HOURS`, default 24): withdrawals and payout-destination changes answer 403 `SECURITY_HOLD` until it passes.
+- **Breached passwords.** Have I Been Pwned range API (first 5 hex characters of SHA-1, `Add-Padding`), at register, reset and change; fail-open with a 1.5 s timeout (`BREACH_CHECK_UNAVAILABLE` warning); `PASSWORD_BREACH_CHECK=false` turns it off (tests). A password may not contain the username.
+- **Housekeeping.** A daily cron (`23 3 * * *`, `src/maintenance/sweep.ts`) deletes expired single-use marks, email links 30 days after expiry, TOTP setups never confirmed, passkeys removed over 30 days ago and old emailed step-up codes. Security events are append-only and are not swept.
 
 ## 11. Testing
 
@@ -857,7 +936,7 @@ Auth integration: HTTP tests against `wrangler dev` that cover register, login l
 
 ### 11.3 Playwright
 
-Existing `apps/web` Playwright. Point it at `next dev` (or `opennextjs-cloudflare preview`) plus `wrangler dev`. Cover: guest with the Turnstile test key, create table, seat two players (two browser contexts), action, reconnect mid-hand, refresh cookie rotation while seated (`SESSION_RENEW` does not reset the table).
+Existing `apps/web` Playwright. Point it at `next dev` (or `opennextjs-cloudflare preview`) plus `wrangler dev`. Cover: two accounts signed up through `/signup` with the Turnstile test key, create table, seat two players (two browser contexts), action, reconnect mid-hand, refresh cookie rotation while seated (`SESSION_RENEW` does not reset the table).
 
 ## 12. CI/CD
 

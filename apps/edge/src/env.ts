@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { assertProductionSecrets, AUTH_KEY_RING_NAMES, minDistinctCharacters, parseKeyRing, type KeyRing } from "./game/key-ring";
 
 /** Bindings and vars from wrangler.jsonc. Secrets arrive from wrangler secret / .dev.vars. */
 export interface Env {
@@ -11,6 +12,8 @@ export interface Env {
   RL_REFRESH: RateLimit;
   RL_ADMIN: RateLimit;
   RL_WS: RateLimit;
+  /** Routes that send email (forgot password, email change, resend verification, step-up code). */
+  RL_EMAIL: RateLimit;
   CLIENT_ORIGIN: string;
   TERMS_VERSION: string;
   JWT_ACCESS_TTL: string;
@@ -43,12 +46,46 @@ export interface Env {
   CF_ACCESS_AUD?: string;
   /** Team subdomain only, for example "contoso" in https://contoso.cloudflareaccess.com. */
   CF_ACCESS_TEAM_DOMAIN?: string;
+  // Account security. Every one is optional: a feature whose setting is absent
+  // is off and its routes fail closed, so a missing value never breaks play.
+  /**
+   * Passkey relying-party id. Blank = the CLIENT_ORIGIN host. Otherwise that
+   * host or a parent domain of it; never an IP address or a public suffix
+   * (workers.dev is one, so the demo uses its full host).
+   */
+  WEBAUTHN_RP_ID?: string;
+  /** Shown in the passkey prompt. Default "Hold'em Live", 1-64 characters. */
+  WEBAUTHN_RP_NAME?: string;
+  /** Comma list of extra https origins a passkey response may come from (a custom-domain move). */
+  WEBAUTHN_EXTRA_ORIGINS?: string;
+  /** Authenticator-app account label. Default "Hold'em Live", 1-64 characters, no ":". */
+  TOTP_ISSUER?: string;
+  /** Required with RESEND_API_KEY: "Name <addr@verified-domain>" or "addr@verified-domain". */
+  MAIL_FROM?: string;
+  MAIL_REPLY_TO?: string;
+  /** "false" skips the Have I Been Pwned range check. Default "true". */
+  PASSWORD_BREACH_CHECK?: string;
+  /** Hours withdrawals stay held after a credential change, 0-168. Default 24. */
+  SECURITY_HOLD_HOURS?: string;
+  /** "true": admin routes need a passkey sign-in or a passkey step-up. Default "false". */
+  ADMIN_REQUIRE_PASSKEY?: string;
   JWT_ACCESS_SECRET: string;
   JWT_REFRESH_SECRET: string;
   WS_TICKET_SECRET: string;
   GAME_ENCRYPTION_KEYS: string;
   GAME_ENCRYPTION_ACTIVE_KEY_ID: string;
   TURNSTILE_SECRET_KEY: string;
+  /** Blank = no email is delivered (logged on an http origin, dropped on https). */
+  RESEND_API_KEY?: string;
+  /**
+   * Set all three or none. Blank = TOTP, passkeys, MFA sign-in and money
+   * step-up are disabled (they answer 503, never a misleading 401).
+   * AUTH_HMAC_SECRET keys MFA tickets, challenge tokens and code hashes; the
+   * ring (same format as GAME_ENCRYPTION_KEYS, independent keys) seals TOTP secrets.
+   */
+  AUTH_HMAC_SECRET?: string;
+  AUTH_ENCRYPTION_KEYS?: string;
+  AUTH_ENCRYPTION_ACTIVE_KEY_ID?: string;
 }
 
 const UNIT_SECONDS: Record<string, number> = { s: 1, m: 60, h: 3600, d: 86_400 };
@@ -78,8 +115,23 @@ function durationMs(name: string, value: string): number {
 
 const blankIsUnset = (value: unknown) => (typeof value === "string" && value.trim() === "" ? undefined : value);
 const gameMs = (max: number, fallback: number) => z.preprocess(blankIsUnset, z.coerce.number().int().min(0).max(max).default(fallback));
+/** "true" | "false" | "1" | "0"; blank or absent is `fallback`. */
+const flag = (fallback: "true" | "false") => z.preprocess(
+  (value) => (value == null || (typeof value === "string" && value.trim() === "") ? fallback : value),
+  z.enum(["true", "false", "1", "0"]),
+);
+const optional = <T extends z.ZodType>(schema: T) => z.preprocess(blankIsUnset, schema.optional());
+const isOn = (value: string) => value === "true" || value === "1";
 
 const secret = (name: string) => z.string().min(32, `${name} must be at least 32 characters`);
+
+const EMAIL_ADDRESS = /^[^\s@<>"(),;:\\]{1,64}@[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)+$/;
+/** "addr@domain" or "Display Name <addr@domain>" (no quotes, angle brackets or line breaks in the name). */
+function isMailbox(value: string): boolean {
+  const named = /^([^<>"\r\n]{1,64}) <([^<>\s]+)>$/.exec(value);
+  return named ? EMAIL_ADDRESS.test(named[2]!) && named[1]!.trim() === named[1] : EMAIL_ADDRESS.test(value);
+}
+const displayName = z.string().trim().min(1).max(64).refine((value) => !/[\u0000-\u001f\u007f]/.test(value));
 
 const bindingSchema = z.object({
   CLIENT_ORIGIN: z.string().url(),
@@ -99,23 +151,54 @@ const bindingSchema = z.object({
     (value) => (value == null || (typeof value === "string" && value.trim() === "") ? 10_000 : value),
     z.coerce.number().int().min(1).max(1_000_000),
   ),
-  ENABLE_LEGACY_BCRYPT: z.preprocess(
-    (value) => (value == null || (typeof value === "string" && value.trim() === "") ? "false" : value),
-    z.enum(["true", "false", "1", "0"]),
-  ),
-  ADMIN_REQUIRE_CF_ACCESS: z.preprocess(
-    (value) => (value == null || (typeof value === "string" && value.trim() === "") ? "false" : value),
-    z.enum(["true", "false", "1", "0"]),
-  ),
+  ENABLE_LEGACY_BCRYPT: flag("false"),
+  ADMIN_REQUIRE_CF_ACCESS: flag("false"),
   TURNSTILE_SITE_KEY: z.string(),
   TABLE_DO_LOCATION_HINT: z.string().trim().min(1).max(16),
+  WEBAUTHN_RP_ID: optional(z.string().trim().toLowerCase().max(253).regex(/^[a-z0-9.-]+$/)),
+  WEBAUTHN_RP_NAME: optional(displayName),
+  WEBAUTHN_EXTRA_ORIGINS: optional(z.string().max(2048)),
+  TOTP_ISSUER: optional(displayName.refine((value) => !value.includes(":"))),
+  MAIL_FROM: optional(z.string().trim().max(320).refine(isMailbox)),
+  MAIL_REPLY_TO: optional(z.string().trim().max(254).regex(EMAIL_ADDRESS)),
+  PASSWORD_BREACH_CHECK: flag("true"),
+  SECURITY_HOLD_HOURS: z.preprocess(blankIsUnset, z.coerce.number().int().min(0).max(168).default(24)),
+  ADMIN_REQUIRE_PASSKEY: flag("false"),
   JWT_ACCESS_SECRET: secret("JWT_ACCESS_SECRET"),
   JWT_REFRESH_SECRET: secret("JWT_REFRESH_SECRET"),
   WS_TICKET_SECRET: secret("WS_TICKET_SECRET"),
   GAME_ENCRYPTION_KEYS: z.string().min(1, "GAME_ENCRYPTION_KEYS is required"),
   GAME_ENCRYPTION_ACTIVE_KEY_ID: z.string().trim().min(1, "GAME_ENCRYPTION_ACTIVE_KEY_ID is required"),
   TURNSTILE_SECRET_KEY: z.string().min(1, "TURNSTILE_SECRET_KEY is required"),
+  RESEND_API_KEY: optional(z.string().trim().regex(/^re_[A-Za-z0-9_]{8,200}$/)),
+  AUTH_HMAC_SECRET: optional(secret("AUTH_HMAC_SECRET").refine((value) => new Set(value).size >= minDistinctCharacters(value))),
+  AUTH_ENCRYPTION_KEYS: optional(z.string().trim().min(1)),
+  AUTH_ENCRYPTION_ACTIVE_KEY_ID: optional(z.string().trim().min(1)),
 });
+
+type RawConfig = z.infer<typeof bindingSchema>;
+
+const DEFAULT_SITE_NAME = "Hold'em Live";
+/** Public-suffix hosts this deployment can sit under; a passkey RP ID can never be one (Public Suffix List). */
+const PUBLIC_SUFFIXES = new Set(["workers.dev", "pages.dev"]);
+
+export type MailConfig =
+  | { transport: "resend"; apiKey: string; from: string; replyTo: string | null }
+  /** No delivery. exposeLinks (an http origin only) lets local development log the link. */
+  | { transport: "sink"; exposeLinks: boolean };
+
+export interface SecurityConfig {
+  hmacSecret: string;
+  authKeys: string;
+  authActiveKeyId: string;
+}
+
+export interface WebAuthnConfig {
+  rpId: string;
+  rpName: string;
+  /** CLIENT_ORIGIN first, then WEBAUTHN_EXTRA_ORIGINS. */
+  origins: string[];
+}
 
 export interface EdgeConfig {
   clientOrigin: string;
@@ -144,6 +227,75 @@ export interface EdgeConfig {
   gameEncryptionKeys: string;
   gameEncryptionActiveKeyId: string;
   turnstileSecretKey: string;
+  /** Account-security secrets; null when unset (TOTP, passkeys, MFA sign-in and money step-up fail closed). */
+  security: SecurityConfig | null;
+  /** Null when security is null, or the RP ID would be an IP address, or the origin is not a secure context. */
+  webauthn: WebAuthnConfig | null;
+  totpIssuer: string;
+  mail: MailConfig;
+  passwordBreachCheck: boolean;
+  securityHoldMs: number;
+  adminRequirePasskey: boolean;
+}
+
+/** URL.hostname of an IP literal: dotted IPv4, or bracketed IPv6. */
+function isIpLiteral(host: string): boolean {
+  return /^\d{1,3}(?:\.\d{1,3}){3}$/.test(host) || host.startsWith("[") || host.includes(":");
+}
+
+function isLocalhost(host: string): boolean {
+  return host === "localhost" || host.endsWith(".localhost");
+}
+
+/** All three account-security secrets or none; the ring must parse and share no key with the game ring. */
+function readSecurity(raw: RawConfig, gameRing: () => KeyRing, httpsOrigin: boolean): SecurityConfig | null {
+  const values = [raw.AUTH_HMAC_SECRET, raw.AUTH_ENCRYPTION_KEYS, raw.AUTH_ENCRYPTION_ACTIVE_KEY_ID];
+  if (values.every((value) => value === undefined)) return null;
+  if (values.some((value) => value === undefined)) {
+    throw new Error("Set AUTH_HMAC_SECRET, AUTH_ENCRYPTION_KEYS and AUTH_ENCRYPTION_ACTIVE_KEY_ID together, or none of them");
+  }
+  const security = { hmacSecret: raw.AUTH_HMAC_SECRET!, authKeys: raw.AUTH_ENCRYPTION_KEYS!, authActiveKeyId: raw.AUTH_ENCRYPTION_ACTIVE_KEY_ID! };
+  const ring = parseKeyRing({ keys: security.authKeys, activeKeyId: security.authActiveKeyId }, AUTH_KEY_RING_NAMES);
+  const gameKeys = new Set([...gameRing().keys.values()].map((key) => key.toString("hex")));
+  for (const [kid, key] of ring.keys) {
+    const hex = key.toString("hex");
+    if (gameKeys.has(hex)) throw new Error(`AUTH_ENCRYPTION_KEYS key "${kid}" is also a game encryption key; every purpose needs an independent key`);
+    if (security.hmacSecret.trim().toLowerCase() === hex) throw new Error(`AUTH_HMAC_SECRET reuses encryption key "${kid}"; every purpose needs an independent secret`);
+  }
+  if (httpsOrigin) assertProductionSecrets(ring, raw.JWT_ACCESS_SECRET, raw.JWT_REFRESH_SECRET);
+  return security;
+}
+
+function readWebAuthn(raw: RawConfig, origin: URL, security: SecurityConfig | null): WebAuthnConfig | null {
+  const host = origin.hostname.toLowerCase();
+  const explicit = raw.WEBAUTHN_RP_ID;
+  if (explicit !== undefined) {
+    if (isIpLiteral(explicit)) throw new Error("WEBAUTHN_RP_ID must be a domain name, not an IP address");
+    if (host !== explicit && !host.endsWith(`.${explicit}`)) throw new Error("WEBAUTHN_RP_ID must be the CLIENT_ORIGIN host or a parent domain of it");
+    if (PUBLIC_SUFFIXES.has(explicit) || (!explicit.includes(".") && explicit !== "localhost")) {
+      throw new Error("WEBAUTHN_RP_ID cannot be a public suffix; use the full host");
+    }
+  }
+  const origins = [origin.origin];
+  for (const entry of (raw.WEBAUTHN_EXTRA_ORIGINS ?? "").split(",").map((part) => part.trim()).filter(Boolean)) {
+    let extra: URL;
+    try { extra = new URL(entry); } catch { throw new Error("WEBAUTHN_EXTRA_ORIGINS must be a comma list of https origins"); }
+    if (extra.protocol !== "https:" || extra.username || extra.password || extra.pathname !== "/" || extra.search || extra.hash || isIpLiteral(extra.hostname)) {
+      throw new Error("WEBAUTHN_EXTRA_ORIGINS must be a comma list of https origins");
+    }
+    if (!origins.includes(extra.origin)) origins.push(extra.origin);
+  }
+  if (!security) return null;
+  const rpId = explicit ?? host;
+  // 127.0.0.1 is not a valid RP ID, and WebAuthn needs a secure context (https or localhost).
+  if (isIpLiteral(rpId) || (origin.protocol !== "https:" && !isLocalhost(host))) return null;
+  return { rpId, rpName: raw.WEBAUTHN_RP_NAME ?? DEFAULT_SITE_NAME, origins };
+}
+
+function readMail(raw: RawConfig, origin: URL): MailConfig {
+  if (raw.RESEND_API_KEY === undefined) return { transport: "sink", exposeLinks: origin.protocol === "http:" };
+  if (raw.MAIL_FROM === undefined) throw new Error("MAIL_FROM is required when RESEND_API_KEY is set");
+  return { transport: "resend", apiKey: raw.RESEND_API_KEY, from: raw.MAIL_FROM, replyTo: raw.MAIL_REPLY_TO ?? null };
 }
 
 /**
@@ -165,13 +317,20 @@ export function readEdgeConfig(env: Env): EdgeConfig {
   if (sessionIdleTtlMs > sessionAbsoluteTtlMs) throw new Error("SESSION_IDLE_TTL cannot exceed SESSION_ABSOLUTE_TTL");
   if (raw.TIME_BANK_INITIAL_MS > raw.TIME_BANK_MAX_MS) throw new Error("TIME_BANK_INITIAL_MS cannot exceed TIME_BANK_MAX_MS");
   if (raw.TIME_BANK_REFILL_MS > raw.TIME_BANK_MAX_MS) throw new Error("TIME_BANK_REFILL_MS cannot exceed TIME_BANK_MAX_MS");
-  const secrets = [raw.JWT_ACCESS_SECRET, raw.JWT_REFRESH_SECRET, raw.WS_TICKET_SECRET];
-  if (new Set(secrets).size !== secrets.length) throw new Error("JWT and WebSocket ticket secrets must be distinct");
-  if (raw.CLIENT_ORIGIN.startsWith("https://") && /change|replace|development/i.test(secrets.join(""))) {
-    throw new Error("Use independent random JWT and WebSocket ticket secrets");
+  const secrets = [raw.JWT_ACCESS_SECRET, raw.JWT_REFRESH_SECRET, raw.WS_TICKET_SECRET, ...(raw.AUTH_HMAC_SECRET ? [raw.AUTH_HMAC_SECRET] : [])];
+  if (new Set(secrets).size !== secrets.length) throw new Error("JWT, WebSocket ticket and AUTH_HMAC_SECRET secrets must be distinct");
+  const origin = new URL(raw.CLIENT_ORIGIN);
+  const httpsOrigin = origin.protocol === "https:";
+  if (httpsOrigin && /change|replace|development/i.test(secrets.join(""))) {
+    throw new Error("Use independent random JWT, WebSocket ticket and AUTH_HMAC_SECRET secrets");
   }
+  let parsedGameRing: KeyRing | undefined;
+  const gameRing = () => (parsedGameRing ??= parseKeyRing({ keys: raw.GAME_ENCRYPTION_KEYS, activeKeyId: raw.GAME_ENCRYPTION_ACTIVE_KEY_ID }));
+  // Production (https): placeholder, low-entropy or reused keys are refused (key-ring.ts).
+  if (httpsOrigin) assertProductionSecrets(gameRing(), raw.JWT_ACCESS_SECRET, raw.JWT_REFRESH_SECRET);
+  const security = readSecurity(raw, gameRing, httpsOrigin);
   return {
-    clientOrigin: new URL(raw.CLIENT_ORIGIN).origin,
+    clientOrigin: origin.origin,
     termsVersion: raw.TERMS_VERSION,
     jwtAccessTtl: `${accessTtlSeconds}s`,
     jwtRefreshTtl: `${refreshTtlSeconds}s`,
@@ -181,10 +340,10 @@ export function readEdgeConfig(env: Env): EdgeConfig {
     sessionAbsoluteTtlMs,
     defaultStartingBankroll: raw.DEFAULT_STARTING_BANKROLL,
     turnTimeBankMs: raw.TURN_TIME_BANK_MS,
-    enableLegacyBots: raw.ENABLE_LEGACY_BOTS === "true" || raw.ENABLE_LEGACY_BOTS === "1",
+    enableLegacyBots: isOn(raw.ENABLE_LEGACY_BOTS),
     passwordPbkdf2Iterations: raw.PASSWORD_PBKDF2_ITERATIONS,
-    enableLegacyBcrypt: raw.ENABLE_LEGACY_BCRYPT === "true" || raw.ENABLE_LEGACY_BCRYPT === "1",
-    adminRequireCfAccess: raw.ADMIN_REQUIRE_CF_ACCESS === "true" || raw.ADMIN_REQUIRE_CF_ACCESS === "1",
+    enableLegacyBcrypt: isOn(raw.ENABLE_LEGACY_BCRYPT),
+    adminRequireCfAccess: isOn(raw.ADMIN_REQUIRE_CF_ACCESS),
     timeBankInitialMs: raw.TIME_BANK_INITIAL_MS,
     timeBankMaxMs: raw.TIME_BANK_MAX_MS,
     timeBankRefillMs: raw.TIME_BANK_REFILL_MS,
@@ -197,5 +356,12 @@ export function readEdgeConfig(env: Env): EdgeConfig {
     gameEncryptionKeys: raw.GAME_ENCRYPTION_KEYS,
     gameEncryptionActiveKeyId: raw.GAME_ENCRYPTION_ACTIVE_KEY_ID,
     turnstileSecretKey: raw.TURNSTILE_SECRET_KEY,
+    security,
+    webauthn: readWebAuthn(raw, origin, security),
+    totpIssuer: raw.TOTP_ISSUER ?? DEFAULT_SITE_NAME,
+    mail: readMail(raw, origin),
+    passwordBreachCheck: isOn(raw.PASSWORD_BREACH_CHECK),
+    securityHoldMs: raw.SECURITY_HOLD_HOURS * 3_600_000,
+    adminRequirePasskey: isOn(raw.ADMIN_REQUIRE_PASSKEY),
   };
 }

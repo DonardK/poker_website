@@ -13,12 +13,28 @@ export function sessionExpiry(now: number, absoluteExpiresAt: Date, idleMs: numb
   return new Date(Math.min(now + idleMs, absoluteExpiresAt.getTime()));
 }
 
-export function newSessionLifetime(now: number, idleMs: number, absoluteMs: number): { absoluteExpiresAt: Date; expiresAt: Date } {
-  const absoluteExpiresAt = new Date(now + absoluteMs);
-  return { absoluteExpiresAt, expiresAt: sessionExpiry(now, absoluteExpiresAt, idleMs) };
+/**
+ * "Keep me signed in" unticked: a browser-session cookie, and the row ends
+ * after 12 h without use or 24 h in all. The absolute cap matters because
+ * browser session-restore keeps "session" cookies alive.
+ */
+export const NON_PERSISTENT_IDLE_MS = 12 * 3_600_000;
+export const NON_PERSISTENT_ABSOLUTE_MS = 24 * 3_600_000;
+
+/** The idle period for a session: the configured one, or 12 h (at most) when not persistent. */
+export function idleTtlMs(configuredIdleMs: number, persistent: boolean): number {
+  return persistent ? configuredIdleMs : Math.min(configuredIdleMs, NON_PERSISTENT_IDLE_MS);
 }
 
-const END_REASONS: readonly SessionEndReason[] = ["LOGOUT", "LOGOUT_ALL", "SESSION_REVOKED", "PASSWORD_CHANGED", "REFRESH_REUSE", "EXPIRED", "ACCOUNT_RESTRICTED"];
+export function newSessionLifetime(now: number, idleMs: number, absoluteMs: number, persistent = true): { absoluteExpiresAt: Date; expiresAt: Date } {
+  const absoluteExpiresAt = new Date(now + (persistent ? absoluteMs : Math.min(absoluteMs, NON_PERSISTENT_ABSOLUTE_MS)));
+  return { absoluteExpiresAt, expiresAt: sessionExpiry(now, absoluteExpiresAt, idleTtlMs(idleMs, persistent)) };
+}
+
+const END_REASONS: readonly SessionEndReason[] = [
+  "LOGOUT", "LOGOUT_ALL", "SESSION_REVOKED", "PASSWORD_CHANGED", "REFRESH_REUSE", "EXPIRED", "ACCOUNT_RESTRICTED",
+  "GUEST_RETIRED", "SECURITY_LOCKDOWN",
+];
 
 export function endReason(stored: string | null | undefined): SessionEndReason {
   return END_REASONS.includes(stored as SessionEndReason) ? stored as SessionEndReason : "SESSION_REVOKED";

@@ -31,12 +31,13 @@ const sections: LegalSection[] = [
     body: (
       <>
         <Bullets items={[
-          <><strong>Account data:</strong> your username; for registered accounts your e-mail address and a password hash (bcrypt, cost 12; we never store or see your password itself); whether the account is a guest account; your avatar colour; when the account was created and last seen.</>,
+          <><strong>Account data:</strong> your username; your e-mail address and whether you have confirmed it; a password hash (PBKDF2-SHA256; we never store or see your password itself); your avatar colour; when the account was created and last seen.</>,
+          <><strong>Sign-in methods you add:</strong> for two-step verification, the authenticator secret (encrypted) and keyed hashes of your backup codes; for passkeys, each passkey&apos;s public key, a name and when it was added and last used (the private key never leaves your device).</>,
           <><strong>Consent records:</strong> the terms version you accepted, when you accepted it, and when you confirmed you are 18 or older.</>,
-          <><strong>Security data:</strong> failed sign-in counts and temporary lock-outs; for every sign-in session, the IP address and browser user agent it started from, when it was created, last used, expires or was revoked, and why it was revoked.</>,
+          <><strong>Security data:</strong> failed sign-in counts and temporary lock-outs; for every sign-in session, the IP address and browser user agent it started from, when it was created, last used, expires or was revoked, and why it was revoked; the devices you sign in from (a hash of a random device cookie, the browser and system, a shortened IP address and the country) so that we can alert you to sign-ins from new devices; and a history of security events (sign-ins and changes to how you sign in, with time, shortened IP address and browser), used for alerts, your security page and fraud prevention. New passwords are checked against known data breaches by sending only the first five characters of a hash of the password (k-anonymity), never the password.</>,
           <><strong>Gameplay data:</strong> your play-chip balance and its changes, the tables you sat at, buy-ins and chips returned when you leave a table, every action you take, and the hand history of hands you played, including your hole cards. Each hand has a tamper-evident audit record; the cards that were never shown to players (undealt and mucked cards) are kept only in an encrypted, sealed record for the operator and the regulator.</>,
           <><strong>Server logs:</strong> technical and security logs (requests, errors, sign-in and admin events) that can contain your user id, IP address and timestamps.</>,
-          <><strong>Stored on your device:</strong> a strictly necessary, HTTP-only sign-in cookie, and, in your browser&apos;s session storage, verification evidence for hands you are playing (fairness commitments and a digest of your own hole cards), cleared when you sign out.</>,
+          <><strong>Stored on your device:</strong> strictly necessary, HTTP-only cookies for signing in (the session, a hint that a session exists, and a random device identifier for new-device alerts); in your browser&apos;s session storage, verification evidence for hands you are playing (fairness commitments and a digest of your own hole cards), cleared when you sign out; and, only if you tick &ldquo;Stay signed in&rdquo;, the usernames of up to five accounts used on this device (with an avatar colour and the time of last use, never a password or token) so you can switch accounts quickly. You can remove them on the sign-in page.</>,
         ]} />
         <p>We do not use advertising or analytics cookies, and we do not sell personal data.</p>
         <CounselNote>confirm the list is complete before launch and add any data collected by hosting, e-mail or support providers.</CounselNote>
@@ -76,10 +77,12 @@ const sections: LegalSection[] = [
     body: (
       <>
         <p>
-          Our hosting and database providers process data on our behalf (<Placeholder>provider names and locations</Placeholder>).
-          We disclose data to regulators, law enforcement or courts when the law requires it. Nothing else is shared.
+          Our hosting and database providers process data on our behalf (<Placeholder>provider names and locations</Placeholder>),
+          and our e-mail provider (Resend) sends account e-mails such as confirmation links, password resets and security alerts.
+          Once real-money play is offered, payment and identity-verification providers will process the data they need for
+          that. We disclose data to regulators, law enforcement or courts when the law requires it. Nothing else is shared.
         </p>
-        <CounselNote>list processors, international transfers and the safeguards relied on (e.g. adequacy decision or standard contractual clauses).</CounselNote>
+        <CounselNote>list processors (including Resend as e-mail processor), international transfers and the safeguards relied on (e.g. adequacy decision or standard contractual clauses).</CounselNote>
       </>
     ),
   },
@@ -120,7 +123,8 @@ const sections: LegalSection[] = [
     body: (
       <p>
         Connections are encrypted (HTTPS), passwords are hashed, sign-in tokens are short-lived and rotated, sessions can be
-        revoked, sealed hand records are encrypted, and staff access to audit records is logged.
+        revoked, two-step verification and passkeys are offered, sign-ins from new devices are alerted, links in our e-mails
+        work once and expire, sealed hand records are encrypted, and staff access to audit records is logged.
       </p>
     ),
   },

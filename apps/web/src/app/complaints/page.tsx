@@ -18,7 +18,7 @@ const sections: LegalSection[] = [
           one. Please include:
         </p>
         <Bullets items={[
-          "your username (guests: the guest name shown in the lobby);",
+          "your username;",
           "what happened and what outcome you want;",
           "for a hand: the table name, the hand number, the approximate time, and the result of the Verify hand check if you ran it;",
           "any screenshots that help.",

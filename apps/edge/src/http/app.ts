@@ -9,8 +9,13 @@ import { readCookie } from "./cookies";
 import type { AppDb } from "./db";
 import { clientIp, pathname, serviceUnavailable, type Ctx } from "./guard";
 import { errBrief, logError, logInfo, logWarn } from "./log";
+import { registerAccount } from "./account";
 import { registerAdmin } from "./admin";
 import { registerAuth } from "./auth";
+import { registerPasskeyAuth } from "./auth-passkey";
+import { registerReauth } from "./auth-reauth";
+import { registerAuthRecovery } from "./auth-recovery";
+import { registerStepUp } from "./auth-step-up";
 import { registerTables } from "./tables";
 import { registerWsTicket } from "./ws-ticket";
 
@@ -28,7 +33,21 @@ declare module "hono" {
 
 const BODY_LIMIT = 32 * 1024;
 const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
-const CREDENTIAL_PATHS = new Set(["/api/auth/login", "/api/auth/register", "/api/auth/guest"]);
+/**
+ * RL_CREDENTIALS (by IP): every POST that checks a password, a code, a
+ * passkey assertion or an emailed token. The per-account lockouts and caps in
+ * Postgres stay the global control; binding limits are per location.
+ */
+const CREDENTIAL_PATHS = new Set([
+  "/api/auth/login", "/api/auth/register", "/api/auth/login/mfa", "/api/auth/passkey/login",
+  "/api/auth/password/forgot", "/api/auth/password/reset", "/api/auth/email/verify",
+  "/api/auth/email/change/confirm", "/api/auth/security/lockdown", "/api/auth/reauth/password",
+  "/api/auth/reauth/mfa", "/api/auth/reauth/passkey", "/api/auth/step-up", "/api/account/2fa/totp/enable",
+]);
+/** RL_EMAIL (by user, else IP): every POST that sends an email. Per-account database caps apply too. */
+const EMAIL_PATHS = new Set([
+  "/api/auth/password/forgot", "/api/account/email", "/api/account/email/verification", "/api/auth/step-up/email-code",
+]);
 const TEST_DATABASE = Symbol.for("poker.edge.httpTestDatabase");
 
 export function attachTestDatabase(env: object, db: AppDb): void {
@@ -38,6 +57,15 @@ export function attachTestDatabase(env: object, db: AppDb): void {
 function testDatabase(env: Env): AppDb | null {
   const value = (env as Env & Record<symbol, AppDb | undefined>)[TEST_DATABASE];
   return value ?? null;
+}
+
+let securityUnconfiguredLogged = false;
+
+/** Once per isolate on a production (https) origin: the account-security features are off until their secrets are set. */
+function warnIfSecurityUnconfigured(config: EdgeConfig): void {
+  if (config.security || securityUnconfiguredLogged || !config.clientOrigin.startsWith("https://")) return;
+  securityUnconfiguredLogged = true;
+  logError({ security: "ACCOUNT_SECURITY_UNCONFIGURED" }, "account security secrets missing: TOTP, passkeys, MFA sign-in and money step-up are disabled");
 }
 
 function isApi(path: string): boolean {
@@ -147,6 +175,7 @@ async function outer(c: Ctx, next: Next): Promise<Response | void> {
     return c.json({ error: "Request could not be completed" }, 500);
   }
   c.set("config", config);
+  warnIfSecurityUnconfigured(config);
   const injected = testDatabase(c.env);
   let prisma: { $disconnect(): Promise<unknown> } | null = null;
   if (injected) {
@@ -274,6 +303,10 @@ async function rateLimit(c: Ctx, next: Next): Promise<Response | void> {
     const credentials = await enforceLimit(c, c.env.RL_CREDENTIALS, ipKey(c));
     if (credentials) return credentials;
   }
+  if (method === "POST" && EMAIL_PATHS.has(path)) {
+    const email = await enforceLimit(c, c.env.RL_EMAIL, await generalKey(c));
+    if (email) return email;
+  }
   if (method === "POST" && path === "/api/auth/refresh") {
     const refresh = await enforceLimit(c, c.env.RL_REFRESH, await refreshKey(c));
     if (refresh) return refresh;
@@ -364,6 +397,11 @@ export function mountHttp(app: Hono<{ Bindings: Env }>): void {
   app.use("*", rateLimit);
   app.use("*", originAndBody);
   registerAuth(app);
+  registerPasskeyAuth(app);
+  registerAuthRecovery(app);
+  registerReauth(app);
+  registerStepUp(app);
+  registerAccount(app);
   registerTables(app);
   registerAdmin(app);
   registerWsTicket(app);

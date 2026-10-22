@@ -1,17 +1,27 @@
 import { expect, test, type Page } from "@playwright/test";
 
-/** Guest session on the local edge, through the Next dev proxy. */
-async function playAsGuest(page: Page): Promise<void> {
-  await page.goto("/");
-  await page.getByRole("checkbox", { name: /18 years of age or older/ }).check();
-  await page.getByRole("checkbox", { name: /Terms of Service/ }).check();
-  const guest = page.getByRole("button", { name: "Play as guest" });
-  await expect(guest).toBeEnabled();
-  // Dummy site key 1x00000000000000000000AA does not render an iframe. It
-  // writes the token into a hidden input. An empty token is a 403.
-  await expect(page.locator("input[name='cf-turnstile-response']")).toHaveValue(/.+/);
-  await guest.click();
-  await expect(page.getByText("Play-chip balance")).toBeVisible();
+/**
+ * A fresh account on the local edge, through the Next dev proxy (there is no
+ * guest play: every player signs up). The username is unique per run, so the
+ * spec can run again against the same database. The welcome page recommends
+ * two-step verification; "Skip for now" goes on to the lobby.
+ */
+async function signUp(page: Page, username: string): Promise<void> {
+  await page.goto("/signup");
+  await page.getByLabel("Username").fill(username);
+  await page.getByLabel("Email").fill(`${username}@example.test`);
+  // Not a known-breached password, and it must not contain the username.
+  await page.getByLabel("Password", { exact: true }).fill("copper-meadow-lantern-drift-42");
+  await page.getByLabel("I confirm that I am 18 years of age or older.").check();
+  await page.getByLabel(/I accept the Terms of Service/).check();
+  const create = page.getByRole("button", { name: "Create account" });
+  // Enabled once the Turnstile token arrives. The dummy site key
+  // 1x00000000000000000000AA passes at once; an empty token is a 403.
+  await expect(create).toBeEnabled();
+  await create.click();
+  await page.waitForURL(/\/welcome$/);
+  await page.getByRole("link", { name: "Skip for now" }).click();
+  await expect(page.getByTestId("balance")).toBeVisible();
 }
 
 async function faceUpLabels(page: Page): Promise<string[]> {
@@ -35,7 +45,9 @@ async function actIfTurn(page: Page): Promise<boolean> {
   return false;
 }
 
-test("two guests play a hand on the local edge", async ({ browser }) => {
+test("two new accounts play a hand on the local edge", async ({ browser }) => {
+  // Sign-ups, a full hand and a turn running out on its clock (base time plus time bank, about 50 s).
+  test.setTimeout(300_000);
   const contextA = await browser.newContext();
   const contextB = await browser.newContext();
   const pageA = await contextA.newPage();
@@ -55,8 +67,9 @@ test("two guests play a hand on the local edge", async ({ browser }) => {
     await route.continue();
   });
 
-  await playAsGuest(pageA);
-  await playAsGuest(pageB);
+  const run = Date.now().toString(36);
+  await signUp(pageA, `live_a_${run}`);
+  await signUp(pageB, `live_b_${run}`);
   await pageB.waitForResponse((response) => response.url().includes("/api/tables") && response.request().method() === "GET" && response.ok());
 
   const tableName = `Live ${Date.now().toString(36)}`;
@@ -92,7 +105,10 @@ test("two guests play a hand on the local edge", async ({ browser }) => {
   let board = "";
   let hand = "";
   const tableUrl = pageB.url();
-  for (let step = 0; step < 40; step += 1) {
+  // A time budget, not a step count: each action round-trips through the table Durable Object and
+  // Postgres, which takes a second or more on a slow local machine.
+  const handDeadline = Date.now() + 90_000;
+  while (Date.now() < handDeadline) {
     await actIfTurn(pageA);
     await actIfTurn(pageB);
     const phase = await pageA.getByTestId("table-snapshot").getAttribute("data-phase");
@@ -107,13 +123,18 @@ test("two guests play a hand on the local edge", async ({ browser }) => {
   }
   expect(revision).not.toBe("");
 
+  // Drop the lobby-request route first: a handler still waiting on a closed page would hold up the context's close.
+  await pageB.unrouteAll({ behavior: "ignoreErrors" });
   await pageB.close();
   const resumed = await contextB.newPage();
   await resumed.goto(tableUrl);
   const resumedMarker = resumed.getByTestId("table-snapshot");
-  await expect(resumedMarker).toHaveAttribute("data-revision", revision);
-  await expect(resumedMarker).toHaveAttribute("data-board", board);
-  await expect(resumedMarker).toHaveAttribute("data-hand", hand);
+  // The reopened page shows the table as it is now: the same finished hand, or the next one when the
+  // table dealt it while the page was loading (a few seconds after showdown). Never an older state.
+  await expect.poll(async () => Number((await resumedMarker.getAttribute("data-revision")) ?? -1)).toBeGreaterThanOrEqual(Number(revision));
+  const resumedHand = await resumedMarker.getAttribute("data-hand");
+  if (resumedHand === hand) await expect(resumedMarker).toHaveAttribute("data-board", board);
+  else expect(Number(resumedHand)).toBe(Number(hand) + 1);
 
   await expect.poll(async () => (await pageA.locator(".seat-hud").allInnerTexts()).join("\n")).not.toBe(stacksBefore);
 
@@ -124,7 +145,7 @@ test("two guests play a hand on the local edge", async ({ browser }) => {
     if (a || b) sawTurn = true;
     if (!sawTurn) return "waiting";
     return a || b ? "acting" : "done";
-  }, { timeout: 25_000, intervals: [200] }).toBe("done");
+  }, { timeout: 90_000, intervals: [200] }).toBe("done");
 
   await contextA.close();
   await contextB.close();

@@ -5,6 +5,7 @@ import { Fraunces, Outfit } from "next/font/google";
 import { AuthHydrator } from "@/components/auth-hydrator";
 import { SiteFooter } from "@/components/site-footer";
 import { TableIdleNotice } from "@/components/table-idle-notice";
+import { isTurnstilePath } from "@/lib/routes";
 import { SITE_DESCRIPTION, SITE_NAME, siteOrigin } from "@/lib/site";
 import "./globals.css";
 
@@ -55,12 +56,19 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   await connection();
   // Browsers hide a script's nonce from later script, so the Turnstile API
   // tag has to be rendered here with the request nonce. The widget only calls
-  // turnstile.render. Omit the tag when no site key is configured.
-  const nonce = (await headers()).get("x-nonce") ?? undefined;
-  const turnstile = Boolean(process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim());
+  // turnstile.render. SECURITY (G6): third-party script only where a form
+  // needs it (/login, /signup, /reset-password; middleware passes the path),
+  // never on the lobby, table or account pages. Omitted without a site key.
+  const requestHeaders = await headers();
+  const nonce = requestHeaders.get("x-nonce") ?? undefined;
+  const turnstile = Boolean(process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim()) && isTurnstilePath(requestHeaders.get("x-pathname"));
   return (
     <html lang="en" className={`${sans.variable} ${display.variable}`}>
       <body className="flex min-h-screen flex-col antialiased" suppressHydrationWarning>
+        <a href="#main-content"
+          className="sr-only z-[80] rounded-full bg-amber-300 px-4 py-2 font-semibold text-emerald-950 focus:not-sr-only focus:fixed focus:left-3 focus:top-3">
+          Skip to content
+        </a>
         {turnstile ? <script id="cf-turnstile-api" async nonce={nonce} src={TURNSTILE_SCRIPT_SRC} /> : null}
         <AuthHydrator>
           <div className="flex-1">{children}</div>

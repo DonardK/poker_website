@@ -1,6 +1,5 @@
-import { test, expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
-
-const fixture = "http://127.0.0.1:4107";
+import type { APIRequestContext, Locator, Page } from "@playwright/test";
+import { expect, fixture, test } from "../support/fixtures";
 
 type Patch = { state?: Record<string, unknown>; turn?: Record<string, unknown>; actor?: Record<string, unknown>; hero?: Record<string, unknown> } | null;
 

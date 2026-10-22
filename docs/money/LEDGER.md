@@ -4,15 +4,16 @@ Status: foundation only. Migration `20261002200000_ledger_foundation` adds the
 schema, the two database functions and the grants; `apps/server/src/money/`
 holds the TypeScript side. Nothing in the game server calls it yet: the legacy
 `User.bankroll` (signed 32-bit, mutated in place) stays authoritative until the
-integration step moves buy-ins, cash-outs, guest/registration grants and rake
+integration step moves buy-ins, cash-outs, registration grants and rake
 onto the ledger. No existing balance is backfilled by this migration.
 
 ## 1. Why
 
 `User.bankroll` is a mutable `INT` with no history: a lost update, a double
 cash-out or a direct `UPDATE` by anyone holding the runtime credential leaves
-no trace and cannot be reconstructed. Registration and guest creation mint
-10,000 chips into the same balance that pays buy-ins. There is no notion of
+no trace and cannot be reconstructed. Registration mints (and, until guest
+play was retired in October 2026, guest creation minted) 10,000 chips into the
+same balance that pays buy-ins. There is no notion of
 asset, reservation, idempotent retry or reconciliation. A real-money platform
 needs every unit of value to be traceable to a balanced, append-only journal
 entry, and the database (not the application) to refuse anything that would
@@ -104,7 +105,7 @@ appear and with which sign); a shape that is not listed is refused
 
 | Type | Entries | Notes |
 |---|---|---|
-| `PLAY_GRANT` | `PLAY_ISSUANCE -m`, `USER_AVAILABLE(user) +m` | PLAY only (issuance exists only for PLAY). Guest/registration grants and top-ups. |
+| `PLAY_GRANT` | `PLAY_ISSUANCE -m`, `USER_AVAILABLE(user) +m` | PLAY only (issuance exists only for PLAY). Registration grants and top-ups. |
 | `BUY_IN` | `USER_AVAILABLE(user) -m`, `TABLE_ESCROW(table) +m` | `m = chips x chipUnit`. Refused on insufficient funds. |
 | `CASH_OUT` | `TABLE_ESCROW(table) -m`, `USER_AVAILABLE(user) +m` | Leaving the table / closing it. |
 | `RAKE` | `TABLE_ESCROW(table) -m`, `RAKE_REVENUE +m` | Once per hand with rake > 0, keyed by the hand UUID. |
@@ -224,8 +225,8 @@ whitespace variance) and the entries sorted by account id as
 `LedgerTransaction` and `LedgerEntry` rows are never updated or deleted: the
 runtime role has no write privilege at all, and a trigger refuses `UPDATE` and
 `DELETE` for every role (`LEDGER_IMMUTABLE`). Accounts, users and tables
-referenced by the ledger cannot be deleted (`ON DELETE RESTRICT`), so a guest
-clean-up job must skip users who own ledger accounts.
+referenced by the ledger cannot be deleted (`ON DELETE RESTRICT`), so a clean-up
+job for retired guest accounts must skip users who own ledger accounts.
 
 `reconstructBalance(accountId)` recomputes from the journal: the sum of the
 entries equals the cached balance, the number of entries equals `version`,

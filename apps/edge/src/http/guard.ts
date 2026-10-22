@@ -23,9 +23,27 @@ export function pathname(c: Ctx): string {
   return new URL(c.req.url).pathname;
 }
 
-export type Gate =
-  | { ok: true; userId: string; username: string; sessionId: string; user: Authenticated["user"] }
-  | { ok: false; response: Response };
+/** Address, user agent and Cloudflare country of this request, for sessions, devices and security events. */
+export function requestFacts(c: Ctx): { ip: string | null; userAgent: string | null; country: string | null } {
+  const country = (c.req.raw as Request & { cf?: { country?: unknown } }).cf?.country;
+  return {
+    ip: clientIp(c),
+    userAgent: c.req.header("user-agent")?.slice(0, 256) ?? null,
+    country: typeof country === "string" && /^[A-Z0-9]{2}$/.test(country) ? country : null,
+  };
+}
+
+export interface GateOk {
+  ok: true;
+  userId: string;
+  username: string;
+  sessionId: string;
+  user: Authenticated["user"];
+  /** The session row as read for this request (step-up window, device, sign-in methods). */
+  session: Authenticated["session"];
+}
+
+export type Gate = GateOk | { ok: false; response: Response };
 
 export async function authed(c: Ctx): Promise<Gate> {
   const header = c.req.header("authorization");
@@ -36,7 +54,7 @@ export async function authed(c: Ctx): Promise<Gate> {
     c.set("userId", result.user.id);
     c.set("username", result.claims.username);
     c.set("sessionId", result.claims.sid);
-    return { ok: true, userId: result.user.id, username: result.claims.username, sessionId: result.claims.sid, user: result.user };
+    return { ok: true, userId: result.user.id, username: result.claims.username, sessionId: result.claims.sid, user: result.user, session: result.session };
   } catch (err) {
     if (isAuthError(err)) return { ok: false, response: c.json({ error: "Unauthorized" }, 401) };
     logWarn({ ...errBrief(err), path: pathname(c) }, "authentication unavailable; answered 503");
@@ -57,12 +75,25 @@ export async function turnstileGate(c: Ctx): Promise<Response | null> {
   return c.json({ error: "Verification failed", code: "TURNSTILE_FAILED" }, 403);
 }
 
+/**
+ * A definite answer decided inside a transaction: throwing it rolls the
+ * transaction back (for example, a token is not consumed), then authRoute
+ * sends the body.
+ */
+export class Refusal extends Error {
+  constructor(readonly status: 400 | 401 | 403 | 404 | 409 | 429, readonly body: { error: string; code?: string } & Record<string, unknown>) {
+    super(body.code ?? "refused");
+    this.name = "Refusal";
+  }
+}
+
 /** Non-credential failures on auth routes are 503 and do not clear cookies. */
 export function authRoute(handler: (c: Ctx) => Promise<Response>): (c: Ctx) => Promise<Response> {
   return async (c) => {
     try {
       return await handler(c);
     } catch (err) {
+      if (err instanceof Refusal) return c.json(err.body, err.status);
       if (isAuthError(err)) return c.json({ error: "Unauthorized" }, 401);
       logWarn({ ...errBrief(err), path: pathname(c) }, "auth request failed; answered 503");
       return serviceUnavailable(c);

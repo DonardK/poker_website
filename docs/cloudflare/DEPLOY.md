@@ -139,6 +139,24 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 
 Preview uses the same six names with `--env preview` and different values (section 17).
 
+Account security (optional; until they are set, TOTP, passkeys, MFA sign-in and money step-up stay off and answer 503, and play is unaffected). Set the three `AUTH_*` secrets together, before or after the deploy:
+
+```powershell
+npx wrangler secret put AUTH_HMAC_SECRET
+npx wrangler secret put AUTH_ENCRYPTION_KEYS
+npx wrangler secret put AUTH_ENCRYPTION_ACTIVE_KEY_ID
+npx wrangler secret put RESEND_API_KEY
+```
+
+| Secret | Value |
+| --- | --- |
+| `AUTH_HMAC_SECRET` | a fourth random string (`randomBytes(48).toString('base64url')`), different from the three above |
+| `AUTH_ENCRYPTION_KEYS` | `a1:` plus a new 64-character hex string, never a game key |
+| `AUTH_ENCRYPTION_ACTIVE_KEY_ID` | `a1` |
+| `RESEND_API_KEY` | optional; also set the `MAIL_FROM` var to an address on a domain verified in Resend, with click and open tracking off |
+
+Keep the auth key with the game keys, separately labelled: losing it disables every enrolled authenticator app. On the https origin the API refuses placeholder, low-entropy or reused keys in either ring.
+
 Local `wrangler dev` reads the same six names from `apps/edge/.dev.vars` (gitignored). Copy `apps/edge/.dev.vars.example`. The Turnstile test secret `1x0000000000000000000000000000000AA` always passes. Do not use it in production.
 
 ### Everything the API Worker reads

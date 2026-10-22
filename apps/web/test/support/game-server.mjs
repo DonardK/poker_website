@@ -8,13 +8,21 @@ import {
   projectTableState, recordActivity, sitDown, sitIn, sitOut, startHand,
 } from '@poker/engine';
 import { SOCKET_EVENTS as E, TABLE_IDLE_WARNING_MS } from '@poker/shared';
+import { createAuthFixture } from './auth-fixture.mjs';
 
 const app = express();
-app.use(cors({ origin: 'http://127.0.0.1:3107', credentials: true }));
+// localhost:3107 too: WebAuthn refuses an IP address as the relying party, so the passkey specs use that host.
+// Any other request (no Origin, e.g. a spec replaying a response through page.request) gets the usual origin, as before.
+const ORIGINS = ['http://127.0.0.1:3107', 'http://localhost:3107'];
+// Retry-After is readable cross-origin as from the same-origin API (the countdowns use it).
+app.use(cors({ origin: (origin, done) => done(null, origin && ORIGINS.includes(origin) ? origin : ORIGINS[0]), credentials: true, exposedHeaders: ['Retry-After'] }));
 app.use(express.json());
 const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true, perMessageDeflate: false });
 const hero = 'fixture-player-0';
+/** Accounts, sign-in, recovery and the security page (auth-fixture.mjs). Player-0 is signed in until a test says otherwise. */
+const auth = createAuthFixture({ heroId: hero, heroBankroll: () => bankroll });
+auth.install(app);
 let table;
 let bankroll;
 let rejectNext = false;
@@ -64,7 +72,8 @@ function reset(mode = 'active', tableId = 'fixture-table') {
   if (mode === 'closed') { table = closeTable(table, 'IDLE'); pay(); }
 }
 reset();
-const user = () => ({ id: hero, username: 'Player-0', kind: 'HUMAN', role: 'PLAYER', isGuest: true, bankroll, avatarHue: 0 });
+/** The signed-in account as a refresh returns it (no security facts), or null when signed out. */
+const user = () => { const account = auth.current(); return account ? auth.view(account) : null; };
 /** The hero's snapshot, with any test patch (optional fields a newer server sends) merged in. */
 function project() {
   const state = projectTableState(table, hero);
@@ -227,12 +236,22 @@ app.post('/__test/release-refresh', (_req, res) => {
 app.post('/api/auth/refresh', (req, res) => {
   // Session fixtures (below) answer when a test chose a refresh mode; the default answers here.
   if (sessionRefresh(req, res)) return;
-  const captured = { user: user(), accessToken: 'browser-fixture-token' };
+  if (!auth.signedIn()) {
+    // As the API: a dead session clears the refresh cookie and the redirect hint.
+    auth.clearCookies(res);
+    const refuse = () => res.status(401).json({ error: 'Invalid refresh session' });
+    if (holdRefresh) waitingRefresh.push(refuse); else refuse();
+    return;
+  }
+  const captured = { user: user(), accessToken: auth.sessionToken() };
+  auth.hintCookie(res);
   if (holdRefresh) waitingRefresh.push(() => res.json(captured));
   else res.json(captured);
 });
-app.get('/api/auth/me', (_req, res) => {
-  const captured = { user: user() };
+app.get('/api/auth/me', (req, res) => {
+  const account = auth.current();
+  if (!account || !/^Bearer \S+$/.test(req.headers.authorization ?? '')) { res.status(401).json({ error: 'Unauthorized' }); return; }
+  const captured = { user: auth.view(account, true) };
   if (holdMe) waitingMe.push(() => res.json(captured));
   else res.json(captured);
 });
@@ -284,6 +303,8 @@ function resetSession() {
   refreshStats = { ok: 0, refused: 0, unavailable: 0 }; renewals = []; handshakeTokens = []; authIdleNotice = undefined;
 }
 resetSession();
+// A sign-in issues its own refresh cookie: the rotation check starts over from it.
+auth.onSignIn(() => { refreshCookie = null; });
 function authOkExtras() { return authIdleNotice === undefined ? {} : { idleNotice: authIdleNotice }; }
 function presentedCookie(req) {
   const match = /(?:^|;\s*)fixture_refresh=([^;]+)/.exec(req.headers.cookie ?? '');
@@ -297,15 +318,18 @@ function sessionRefresh(req, res) {
     refreshStats.unavailable++;
     res.setHeader('Retry-After', '1');
     sendReply = () => res.status(503).json({ error: 'Service temporarily unavailable', retryable: true });
-  } else if (refreshMode === 'unauthorized' || refreshMode === 'unauthorized-once' ||
+  } else if (refreshMode === 'unauthorized' || refreshMode === 'unauthorized-once' || !auth.signedIn() ||
       (refreshCookie !== null && presentedCookie(req) !== null && presentedCookie(req) !== refreshCookie)) {
     if (refreshMode === 'unauthorized-once') refreshMode = 'rotate';
     refreshStats.refused++;
+    // Only a permanent refusal clears the hint: 'unauthorized-once' stands for another tab's rotation, not a dead session.
+    if (refreshMode === 'unauthorized' || !auth.signedIn()) auth.clearCookies(res);
     sendReply = () => res.status(401).json({ error: 'Invalid refresh session' });
   } else {
     refreshStats.ok++;
     refreshCookie = globalThis.crypto.randomUUID();
     res.setHeader('Set-Cookie', `fixture_refresh=${refreshCookie}; Path=/; HttpOnly; SameSite=Lax`);
+    auth.hintCookie(res);
     const captured = { user: user(), accessToken: `browser-fixture-token-${++tokenSerial}` };
     sendReply = () => res.json(captured);
   }
@@ -471,7 +495,12 @@ function attach(ws, kind, token) {
   const client = { ws, joined: false, kind };
   clients.set(id, client);
   handshakeTokens.push(token);
-  send(ws, E.AUTH_OK, { userId: hero, username: 'Player-0', activeTableId: table.tableId, ...authOkExtras() });
+  const account = auth.current();
+  // activeTableId: the table this user holds a seat at, if any (the seated guard on sign-out reads it).
+  const seated = table.status !== 'CLOSED' && table.players.some((p) => p?.userId === (account?.id ?? hero));
+  send(ws, E.AUTH_OK, {
+    userId: account?.id ?? hero, username: account?.username ?? 'Player-0', activeTableId: seated ? table.tableId : null, ...authOkExtras(),
+  });
   ws.on('message', (data, isBinary) => {
     if (isBinary) { ws.close(1003, 'binary'); return; }
     const text = typeof data === 'string' ? data : data.toString('utf8');

@@ -10,14 +10,14 @@ export interface AgeTermsConsent {
 
 export const NO_CONSENT: AgeTermsConsent = { confirmAge: false, acceptTerms: false };
 
-/** Both boxes ticked: only then may a guest or registration request be sent. */
+/** Both boxes ticked: only then may an account be created. */
 export function hasConsent(consent: AgeTermsConsent): boolean {
   return consent.confirmAge && consent.acceptTerms;
 }
 
 /**
- * COMPLIANCE NOTE (decision D9/D10): account creation (guest or registered)
- * requires an explicit 18+ confirmation and acceptance of the current terms.
+ * COMPLIANCE NOTE (decision D10): account creation requires an explicit 18+
+ * confirmation and acceptance of the current terms.
  * Both boxes start unticked and are never pre-ticked or remembered: the
  * request body's `confirmAge: true` / `acceptTerms: true` must be something
  * this person did on this page. The caller keeps its submit button disabled

@@ -28,3 +28,8 @@ NEXT_PUBLIC_SOCKET_URL=
 # and secret 2x0000000000000000000000000000000AA.
 # Leave this blank to render no widget and send no turnstileToken.
 NEXT_PUBLIC_TURNSTILE_SITE_KEY=1x00000000000000000000AA
+
+# "1": the middleware redirects signed-out visits to protected pages to /login
+# before rendering (poker_session_hint cookie from the API). "0": the client
+# gate alone does it. Read at request time.
+AUTH_HINT_REDIRECT=0

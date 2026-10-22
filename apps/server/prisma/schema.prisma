@@ -93,6 +93,22 @@ model User {
   termsVersion      String?
   termsAcceptedAt   DateTime?
   ageConfirmedAt    DateTime?
+  /// Account security (migration 20261019100000_account_security).
+  /// When the current email was proven (verify link, reset link or email-change confirm).
+  emailVerifiedAt       DateTime?
+  /// Bumped on password change or reset, lockdown and second-factor changes: older
+  /// MFA tickets, reset links and email-change links stop working.
+  credentialsVersion    Int       @default(0)
+  passwordChangedAt     DateTime?
+  /// Set by "this wasn't me": password sign-in is refused until a reset completes.
+  passwordResetRequired Boolean   @default(false)
+  /// Consecutive failed second-factor codes and the account-wide lock they trigger.
+  mfaFailedCount        Int       @default(0)
+  mfaLockedUntil        DateTime?
+  /// Withdrawals and payout-destination changes are refused until this instant.
+  securityHoldUntil     DateTime?
+  /// WebAuthn user handle: base64url of 32 random bytes (never the id). Null until the first passkey.
+  webauthnUserId        String?   @unique
 
   sessions    Session[]
   seats       TableSeat[]
@@ -101,6 +117,15 @@ model User {
   botStats    BotStatistic?
   /// Money ledger (migration 20261002200000_ledger_foundation).
   ledgerAccounts LedgerAccount[]
+  /// Account security (migration 20261019100000_account_security).
+  totp                  UserTotp?
+  backupCodes           UserBackupCode[]
+  passkeys              WebAuthnCredential[]
+  emailTokens           EmailToken[]
+  knownDevices          KnownDevice[]
+  securityEvents        AccountSecurityEvent[]
+  stepUpGrants          StepUpGrant[]
+  stepUpEmailChallenges StepUpEmailChallenge[]
 }
 
 model Session {
@@ -126,9 +151,227 @@ model Session {
   /// Revoked sessions are kept (audit trail); a revoked row never authenticates.
   revokedAt         DateTime?
   revokeReason      String?
+  /// Account security (migration 20261019100000_account_security).
+  /// The browser (poker_device cookie) this session signed in from.
+  deviceId          String?
+  device            KnownDevice? @relation(fields: [deviceId], references: [id], onDelete: SetNull)
+  /// false: browser-session cookie, 12 h idle, 24 h absolute ("keep me signed in" off).
+  persistent        Boolean   @default(true)
+  /// How this session signed in: a subset of pwd, otp, backup, passkey.
+  authMethods       String[]  @default([])
+  /// Last step-up (a sign-in counts) and the methods it used: the 5-minute
+  /// window for account changes. Money actions use StepUpGrant instead.
+  reauthAt          DateTime?
+  reauthMethods     String[]  @default([])
+
+  stepUpGrants          StepUpGrant[]
+  stepUpEmailChallenges StepUpEmailChallenge[]
 
   @@index([userId])
   /// Expiry sweeps and "is this session still live" lookups.
+  @@index([expiresAt])
+  @@index([deviceId])
+}
+
+// ---------------------------------------------------------------------------
+// Account security (migration 20261019100000_account_security).
+// RLS is forced on every table. The runtime role gets column-level UPDATE
+// grants only, so it can never rewrite a stored TOTP secret, passkey public
+// key, token hash or code hash (delete-then-insert is the only replacement),
+// and it can mint a StepUpGrant but never consume, change or delete one.
+// Not expressible here (declared in the migration): the CHECKs, the
+// append-only trigger on AccountSecurityEvent and the single-use trigger on
+// StepUpGrant.
+// ---------------------------------------------------------------------------
+
+enum EmailTokenPurpose {
+  VERIFY_EMAIL
+  PASSWORD_RESET
+  EMAIL_CHANGE
+  SECURITY_LOCKDOWN
+}
+
+/// A browser that signed in to this account (poker_device cookie, stored hashed).
+model KnownDevice {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// SHA-256 hex of the poker_device cookie value.
+  deviceHash  String
+  /// "<Browser> on <OS>", from the user agent.
+  label       String?
+  userAgent   String?
+  /// Coarse network only (/24 or /48).
+  lastIp      String?
+  country     String?
+  firstSeenAt DateTime  @default(now())
+  lastSeenAt  DateTime  @default(now())
+
+  sessions Session[]
+
+  @@unique([userId, deviceHash])
+}
+
+/// One TOTP authenticator. Pending until enabledAt; disabledAt keeps it restorable by lockdown.
+model UserTotp {
+  userId           String    @id
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// AES-256-GCM v2 ciphertext under AUTH_ENCRYPTION_KEYS, context "user-totp:<userId>".
+  secretCiphertext String
+  enabledAt        DateTime?
+  disabledAt       DateTime?
+  /// Highest accepted 30 s step. A code for this step or an older one is refused.
+  lastUsedStep     Int       @default(0)
+  createdAt        DateTime  @default(now())
+}
+
+model UserBackupCode {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// HMAC-SHA256 hex (AUTH_HMAC_SECRET subkey "backup-code") of userId + ":" + normalized code.
+  codeHash  String
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@unique([userId, codeHash])
+}
+
+model WebAuthnCredential {
+  id           String    @id @default(cuid())
+  userId       String
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// base64url credential id.
+  credentialId String    @unique
+  /// base64url COSE public key.
+  publicKey    String
+  /// uint32 signature counter. Never sent over JSON.
+  counter      BigInt    @default(0)
+  transports   String[]  @default([])
+  /// singleDevice or multiDevice.
+  deviceType   String
+  backedUp     Boolean   @default(false)
+  aaguid       String?
+  /// The RP ID it was registered under; verification uses this one.
+  rpId         String
+  name         String
+  createdAt    DateTime  @default(now())
+  lastUsedAt   DateTime?
+  /// Soft delete: lockdown restores a passkey removed after the incident.
+  removedAt    DateTime?
+
+  @@index([userId])
+}
+
+/// Email link tokens. Only the SHA-256 of the token is stored.
+model EmailToken {
+  id                 String            @id @default(cuid())
+  userId             String
+  user               User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose            EmailTokenPurpose
+  tokenHash          String            @unique
+  /// Address the link was sent to (EMAIL_CHANGE: the new address).
+  email              String
+  credentialsVersion Int
+  /// EMAIL_CHANGE: { previousEmail }. SECURITY_LOCKDOWN: { kind, incidentAt, sessionId?, revertEmail? }.
+  /// PASSWORD_RESET issued by a lockdown: { issuedBy: "lockdown" }.
+  data               Json              @default("{}")
+  expiresAt          DateTime
+  consumedAt         DateTime?
+  createdAt          DateTime          @default(now())
+
+  @@index([userId, purpose, createdAt])
+  @@index([expiresAt])
+}
+
+/// Single-use marks for signed MFA tickets and WebAuthn challenge tokens (id = jti).
+model AuthNonce {
+  id        String   @id
+  purpose   String
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+}
+
+/// Append-only account security history (sign-ins, credential changes, lockdowns).
+/// type is a SecurityEventType from @poker/shared. The payments review reads it
+/// (RECENT_SECURITY_CHANGE_EVENT_TYPES, NOT_ME_REPORTED).
+model AccountSecurityEvent {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  type      String
+  sessionId String?
+  /// Coarse network only.
+  ip        String?
+  userAgent String?
+  country   String?
+  /// Never a token, code, password, link or full IP address.
+  data      Json     @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+/// A single-use, transaction-bound step-up for one money action. The API
+/// writes it after checking the proof; the payments Worker consumes it (sets
+/// consumedAt) inside the transaction it authorises, matching userId,
+/// sessionId, purpose and bindHash. The database refuses a second
+/// consumption, any other change, a PASSWORD-only grant and an
+/// admin_payments grant without a passkey.
+model StepUpGrant {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// The session that proved it; the grant is good for that session only.
+  sessionId  String
+  session    Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  /// withdrawal | payout_destination | admin_payments (StepUpPurpose).
+  purpose    String
+  /// Lower-case hex SHA-256 of the canonical JSON of the action, computed by payments.
+  bindHash   String
+  /// PASSKEY | TOTP | PASSWORD_EMAIL | PASSWORD (StepUpGrantMethod). TOTP covers a backup code.
+  method     String
+  /// No default: write createdAt and expiresAt from one clock reading
+  /// (the database checks expiresAt <= createdAt + 5 minutes).
+  createdAt  DateTime
+  expiresAt  DateTime
+  /// Set once, by the consumer, and never changed afterwards.
+  consumedAt DateTime?
+
+  @@index([userId, createdAt])
+  @@index([sessionId])
+  @@index([expiresAt])
+}
+
+/// The emailed code of a password + email step-up, offered only to users with
+/// neither TOTP nor a passkey: 6 digits, 10 minutes, 5 tries, bound to one
+/// session, purpose and bindHash. Only an HMAC of the code is stored.
+model StepUpEmailChallenge {
+  id         String    @id @default(cuid())
+  userId     String
+  user       User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  sessionId  String
+  session    Session   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  /// withdrawal | payout_destination (admin_payments needs a passkey).
+  purpose    String
+  bindHash   String
+  /// HMAC-SHA256 hex (AUTH_HMAC_SECRET subkey "step-up-email-code") of id + ":" + code.
+  codeHash   String
+  /// Address the code was sent to; the proof fails if the account email changed since.
+  email      String
+  /// Wrong codes so far. At 5 the challenge is dead.
+  attempts   Int       @default(0)
+  /// No default: write createdAt and expiresAt from one clock reading
+  /// (the database checks expiresAt <= createdAt + 10 minutes).
+  createdAt  DateTime
+  expiresAt  DateTime
+  /// Set when the right code was used, or when the challenge was voided.
+  consumedAt DateTime?
+
+  @@index([userId, createdAt])
+  @@index([sessionId])
   @@index([expiresAt])
 }
 

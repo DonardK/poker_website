@@ -13,7 +13,11 @@ import {
   type UserPatchPayload,
 } from "@poker/shared";
 import { clearLiveEvidence } from "@/hooks/use-table-socket";
-import { api, ApiError, onSharedSession, refreshSession, type RefreshOutcome } from "@/lib/api";
+import { api, ApiError, onSharedSession, onSignedOutElsewhere, refreshSession, type RefreshOutcome } from "@/lib/api";
+import { readPendingLogout, retryPendingLogout } from "@/lib/pending-logout";
+import { touchRememberedAccount } from "@/lib/remembered-accounts";
+import { resetClientState } from "@/lib/session-actions";
+import { registerSessionControl } from "@/lib/session-control";
 import { disconnectSocket, getSocket, renewSocketSession, resumeSocket } from "@/lib/socket";
 import { useAuthStore } from "@/stores/session";
 
@@ -48,6 +52,8 @@ const SESSION_ENDED_MESSAGES: Record<SessionEndReason, string> = {
   REFRESH_REUSE: "For your security this session was ended because it was used from somewhere else. Sign in again.",
   EXPIRED: "Your session expired. Sign in again to keep playing.",
   ACCOUNT_RESTRICTED: "Your account has been restricted. Contact support for help.",
+  GUEST_RETIRED: "Guest play has ended. Create an account to keep playing.",
+  SECURITY_LOCKDOWN: "You were signed out everywhere because a sign-in or change was reported as not you. Set a new password to continue.",
 };
 
 const sleep = (ms: number) => new Promise<void>((resolve) => { window.setTimeout(resolve, ms); });
@@ -60,9 +66,17 @@ interface SessionControl {
   socketConnected: () => void;
 }
 
+/** The account facts /me carries and a refresh does not (PublicUser's optional security fields). */
+function securityFacts(user: PublicUser): Partial<PublicUser> {
+  const facts: Partial<PublicUser> = {};
+  if (user.emailVerified !== undefined) facts.emailVerified = user.emailVerified;
+  if (user.twoFactorEnabled !== undefined) facts.twoFactorEnabled = user.twoFactorEnabled;
+  if (user.passkeyCount !== undefined) facts.passkeyCount = user.passkeyCount;
+  return facts;
+}
+
 export function AuthHydrator({ children }: { children: React.ReactNode }) {
   const setSession = useAuthStore((s) => s.setSession);
-  const clearSession = useAuthStore((s) => s.clearSession);
   const markHydrated = useAuthStore((s) => s.markHydrated);
   const setApiOffline = useAuthStore((s) => s.setApiOffline);
   // The socket belongs to the user, not to an access token: a refresh must not re-run the socket effect.
@@ -85,9 +99,7 @@ export function AuthHydrator({ children }: { children: React.ReactNode }) {
       resumePending = false;
       window.clearTimeout(retryTimer);
       setApiOffline(false);
-      disconnectSocket();
-      clearSession();
-      clearLiveEvidence();
+      resetClientState();
     };
 
     const renewSocket = async (token: string) => {
@@ -155,6 +167,7 @@ export function AuthHydrator({ children }: { children: React.ReactNode }) {
         if (!current()) return;
         setApiOffline(false);
         apply(data, data.adopted ? null : startedWithWalletVersion);
+        touchRememberedAccount(data.user);
       } catch (err) {
         if (!current()) return;
         // Only the server saying the session is invalid ends it. A network
@@ -191,14 +204,37 @@ export function AuthHydrator({ children }: { children: React.ReactNode }) {
       socketConnected: () => { resumeAttempt = 0; },
     };
 
-    void refresh();
+    // Another tab signed out: this one is signed out too (the shared cookie is gone). The gate then shows /login.
+    const unsubscribeSignedOut = onSignedOutElsewhere(() => {
+      if (cancelled) return;
+      resumePending = false;
+      window.clearTimeout(retryTimer);
+      setApiOffline(false);
+      resetClientState();
+    });
+    const unregisterControl = registerSessionControl({ refresh: () => refresh() });
+
+    // SECURITY (G4): a sign-out that never reached the server must not be
+    // undone by refreshing with the old cookie. Finish it instead; the user
+    // stays signed out until they sign in again.
+    if (readPendingLogout()) {
+      markHydrated();
+      retryPendingLogout();
+    } else {
+      void refresh();
+    }
     const interval = window.setInterval(() => { if (useAuthStore.getState().user) void refresh(); }, REFRESH_EVERY_MS);
     const onVisible = () => {
       if (document.visibilityState === "visible" && useAuthStore.getState().user && Date.now() - lastRefreshAt >= VISIBLE_REFRESH_AFTER_MS) void refresh();
     };
     const onOnline = () => { if (useAuthStore.getState().apiOffline) void refresh(); };
+    // A page restored from the back-forward cache may hold a session that was revoked meanwhile.
+    const onPageShow = (event: PageTransitionEvent) => {
+      if (event.persisted && useAuthStore.getState().user && !readPendingLogout()) void refresh();
+    };
     document.addEventListener("visibilitychange", onVisible);
     window.addEventListener("online", onOnline);
+    window.addEventListener("pageshow", onPageShow);
     // Browser tests trigger the periodic refresh without faking timers (that would also fire the socket's heartbeat timeout).
     const testHook = process.env.NODE_ENV !== "production" ? (window as unknown as { __pokerSession?: { refresh: () => Promise<void> } }) : null;
     if (testHook) testHook.__pokerSession = { refresh };
@@ -206,14 +242,17 @@ export function AuthHydrator({ children }: { children: React.ReactNode }) {
       cancelled = true;
       control.current = null;
       unsubscribeShared();
+      unsubscribeSignedOut();
+      unregisterControl();
       window.clearInterval(interval);
       window.clearTimeout(retryTimer);
       window.clearTimeout(resumeTimer);
       document.removeEventListener("visibilitychange", onVisible);
       window.removeEventListener("online", onOnline);
+      window.removeEventListener("pageshow", onPageShow);
       if (testHook) delete testHook.__pokerSession;
     };
-  }, [setSession, clearSession, markHydrated, setApiOffline]);
+  }, [setSession, markHydrated, setApiOffline]);
 
   // Wallet updates, idle warnings and the session's own fate arrive on the
   // session's socket, including while a queued cash-out finishes after
@@ -232,6 +271,8 @@ export function AuthHydrator({ children }: { children: React.ReactNode }) {
       // balance alone; what it says about a cash-out is still true.
       state.patchBankroll(payload.bankroll, payload.walletVersion);
       if (payload.cashOutTableId && payload.cashOutTableId === state.leavingTableId) state.setLeavingTableId(null);
+      // Cashed out of the table they held a seat at: no longer seated anywhere.
+      if (payload.cashOutTableId && payload.cashOutTableId === state.activeTableId) state.setActiveTableId(null);
       // The table closed for inactivity and paid this player out. They may be
       // in the lobby (seat kept) or another tab, so the lobby says why the
       // chips came back until they dismiss it.
@@ -262,7 +303,12 @@ export function AuthHydrator({ children }: { children: React.ReactNode }) {
     // A reconnecting or reloading player may have missed the warning's start
     // (or end) while away; AUTH_OK carries the one counting down now.
     const onAuthOk = (payload: AuthOkPayload) => {
-      if (cancelled || !payload || !("idleNotice" in payload)) return;
+      if (cancelled || !payload) return;
+      // The seat this user holds (the seated guard on sign-out and switch account reads it).
+      if ("activeTableId" in payload) {
+        useAuthStore.getState().setActiveTableId(typeof payload.activeTableId === "string" ? payload.activeTableId : null);
+      }
+      if (!("idleNotice" in payload)) return;
       const notice = payload.idleNotice;
       if (notice && typeof notice === "object") onIdleNotice(notice);
       // Explicit null: the server says no table of this player is warning now,
@@ -277,7 +323,10 @@ export function AuthHydrator({ children }: { children: React.ReactNode }) {
       const state = useAuthStore.getState();
       const requestedAtVersion = state.walletVersion;
       void api<{ user: PublicUser }>("/api/auth/me", { token: state.accessToken }).then(({ user }) => {
-        if (!cancelled && useAuthStore.getState().walletVersion === requestedAtVersion) onPatch({ bankroll: user.bankroll });
+        if (cancelled || useAuthStore.getState().user?.id !== user.id) return;
+        // /me carries the account-security facts a refresh leaves out (email verified, 2FA, passkeys).
+        useAuthStore.getState().patchUser(securityFacts(user));
+        if (useAuthStore.getState().walletVersion === requestedAtVersion) onPatch({ bankroll: user.bankroll });
       }).catch(() => undefined);
     };
     const onDisconnect = (reason: string) => {
@@ -292,9 +341,8 @@ export function AuthHydrator({ children }: { children: React.ReactNode }) {
     const onRevoked = (payload: SessionRevokedPayload) => {
       if (cancelled) return;
       const reason = payload && payload.reason in SESSION_ENDED_MESSAGES ? payload.reason : "SESSION_REVOKED";
-      disconnectSocket();
+      resetClientState();
       useAuthStore.getState().endSession(reason);
-      clearLiveEvidence();
     };
     const onServerError = (payload: SocketErrorPayload) => {
       // Temporary (e.g. SERVICE_UNAVAILABLE): the request may be retried and the session is fine.

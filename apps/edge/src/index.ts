@@ -3,6 +3,7 @@ import type { Env } from "./env";
 import { prismaRuntime } from "./db/client";
 import { health, ready } from "./health";
 import { mountHttp } from "./http/app";
+import { runSweep } from "./maintenance/sweep";
 
 void prismaRuntime;
 
@@ -43,5 +44,9 @@ export { UserSessions } from "./actors/user-sessions";
 export default {
   fetch(request: Request, env: Env, ctx: ExecutionContext): Response | Promise<Response> {
     return app.fetch(request, env, ctx);
+  },
+  /** Daily account-security housekeeping (wrangler.jsonc triggers.crons). */
+  scheduled(_controller: ScheduledController, env: Env, ctx: ExecutionContext): void {
+    ctx.waitUntil(runSweep(env));
   },
 };

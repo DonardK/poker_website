@@ -2,32 +2,96 @@
  * Methods the HTTP routes call. PrismaClient is cast to this at the request
  * boundary; tests pass an in-memory double with the same shape.
  */
+type Find = (args: any) => Promise<any>;
+type FindMany = (args: any) => Promise<any[]>;
+type Write = (args: any) => Promise<any>;
+type WriteMany = (args: any) => Promise<{ count: number }>;
+type Count = (args: any) => Promise<number>;
+
 export interface AppDb {
   user: {
-    findUnique(args: any): Promise<any>;
-    create(args: any): Promise<any>;
-    update(args: any): Promise<any>;
-    updateMany(args: any): Promise<{ count: number }>;
+    findUnique: Find;
+    create: Write;
+    update: Write;
+    updateMany: WriteMany;
   };
   session: {
-    create(args: any): Promise<any>;
-    findUnique(args: any): Promise<any>;
-    findMany(args: any): Promise<any[]>;
-    updateMany(args: any): Promise<{ count: number }>;
-    updateManyAndReturn(args: any): Promise<any[]>;
+    create: Write;
+    findUnique: Find;
+    findMany: FindMany;
+    updateMany: WriteMany;
+    updateManyAndReturn: FindMany;
   };
   table: {
-    findMany(args: any): Promise<any[]>;
-    findUnique(args: any): Promise<any>;
-    create(args: any): Promise<any>;
+    findMany: FindMany;
+    findUnique: Find;
+    create: Write;
   };
   tableSeat: {
-    findUnique(args: any): Promise<any>;
-    findFirst(args: any): Promise<any>;
+    findUnique: Find;
+    findFirst: Find;
   };
   hand: {
-    findUnique(args: any): Promise<any>;
-    findFirst(args: any): Promise<any>;
+    findUnique: Find;
+    findFirst: Find;
+  };
+  // Account security (migration 20261019100000_account_security).
+  knownDevice: {
+    findFirst: Find;
+    findMany: FindMany;
+    create: Write;
+    update: Write;
+    deleteMany: WriteMany;
+    count: Count;
+  };
+  userTotp: {
+    findUnique: Find;
+    create: Write;
+    updateMany: WriteMany;
+    deleteMany: WriteMany;
+  };
+  userBackupCode: {
+    createMany: WriteMany;
+    updateMany: WriteMany;
+    deleteMany: WriteMany;
+    count: Count;
+  };
+  webAuthnCredential: {
+    findUnique: Find;
+    findFirst: Find;
+    findMany: FindMany;
+    create: Write;
+    updateMany: WriteMany;
+    deleteMany: WriteMany;
+    count: Count;
+  };
+  emailToken: {
+    create: Write;
+    findUnique: Find;
+    findFirst: Find;
+    updateMany: WriteMany;
+    deleteMany: WriteMany;
+    count: Count;
+  };
+  authNonce: {
+    create: Write;
+    deleteMany: WriteMany;
+  };
+  accountSecurityEvent: {
+    create: Write;
+    findMany: FindMany;
+    count: Count;
+  };
+  stepUpGrant: {
+    create: Write;
+    findUnique: Find;
+  };
+  stepUpEmailChallenge: {
+    create: Write;
+    findUnique: Find;
+    updateMany: WriteMany;
+    deleteMany: WriteMany;
+    count: Count;
   };
   $transaction<T>(fn: (tx: AppDb) => Promise<T>, options?: { maxWait?: number; timeout?: number }): Promise<T>;
 }

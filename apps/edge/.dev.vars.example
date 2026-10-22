@@ -12,13 +12,23 @@ WS_TICKET_SECRET=
 GAME_ENCRYPTION_KEYS=
 GAME_ENCRYPTION_ACTIVE_KEY_ID=
 TURNSTILE_SECRET_KEY=
+# Account security (optional; TOTP, passkeys, MFA sign-in and money step-up stay off
+# without them). All three or none. AUTH_HMAC_SECRET: openssl rand -base64 48.
+# AUTH_ENCRYPTION_KEYS: a1:<openssl rand -hex 32>, never a game key.
+AUTH_HMAC_SECRET=
+AUTH_ENCRYPTION_KEYS=
+AUTH_ENCRYPTION_ACTIVE_KEY_ID=
+# Blank = no email delivery (an http CLIENT_ORIGIN logs the link instead). Needs MAIL_FROM.
+RESEND_API_KEY=
 
 # --- vars (wrangler.jsonc). Uncomment to override locally. ---
 # CLIENT_ORIGIN=http://127.0.0.1:3000
-# TERMS_VERSION=2026-10-01
+# Passkeys need a host name, not an IP address: use this one to test them locally.
+# CLIENT_ORIGIN=http://localhost:3000
+# TERMS_VERSION=2026-10-19
 # JWT_ACCESS_TTL=15m
 # JWT_REFRESH_TTL=7d
-# SESSION_IDLE_TTL=7d
+# SESSION_IDLE_TTL=14d
 # SESSION_ABSOLUTE_TTL=30d
 # DEFAULT_STARTING_BANKROLL=10000
 # TURN_TIME_BANK_MS=20000
@@ -39,6 +49,17 @@ TURNSTILE_SECRET_KEY=
 # strict check: an https origin then requires both.
 # CF_ACCESS_AUD=
 # CF_ACCESS_TEAM_DOMAIN=
+# Account security vars. Blank WEBAUTHN_RP_ID = the CLIENT_ORIGIN host.
+# WEBAUTHN_RP_ID=
+# WEBAUTHN_RP_NAME=Hold'em Live
+# WEBAUTHN_EXTRA_ORIGINS=
+# TOTP_ISSUER=Hold'em Live
+# Required with RESEND_API_KEY, on a domain verified in Resend (tracking off).
+# MAIL_FROM=Hold'em Live <security@example.com>
+# MAIL_REPLY_TO=
+# PASSWORD_BREACH_CHECK=true
+# SECURITY_HOLD_HOURS=24
+# ADMIN_REQUIRE_PASSKEY=false
 
 # Local Docker Postgres only. Host must be 127.0.0.1. User is poker_app.
 # Password is the local ALTER ROLE password, not a committed secret.

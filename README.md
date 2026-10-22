@@ -25,6 +25,12 @@ After changing `.env`, stop `npm run dev` (Ctrl+C) and start it again.
 
 Open http://localhost:3000. The API and sockets use port 4000. One person opens a table, another joins it from the lobby or its link, and the hand starts when both are seated. For a fresh checkout, copy `.env.example` to `.env`, supply the database URL, generate three independent secrets, and configure only `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SOCKET_URL` in `apps/web/.env.local` if changing the defaults.
 
+## Accounts and sign-in
+
+Everyone plays from an account: there is no guest play (decision D9, October 2026). Signed out, a visitor sees only the legal pages and the sign-in, sign-up and email-link pages. Sign-up takes a username, an email address and a password (at least 12 characters, checked against known breaches), plus an 18+ confirmation and acceptance of the current terms; an account on older terms accepts the new ones before it can play. "Stay signed in" (on by default) keeps a session for 14 days of inactivity and at most 30 days. Switching account is sign out, then a pick from the usernames this browser remembers (never a password or token).
+
+Offered and recommended from sign-up, never forced: email verification, an authenticator app (TOTP) with 10 single-use backup codes, and passkeys. A sign-in from a new device sends an alert, and every security email carries a **This wasn't me** link that signs every device out, undoes the sign-in methods and email changes made since and asks for a new password. Changing the password, email or sign-in methods needs a fresh confirmation (within 5 minutes); a money action, once real money exists, needs a single-use confirmation tied to that action, with a second factor when the account has one. Email goes through Resend (`RESEND_API_KEY`); without it the API logs links on an http origin for local development and reports email as unavailable. The API contract is in [ARCHITECTURE.md §5.2 and §10.7](docs/cloudflare/ARCHITECTURE.md); the decisions are D9 and D13–D15 in [DECISIONS.md](docs/product/DECISIONS.md). The legacy `apps/server` (reference only, not deployed) still has its old guest route.
+
 ## Database and migrations
 
 Canonical migrations are in `apps/server/prisma/migrations`. OnlinePoker has already been initialized and secured. `supabase/migrations` contains the security changes submitted through Supabase MCP; it is not an independent initial schema. See [Supabase setup](supabase/README.md).

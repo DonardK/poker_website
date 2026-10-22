@@ -19,7 +19,7 @@ const SLOW = 90_000;
 describe("auth http", () => {
   it("refresh: a database failure answers 503 retryable and leaves the cookie alone", async () => {
     const { db, request } = createHarness();
-    const user = db.addUser({ username: "Guest_00aa11bb22", isGuest: true });
+    const user = db.addUser({ username: "Refresher" });
     const session = await db.addSession(user.id);
     for (const failing of ["session.findUnique", "session.updateMany"]) {
       db.fail(failing);
@@ -75,9 +75,11 @@ describe("auth http", () => {
   it("lifetime: cookie, row and refresh JWT share one expiry and refresh cannot pass the absolute end", async () => {
     const { db, request, config } = createHarness();
     const before = Date.now();
-    const guest = await request("/auth/guest", { body: TERMS });
-    expect(guest.status).toBe(201);
-    const row = db.sessionsOf(guest.body.user.id)[0]!;
+    const registered = await request("/auth/register", {
+      body: { ...TERMS, username: "Lifetime", email: "lifetime@example.com", password: PASSWORD },
+    });
+    expect(registered.status).toBe(201);
+    const row = db.sessionsOf(registered.body.user.id)[0]!;
     const agree = (response: { cookie: string | null; setCookie: string | null }, sessionRow: { expiresAt: Date }) => {
       const token = decodeURIComponent(response.cookie!.split("=")[1]!);
       const exp = decodeJwt(token).exp;
@@ -87,16 +89,16 @@ describe("auth http", () => {
       expect(Math.abs(expires - sessionRow.expiresAt.getTime())).toBeLessThan(2_000);
       expect(Math.abs(maxAge * 1000 - (sessionRow.expiresAt.getTime() - Date.now()))).toBeLessThan(2_000);
     };
-    agree(guest, row);
+    agree(registered, row);
     expect(Math.abs(row.expiresAt.getTime() - (before + config.sessionIdleTtlMs))).toBeLessThan(2_000);
     expect(Math.abs(row.absoluteExpiresAt.getTime() - (before + config.sessionAbsoluteTtlMs))).toBeLessThan(2_000);
     row.absoluteExpiresAt = new Date(Date.now() + 3_600_000);
-    const refreshed = await request("/auth/refresh", { cookie: guest.cookie });
+    const refreshed = await request("/auth/refresh", { cookie: registered.cookie });
     expect(refreshed.status).toBe(200);
     expect(row.expiresAt.getTime()).toBe(row.absoluteExpiresAt.getTime());
     agree(refreshed, row);
     expect(row.lastUsedAt.getTime()).toBeGreaterThanOrEqual(before);
-  });
+  }, SLOW);
 
   it("lifetime: a session past its absolute expiry is refused even if the idle expiry is still ahead", async () => {
     const { db, request } = createHarness();
@@ -419,49 +421,61 @@ describe("auth http", () => {
     expect(db.users.size).toBe(0);
   }, SLOW);
 
-  it("guest: name clashes are retried up to 5 times, then 503", async () => {
-    const { db, request, config } = createHarness();
-    let clashes = 4;
-    db.onUserCreate(() => {
-      if (clashes > 0) {
-        clashes -= 1;
-        throw uniqueViolation(["usernameCanonical"]);
-      }
-    });
-    const ok = await request("/auth/guest", { body: TERMS });
-    expect(ok.status).toBe(201);
-    expect(ok.body.user.username).toMatch(/^Guest_[0-9a-f]{10}$/);
-    expect(ok.body.user.isGuest).toBe(true);
-    expect(db.calls["user.create"]).toBe(5);
-    const row = db.user(ok.body.user.id)!;
-    expect(row.termsVersion).toBe(config.termsVersion);
-    expect(row.ageConfirmedAt).toBeInstanceOf(Date);
-    clashes = 5;
-    const exhausted = await request("/auth/guest", { body: TERMS });
-    expect(exhausted.status).toBe(503);
-    expect(exhausted.body.retryable).toBe(true);
-    db.fail("user.create");
-    expect((await request("/auth/guest", { body: TERMS })).status).toBe(503);
-    expect(db.users.size).toBe(1);
+  it("guest: the route is gone (404) and creates no user", async () => {
+    const { db, request } = createHarness();
+    const response = await request("/auth/guest", { body: { ...TERMS, turnstileToken: "test-token" } });
+    expect(response.status).toBe(404);
+    expect(db.users.size).toBe(0);
+    expect(db.calls["user.create"]).toBeUndefined();
   });
 
-  it("terms: guest and register require acceptance of the current version", async () => {
+  it("terms: register requires acceptance of the current version", async () => {
     const { db, request, config } = createHarness();
     const account = { username: "Terms_Tester", email: "terms@example.com", password: PASSWORD };
-    for (const path of ["/auth/guest", "/auth/register"]) {
-      const extra = path === "/auth/register" ? account : {};
-      for (const body of [undefined, { ...extra }, { ...extra, ...TERMS, acceptTerms: false }, { ...extra, ...TERMS, confirmAge: "yes" }, { ...extra, acceptTerms: true, confirmAge: true }]) {
-        const response = await request(path, { body });
-        expect(response.status, `${path} ${JSON.stringify(body)}`).toBe(400);
-        expect(response.body.code).toBe("TERMS_REQUIRED");
-      }
-      const outdated = await request(path, { body: { ...extra, ...TERMS, termsVersion: "2020-01-01" } });
-      expect(outdated.status).toBe(409);
-      expect({ code: outdated.body.code, currentVersion: outdated.body.currentVersion }).toEqual({
-        code: "TERMS_OUTDATED",
-        currentVersion: config.termsVersion,
-      });
+    for (const body of [undefined, { ...account }, { ...account, ...TERMS, acceptTerms: false }, { ...account, ...TERMS, confirmAge: "yes" }, { ...account, acceptTerms: true, confirmAge: true }]) {
+      const response = await request("/auth/register", { body });
+      expect(response.status, JSON.stringify(body)).toBe(400);
+      expect(response.body.code).toBe("TERMS_REQUIRED");
     }
+    const outdated = await request("/auth/register", { body: { ...account, ...TERMS, termsVersion: "2020-01-01" } });
+    expect(outdated.status).toBe(409);
+    expect({ code: outdated.body.code, currentVersion: outdated.body.currentVersion }).toEqual({
+      code: "TERMS_OUTDATED",
+      currentVersion: config.termsVersion,
+    });
+    expect((await request("/auth/guest", { body: TERMS })).status).toBe(404);
     expect(db.users.size).toBe(0);
+  });
+
+  it("terms: an existing account accepts a newer version (POST /auth/terms/accept)", async () => {
+    const { db, request, config } = createHarness();
+    const registered = await request("/auth/register", {
+      body: { ...TERMS, username: "Terms_Again", email: "again@example.com", password: PASSWORD },
+    });
+    expect(registered.status).toBe(201);
+    expect(registered.body.user.termsVersion).toBe(config.termsVersion);
+    const token = registered.body.accessToken as string;
+    const row = db.user(registered.body.user.id)!;
+    // The account last accepted an older version (TERMS_VERSION has moved on since).
+    row.termsVersion = "2020-01-01";
+    row.termsAcceptedAt = new Date(0);
+    const me = await request("/auth/me", { method: "GET", token });
+    expect(me.body.user.termsVersion).toBe("2020-01-01");
+
+    expect((await request("/auth/terms/accept", { body: TERMS })).status).toBe(401);
+    const unticked = await request("/auth/terms/accept", { token, body: { ...TERMS, confirmAge: false } });
+    expect([unticked.status, unticked.body.code]).toEqual([400, "TERMS_REQUIRED"]);
+    const stale = await request("/auth/terms/accept", { token, body: { ...TERMS, termsVersion: "2020-01-01" } });
+    expect([stale.status, stale.body.code, stale.body.currentVersion]).toEqual([409, "TERMS_OUTDATED", config.termsVersion]);
+    expect(row.termsVersion).toBe("2020-01-01");
+
+    const accepted = await request("/auth/terms/accept", { token, body: TERMS });
+    expect(accepted.status).toBe(200);
+    expect(accepted.body.user).toMatchObject({
+      id: row.id, termsVersion: config.termsVersion, emailVerified: false, twoFactorEnabled: false, passkeyCount: 0,
+    });
+    expect(row.termsVersion).toBe(config.termsVersion);
+    expect(row.termsAcceptedAt!.getTime()).toBeGreaterThan(0);
+    expect(row.ageConfirmedAt).toBeInstanceOf(Date);
   });
 });

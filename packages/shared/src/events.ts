@@ -66,9 +66,14 @@ export interface SessionRenewPayload {
   token: string;
 }
 
-/** Why a session ended; sent in SESSION_REVOKED just before the server disconnects the socket. */
+/**
+ * Why a session ended; sent in SESSION_REVOKED just before the server disconnects the socket.
+ * GUEST_RETIRED: guest play was removed (2026-10). SECURITY_LOCKDOWN: the owner used a
+ * "This wasn't me" link, which signs out every session.
+ */
 export type SessionEndReason =
-  | "LOGOUT" | "LOGOUT_ALL" | "SESSION_REVOKED" | "PASSWORD_CHANGED" | "REFRESH_REUSE" | "EXPIRED" | "ACCOUNT_RESTRICTED";
+  | "LOGOUT" | "LOGOUT_ALL" | "SESSION_REVOKED" | "PASSWORD_CHANGED" | "REFRESH_REUSE" | "EXPIRED" | "ACCOUNT_RESTRICTED"
+  | "GUEST_RETIRED" | "SECURITY_LOCKDOWN";
 
 export interface SessionRevokedPayload {
   reason: SessionEndReason;

@@ -1,5 +1,7 @@
 import type { AuthResponse, PublicUser } from "@poker/shared";
 import { apiOrigin, configuredOrigin } from "@/lib/public-origin";
+import { refreshSessionNow } from "@/lib/session-control";
+import { useAuthStore } from "@/stores/session";
 
 const configuredApi = configuredOrigin(process.env.NEXT_PUBLIC_API_URL);
 
@@ -26,9 +28,16 @@ export class ApiError extends Error {
     readonly code?: string,
     /** TERMS_OUTDATED only: the terms version the server now requires (body.currentVersion). */
     readonly currentVersion?: string,
+    /** The rest of the error body (e.g. REAUTH_REQUIRED's `methods` and `needs`), minus `error`. */
+    readonly details: Record<string, unknown> = {},
   ) {
     super(message);
   }
+}
+
+/** The bearer gate's own refusal (expired or revoked access token), as opposed to a wrong password (401 "Invalid credentials"). */
+export function isBearerRejection(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 401 && err.code === undefined && err.message === "Unauthorized";
 }
 
 /** Retry-After as delta-seconds or an HTTP date; undefined when absent or unparseable. */
@@ -64,13 +73,36 @@ export async function api<T>(
   if (res.status === 204) return undefined as T;
   const body = (await res.json().catch(() => ({}))) as { error?: string; retryable?: unknown; code?: unknown; currentVersion?: unknown } & T;
   if (!res.ok) {
+    const { error, ...details } = body as Record<string, unknown>;
     throw new ApiError(
-      body.error ?? "Request failed", res.status, parseRetryAfter(res.headers.get("Retry-After")), body.retryable === true,
+      typeof error === "string" ? error : "Request failed", res.status, parseRetryAfter(res.headers.get("Retry-After")), body.retryable === true,
       typeof body.code === "string" ? body.code : undefined,
       typeof body.currentVersion === "string" ? body.currentVersion : undefined,
+      details,
     );
   }
   return body;
+}
+
+/**
+ * A bearer request with the signed-in session's token (finding G5). A 401
+ * from the bearer gate means the 15-minute access token went stale (e.g. in a
+ * background tab): the session is refreshed once, through the hydrator, and
+ * the request retried with the new token. A second refusal, and every other
+ * error (403 REAUTH_REQUIRED for step-up included), goes to the caller.
+ */
+export async function authedApi<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const token = useAuthStore.getState().accessToken;
+  if (!token) throw new ApiError("Unauthorized", 401);
+  try {
+    return await api<T>(path, { ...options, token });
+  } catch (err) {
+    if (!isBearerRejection(err)) throw err;
+    await refreshSessionNow();
+    const fresh = useAuthStore.getState().accessToken;
+    if (!fresh || fresh === token) throw err;
+    return api<T>(path, { ...options, token: fresh });
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -98,12 +130,20 @@ interface SessionShare {
   accessToken: string;
 }
 
+/** This browser signed out in another tab: every tab drops the session (the cookie is gone for all of them). */
+interface SignedOutShare {
+  type: "signed-out";
+  from: string;
+  reason: "logout" | "switch";
+}
+
 const TAB_ID = typeof crypto !== "undefined" && "randomUUID" in crypto ? crypto.randomUUID() : `${Math.random()}`;
 let channel: BroadcastChannel | null | undefined;
 /** Increments on every session another tab shares; a refresh adopts a share newer than its own start. */
 let shareSeq = 0;
 let lastShare: { seq: number; data: AuthResponse } | null = null;
 const shareListeners = new Set<(data: AuthResponse) => void>();
+const signedOutListeners = new Set<(reason: SignedOutShare["reason"]) => void>();
 
 function isSessionShare(value: unknown): value is SessionShare {
   if (typeof value !== "object" || value === null) return false;
@@ -113,17 +153,55 @@ function isSessionShare(value: unknown): value is SessionShare {
     typeof v.user.bankroll === "number" && Number.isSafeInteger(v.user.bankroll);
 }
 
+function isSignedOutShare(value: unknown): value is SignedOutShare {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Partial<SignedOutShare>;
+  return v.type === "signed-out" && typeof v.from === "string" && (v.reason === "logout" || v.reason === "switch");
+}
+
 function sessionChannel(): BroadcastChannel | null {
   if (channel !== undefined) return channel;
   if (typeof window === "undefined" || typeof BroadcastChannel === "undefined") return (channel = null);
   channel = new BroadcastChannel("poker-session");
   channel.onmessage = (event: MessageEvent<unknown>) => {
+    if (isSignedOutShare(event.data)) {
+      if (event.data.from === TAB_ID) return;
+      forgetSharedSession();
+      for (const listener of signedOutListeners) listener(event.data.reason);
+      return;
+    }
     if (!isSessionShare(event.data) || event.data.from === TAB_ID) return;
     const data: AuthResponse = { user: event.data.user, accessToken: event.data.accessToken };
     lastShare = { seq: ++shareSeq, data };
     for (const listener of shareListeners) listener(data);
   };
   return channel;
+}
+
+/** Called when another tab of this browser signed out. Returns the unsubscribe function. */
+export function onSignedOutElsewhere(listener: (reason: SignedOutShare["reason"]) => void): () => void {
+  sessionChannel();
+  signedOutListeners.add(listener);
+  return () => { signedOutListeners.delete(listener); };
+}
+
+/** Tell the other tabs this browser signed out. */
+export function broadcastSignedOut(reason: SignedOutShare["reason"]): void {
+  try {
+    sessionChannel()?.postMessage({ type: "signed-out", from: TAB_ID, reason } satisfies SignedOutShare);
+  } catch {
+    /* channel closed: the other tabs find out at their next refresh */
+  }
+}
+
+/**
+ * SECURITY (finding G3): drop the last session another tab shared, so a
+ * signed-out tab never adopts the previous account's access token from
+ * memory. A refresh already waiting for the lock then calls the server.
+ */
+export function forgetSharedSession(): void {
+  lastShare = null;
+  shareSeq++;
 }
 
 /** Called with each session another tab refreshed. Returns the unsubscribe function. */
@@ -133,7 +211,8 @@ export function onSharedSession(listener: (data: AuthResponse) => void): () => v
   return () => { shareListeners.delete(listener); };
 }
 
-function shareSession(data: AuthResponse): void {
+/** Hand a refreshed or newly signed-in session to the other tabs, which adopt it instead of refreshing. */
+export function shareSession(data: AuthResponse): void {
   try {
     sessionChannel()?.postMessage({ type: "session", from: TAB_ID, user: data.user, accessToken: data.accessToken } satisfies SessionShare);
   } catch {

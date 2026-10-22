@@ -11,6 +11,8 @@ const END_REASONS: readonly SessionEndReason[] = [
   "REFRESH_REUSE",
   "EXPIRED",
   "ACCOUNT_RESTRICTED",
+  "GUEST_RETIRED",
+  "SECURITY_LOCKDOWN",
 ];
 
 export interface WsIdentity {
@@ -86,8 +88,8 @@ export function verifyAccessToken(token: string, secret: string): Promise<{ sub:
 }
 
 /**
- * Session row check matching `authenticate()` in the Node server: revoked,
- * idle expiry, absolute expiry, and HUMAN kind. Database errors are
+ * Session row check matching `authenticate()`: revoked, idle expiry,
+ * absolute expiry, HUMAN kind, and no retired guest account. Database errors are
  * `unavailable` so the caller answers retryable, never "signed out".
  */
 export async function loadSession(prisma: PrismaClient, sub: string, sessionId: string): Promise<SessionVerdict> {
@@ -100,6 +102,8 @@ export async function loadSession(prisma: PrismaClient, sub: string, sessionId: 
       return { ok: false, action: "revoke", reason: "EXPIRED" };
     }
     if (row.user.kind !== "HUMAN") return { ok: false, action: "revoke", reason: "ACCOUNT_RESTRICTED" };
+    // Guest play was retired (2026-10); the migration revoked guest sessions, this is the second line.
+    if (row.user.isGuest) return { ok: false, action: "revoke", reason: "GUEST_RETIRED" };
     return { ok: true, identity: { userId: row.user.id, sessionId: row.id, username: row.user.username } };
   } catch {
     return { ok: false, action: "unavailable" };

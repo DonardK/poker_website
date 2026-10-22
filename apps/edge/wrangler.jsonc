@@ -13,10 +13,12 @@
     // DEPLOY: replace <subdomain> with the account workers.dev subdomain.
     // Must be the web Worker origin (https://poker-web.<subdomain>.workers.dev).
     "CLIENT_ORIGIN": "https://poker-web.poker-demo.workers.dev",
-    "TERMS_VERSION": "2026-10-01",
+    "TERMS_VERSION": "2026-10-19",
     "JWT_ACCESS_TTL": "15m",
     "JWT_REFRESH_TTL": "7d",
-    "SESSION_IDLE_TTL": "7d",
+    // "Keep me signed in": 14 days idle, 30 days absolute. Unticked: a browser-session
+    // cookie with 12 h idle and 24 h absolute (fixed in code).
+    "SESSION_IDLE_TTL": "14d",
     "SESSION_ABSOLUTE_TTL": "30d",
     "DEFAULT_STARTING_BANKROLL": "10000",
     "TURN_TIME_BANK_MS": "20000",
@@ -36,11 +38,25 @@
     // Cloudflare Access for /api/admin. Team domain is the subdomain only.
     // With ADMIN_REQUIRE_CF_ACCESS=false, both empty skips the JWT (no 500).
     "CF_ACCESS_AUD": "",
-    "CF_ACCESS_TEAM_DOMAIN": ""
+    "CF_ACCESS_TEAM_DOMAIN": "",
+    // Account security. Blank RP ID = the CLIENT_ORIGIN host (workers.dev is a public
+    // suffix, so the demo RP ID is the full host). Passkeys, TOTP and MFA sign-in stay off
+    // until the AUTH_* secrets are set. No email is sent without RESEND_API_KEY (MAIL_FROM goes with it).
+    "WEBAUTHN_RP_ID": "",
+    "WEBAUTHN_RP_NAME": "Hold'em Live",
+    "WEBAUTHN_EXTRA_ORIGINS": "",
+    "TOTP_ISSUER": "Hold'em Live",
+    "MAIL_FROM": "",
+    "MAIL_REPLY_TO": "",
+    "PASSWORD_BREACH_CHECK": "true",
+    "SECURITY_HOLD_HOURS": "24",
+    "ADMIN_REQUIRE_PASSKEY": "false"
   },
   // Secrets are not vars. Set them with `wrangler secret put` or .dev.vars:
   // JWT_ACCESS_SECRET, JWT_REFRESH_SECRET, WS_TICKET_SECRET,
   // GAME_ENCRYPTION_KEYS, GAME_ENCRYPTION_ACTIVE_KEY_ID, TURNSTILE_SECRET_KEY.
+  // Optional (the features fail closed without them): AUTH_HMAC_SECRET,
+  // AUTH_ENCRYPTION_KEYS, AUTH_ENCRYPTION_ACTIVE_KEY_ID (all three or none), RESEND_API_KEY.
   "hyperdrive": [
     {
       "binding": "HYPERDRIVE",
@@ -63,12 +79,16 @@
     "LobbyActor": { "type": "durable-object", "storage": "sqlite" },
     "UserSessions": { "type": "durable-object", "storage": "sqlite" }
   },
+  // Daily account-security housekeeping (src/maintenance/sweep.ts): expired
+  // single-use marks, old email links, unconfirmed TOTP setups, old removed passkeys.
+  "triggers": { "crons": ["23 3 * * *"] },
   "ratelimits": [
     { "name": "RL_GENERAL", "namespace_id": "1001", "simple": { "limit": 120, "period": 60 } },
     { "name": "RL_CREDENTIALS", "namespace_id": "1002", "simple": { "limit": 15, "period": 60 } },
     { "name": "RL_REFRESH", "namespace_id": "1003", "simple": { "limit": 30, "period": 60 } },
     { "name": "RL_ADMIN", "namespace_id": "1004", "simple": { "limit": 30, "period": 60 } },
-    { "name": "RL_WS", "namespace_id": "1005", "simple": { "limit": 30, "period": 60 } }
+    { "name": "RL_WS", "namespace_id": "1005", "simple": { "limit": 30, "period": 60 } },
+    { "name": "RL_EMAIL", "namespace_id": "1006", "simple": { "limit": 5, "period": 60 } }
   ],
   "env": {
     "preview": {

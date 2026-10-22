@@ -32,7 +32,7 @@ const sections: LegalSection[] = [
     heading: "Who may play",
     body: (
       <Bullets items={[
-        "You must be at least 18 years old. You confirm this when you create a guest or registered account; we may ask for proof and close accounts held by minors.",
+        "You must be at least 18 years old. You confirm this when you create an account; we may ask for proof and close accounts held by minors.",
         "You may only play where online poker, including play-chip poker, is lawful for you. You are responsible for checking the law where you are.",
         "One account per person. Our staff may not play at tables.",
         "You must play for yourself, with your own decisions. Accounts may not be shared, sold or operated by software.",
@@ -59,13 +59,20 @@ const sections: LegalSection[] = [
     heading: "Accounts and security",
     body: (
       <>
-        <p><strong>Registered accounts</strong> have a username, e-mail address and password. Keep your password secret; you are responsible for activity on your account until you tell us it is compromised.</p>
+        <p>You need an account to play. An account has a username, an e-mail address and a password. Keep your password secret; you are responsible for activity on your account until you tell us it is compromised.</p>
         <p>
-          <strong>Guest accounts</strong> have no username of your choosing, e-mail or password. A guest account exists only in the
-          browser that created it: it cannot be recovered on another device, after you clear this browser&apos;s data, or
-          after you sign out, and its play chips are lost with it. We cannot restore a lost guest account.
+          Protect your account: keep your password, passkeys and backup codes to yourself, and turn on two-step verification
+          (a passkey or codes from an authenticator app). We will never ask for your password or codes. Tell us at once if you
+          think your account is compromised; use &ldquo;This wasn&apos;t me&rdquo; in a sign-in alert or security e-mail to sign
+          out everywhere and choose a new password.
         </p>
-        <p>Signing out ends the session on this device. You can be signed out automatically when a session expires or is revoked for security reasons.</p>
+        <p>
+          If you tick &ldquo;Stay signed in&rdquo;, this device stays signed in for up to 30 days (14 days without use); otherwise
+          the session ends when you close the browser, or after 24 hours. Signing out ends the session on this device; you can
+          also sign out every other session from Account &amp; security. You can be signed out automatically when a session
+          expires or is revoked for security reasons. Changes to how you sign in, and payouts once real money is offered, may
+          ask you to confirm it&apos;s you first.
+        </p>
       </>
     ),
   },
@@ -159,7 +166,7 @@ export default function TermsPage() {
   return (
     <LegalDocument
       title="Terms of Service"
-      summary={<p>These terms govern your use of Hold&apos;em Live. In short: you must be 18 or older, you play for play chips with no cash value, guest accounts cannot be recovered, and our House Rules decide every hand.</p>}
+      summary={<p>These terms govern your use of Hold&apos;em Live. In short: you must be 18 or older, you need an account, which you can secure with two-step verification, you play for play chips with no cash value, and our House Rules decide every hand.</p>}
       sections={sections}
     />
   );

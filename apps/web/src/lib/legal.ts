@@ -3,8 +3,7 @@
  *
  * COMPLIANCE NOTES
  * - TERMS_VERSION is the version of the legal documents this build shows.
- *   Guest creation and registration send it with an explicit 18+ and terms
- *   acceptance; the server stores version + time per account and refuses a
+ *   Registration sends it with an explicit 18+ and terms acceptance; the server stores version + time per account and refuses a
  *   version that is not its current one (409 TERMS_OUTDATED), so nobody is
  *   recorded as accepting text they were never shown. Bump it (together with
  *   the server's TERMS_VERSION) whenever any document below changes in
@@ -13,10 +12,10 @@
  *   page says so; real-money mode refuses to start until the approved version
  *   equals the current one (server-side, decision D10).
  */
-export const TERMS_VERSION = "2026-10-01";
+export const TERMS_VERSION = "2026-10-19";
 
 /** Human-readable effective date of TERMS_VERSION, shown on every document. */
-export const TERMS_EFFECTIVE_DATE = "1 October 2026";
+export const TERMS_EFFECTIVE_DATE = "19 October 2026";
 
 export interface LegalPageLink {
   href: "/terms" | "/privacy" | "/rules" | "/responsible-gaming" | "/complaints" | "/fairness";
@@ -42,7 +41,7 @@ export const PLAY_CHIPS_NOTICE = "Play chips have no cash value and cannot be re
 /** Short notice on the footer and on sign-up / sign-in. */
 export const PLAY_MONEY_NOTICE = "Play chips only — no real money";
 
-/** Body fields the server requires on POST /api/auth/guest and /api/auth/register. */
+/** Body fields the server requires on POST /api/auth/register. */
 export interface TermsAcceptance {
   acceptTerms: true;
   confirmAge: true;

@@ -1,21 +1,36 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 /**
  * Explicit Turnstile render. The API script is not the implicit `.cf-turnstile`
  * mode. Pre-clearance is off: no `cf_clearance` flow and no `/cdn-cgi/` fetch.
  *
  * CSP is nonce + strict-dynamic. The root layout renders the API script with
- * the request nonce: browsers clear a nonce from the DOM, so a client-created
- * script cannot copy it. `https://challenges.cloudflare.com` stays in
- * script-src, frame-src, and connect-src.
+ * the request nonce on the Turnstile pages only (/login, /signup,
+ * /reset-password; routes.ts). Arriving there by a client-side navigation,
+ * the loader below adds the script itself (a script created by an already
+ * trusted script is allowed by 'strict-dynamic'). `https://challenges.cloudflare.com`
+ * stays in script-src, frame-src and connect-src for every page, because a
+ * document's CSP does not change on client-side navigation.
+ *
+ * A token is single use. `resetKey` (bumped by the form after every submit
+ * that did not navigate away) resets the widget, so a retry never resends a
+ * spent token (finding G1); until a fresh token arrives `onToken(null)` keeps
+ * the form's submit disabled (G2).
  */
 const TURNSTILE_SCRIPT_SRC = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
 const TURNSTILE_SCRIPT_ID = "cf-turnstile-api";
 
+/** The siteverify action names the API checks (one per form). */
+export type TurnstileAction = "login" | "signup" | "forgot";
+
 type TurnstileRenderParams = {
   sitekey: string;
+  action?: string;
+  theme?: "auto" | "light" | "dark";
+  size?: "normal" | "flexible" | "compact";
+  appearance?: "always" | "execute" | "interaction-only";
   callback?: (token: string) => void;
   "error-callback"?: (errorCode?: string) => void;
   "expired-callback"?: () => void;
@@ -45,6 +60,11 @@ export function turnstileSiteKey(): string {
 export function turnstileTokenField(token: string | null): { turnstileToken: string } | Record<string, never> {
   if (!turnstileSiteKey()) return {};
   return { turnstileToken: token ?? "" };
+}
+
+/** True while a configured widget has not produced a token yet: the form waits ("Checking your browser…"). */
+export function needsTurnstileToken(token: string | null): boolean {
+  return Boolean(turnstileSiteKey()) && !token;
 }
 
 function documentNonce(): string | undefined {
@@ -113,44 +133,74 @@ function loadTurnstileScript(): Promise<void> {
   return turnstileScript;
 }
 
-export function TurnstileWidget({ onToken }: { onToken: (token: string | null) => void }) {
+export function TurnstileWidget({ onToken, action, resetKey = 0 }: {
+  onToken: (token: string | null) => void;
+  action: TurnstileAction;
+  /** Change it to discard the current token and get a fresh one. */
+  resetKey?: number;
+}) {
   const siteKey = turnstileSiteKey();
   const containerRef = useRef<HTMLDivElement>(null);
+  const widgetIdRef = useRef("");
   const onTokenRef = useRef(onToken);
   onTokenRef.current = onToken;
+  const [failed, setFailed] = useState(false);
 
   useEffect(() => {
     if (!siteKey) return;
     const container = containerRef.current;
     if (!container) return;
     let removed = false;
-    let widgetId = "";
 
     const reset = () => {
       onTokenRef.current(null);
-      if (widgetId) window.turnstile?.reset(widgetId);
+      if (widgetIdRef.current) window.turnstile?.reset(widgetIdRef.current);
     };
 
     loadTurnstileScript()
       .then(() => {
         if (removed || !container.isConnected || !window.turnstile) return;
-        widgetId = window.turnstile.render(container, {
+        setFailed(false);
+        widgetIdRef.current = window.turnstile.render(container, {
           sitekey: siteKey,
+          action,
+          theme: "dark",
+          size: "flexible",
+          appearance: "interaction-only",
           callback: (token) => onTokenRef.current(token),
           "error-callback": () => reset(),
           "expired-callback": () => reset(),
         });
       })
       .catch(() => {
-        if (!removed) onTokenRef.current(null);
+        if (removed) return;
+        onTokenRef.current(null);
+        setFailed(true);
       });
 
     return () => {
       removed = true;
-      if (widgetId) window.turnstile?.remove(widgetId);
+      if (widgetIdRef.current) window.turnstile?.remove(widgetIdRef.current);
+      widgetIdRef.current = "";
     };
-  }, [siteKey]);
+  }, [siteKey, action]);
+
+  // A spent token is never resent: drop it and ask the widget for a new one.
+  const lastResetKey = useRef(resetKey);
+  useEffect(() => {
+    if (lastResetKey.current === resetKey) return;
+    lastResetKey.current = resetKey;
+    onTokenRef.current(null);
+    if (widgetIdRef.current) window.turnstile?.reset(widgetIdRef.current);
+  }, [resetKey]);
 
   if (!siteKey) return null;
-  return <div ref={containerRef} />;
+  return (
+    <div>
+      <div ref={containerRef} />
+      {failed ? (
+        <p className="mt-2 text-sm text-red-100">The browser check didn&apos;t load. Reload the page to try again.</p>
+      ) : null}
+    </div>
+  );
 }

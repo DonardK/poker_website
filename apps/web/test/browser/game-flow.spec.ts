@@ -1,6 +1,4 @@
-import { test, expect } from "@playwright/test";
-
-const fixture = "http://127.0.0.1:4107";
+import { expect, fixture, test } from "../support/fixtures";
 
 test("custom human table opens even while the wallet refresh is delayed", async ({ page, request }) => {
   await request.post(`${fixture}/__test/reset`, { data: { mode: "unseated" } });

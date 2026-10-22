@@ -1,5 +1,5 @@
-import Link from "next/link";
 import { DraftBanner } from "@/components/draft-banner";
+import { BackHomeLink } from "@/components/shell/back-home-link";
 import { TERMS_EFFECTIVE_DATE, TERMS_VERSION } from "@/lib/legal";
 
 export interface LegalSection {
@@ -15,8 +15,8 @@ export interface LegalSection {
  */
 export function LegalDocument({ title, summary, sections }: { title: string; summary: React.ReactNode; sections: readonly LegalSection[] }) {
   return (
-    <main className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-8 sm:px-8 sm:py-12">
-      <Link href="/" className="text-sm text-amber-100 underline-offset-4 hover:underline">← Lobby</Link>
+    <main id="main-content" className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-4 py-8 sm:px-8 sm:py-12">
+      <BackHomeLink />
       <DraftBanner />
       <header>
         <h1 className="font-[family-name:var(--font-display)] text-4xl font-semibold tracking-tight sm:text-5xl">{title}</h1>

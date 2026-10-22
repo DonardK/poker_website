@@ -41,10 +41,11 @@ dotenv, which fills in any variable that is not already set. So:
 | --- | --- | --- | --- |
 | Engine (Jest) without RNG | `npm test -w @poker/engine -- --testPathIgnorePatterns /node_modules/ "rng\.test\.ts$"` | none | ~4.5 min, 430 tests, 14 files |
 | RNG certification (Jest) | `node --experimental-vm-modules node_modules/jest/bin/jest.js --config packages/engine/jest.config.cjs --runInBand rng` | none | ~70-80 s, 47 tests (about +60 s per failed-then-repeated family) |
-| Server (node:test) | `npm run build:core && npm test -w @poker/server` | none (dead loopback URL) | ~55 s incl. build, 115 tests |
+| Server (node:test) | `npm run build:core && npm test -w @poker/server` (with `JWT_ACCESS_SECRET` and `JWT_REFRESH_SECRET` set to random test values, as CI does; there is no `.env`) | none (dead loopback URL) | ~1 min incl. build, 139 tests |
 | Ledger unit | `cd apps/server && node test/support/run-tests.mjs --import tsx test/money-amounts.test.mjs test/money-flows.test.mjs` | none | ~1 s, 21 tests |
 | Real PostgreSQL (`test:db`) | `npm run test:db` | disposable embedded PostgreSQL 18 | ~1.5-2 min incl. build and cluster start (see below) |
-| Browser (Playwright) | `npx playwright install chrome` once, then `npm run build:core && npm run test:browser -w @poker/web` | none (fixture server) | ~9 min, 156 tests (78 specs x desktop + mobile), plus ~1-2 min for next dev start-up |
+| Browser (Playwright) | `npx playwright install chrome` once, then `npm run build:core && npm run test:browser -w @poker/web` | none (fixture server) | ~11 min, 262 tests (131 specs x desktop + mobile), plus ~1-2 min for next dev start-up |
+| Edge API (Vitest in workerd) | `node apps/server/test/support/pg.mjs --exec "npm test -w @poker/edge"`; one file: `... --exec "npm test -w @poker/edge -- test/passkeys.test.ts"` | disposable embedded PostgreSQL (Durable Object suites); the HTTP suites use an in-memory database | ~2-3 min, 143 tests, 17 files |
 | Deploy configuration | `node --test deploy/test/deploy-config.test.mjs` | none | seconds |
 
 `npm test` at the root runs `build:core` and then every workspace's `test`
@@ -146,7 +147,8 @@ cluster superuser (fixtures and catalog inspection only).
 | File | Proves |
 | --- | --- |
 | `migrations.test.mjs` | Every migration applies from scratch, in order, into a brand-new database with `prisma migrate deploy`; each is recorded finished, never rolled back, with the checksum of the file in the repository; `prisma migrate status` is clean; a second deploy is a no-op; `prisma migrate diff --from-url <db> --to-schema-datamodel prisma/schema.prisma --exit-code` finds **no drift** between `schema.prisma` and the migrated database (with a positive control showing the same command does detect an added column). |
-| `privileges.test.mjs` | RLS enabled and forced on every table in `public` except `_prisma_migrations`, each with a policy; PUBLIC holds nothing on any table, sequence or SECURITY DEFINER function, and no CREATE on `public`; `poker_server`'s privileges equal an explicit matrix (a new table fails the test until it is added deliberately); it cannot UPDATE/DELETE/TRUNCATE `Hand`, `HandPlayer`, `HandAction`, `HandPot`, cannot DELETE `User`/`Table`, cannot write the ledger tables or their sequences, cannot read `_prisma_migrations`, cannot CREATE in `public` or ALTER/DROP policies and RLS; it is not superuser/BYPASSRLS/CREATEROLE/CREATEDB and is a member of no role; it may execute only `ledger_post` and `ledger_ensure_account` among SECURITY DEFINER functions. |
+| `privileges.test.mjs` | RLS enabled and forced on every table in `public` except `_prisma_migrations`, each with a policy; PUBLIC holds nothing on any table, sequence or SECURITY DEFINER function, and no CREATE on `public`; `poker_server`'s privileges equal an explicit matrix (a new table fails the test until it is added deliberately); it cannot UPDATE/DELETE/TRUNCATE `Hand`, `HandPlayer`, `HandAction`, `HandPot`, cannot DELETE `User`/`Table`, cannot write the ledger tables or their sequences, cannot read `_prisma_migrations`, cannot CREATE in `public` or ALTER/DROP policies and RLS; it is not superuser/BYPASSRLS/CREATEROLE/CREATEDB and is a member of no role; it may execute only `ledger_post` and `ledger_ensure_account` among SECURITY DEFINER functions; on the account-security tables it may UPDATE only the listed columns (never a secret, hash or binding), and it can mint a `StepUpGrant` but never consume, change or delete one. |
+| `account-security.test.mjs` | The account-security schema (migration `20261019100000_account_security`) on a private database that gets every earlier migration, then live and ended human and guest sessions, then this migration: only guest sessions that had not ended are revoked (`GUEST_RETIRED`) and new columns take their defaults; a `StepUpGrant` refuses `PASSWORD` for money, `admin_payments` without a passkey and a lifetime over 5 minutes; a consumer holding only SELECT + UPDATE (`consumedAt`) (the wallet's planned grants) consumes a grant once, never after expiry, and can change nothing else (trigger `SU001`; `poker.break_glass` is the hatch); `StepUpEmailChallenge` limits; `AccountSecurityEvent` is append-only; the CHECKs on secrets, hashes and auth methods; forgetting a device keeps its sessions, removing a session removes its grants. |
 | `concurrency.test.mjs` | Real races against the **built** `TableManager` (forced overlap: the contended row is held by a superuser transaction until every racer is seen blocked on it in `pg_stat_activity`): one user claiming seats at two tables at once gets exactly one seat and one bankroll debit (with money for both buy-ins, and for one); two users racing for one seat: one wins, the loser's bankroll is untouched; a double-submitted claim at one table; `standUp` racing the Hand Clean-up of a settled hand in both lock orders, and a pending leaver's repeated `standUp` racing the Clean-up that pays them: credited exactly once; the last player leaving racing a newcomer's claim (closure in the same commit as the cash-out, the refused newcomer charged nothing). Every test checks that Σ bankrolls + Σ seat stacks is conserved. Timers are off; the test calls what the timers would. |
 | `ledger-foundation.test.mjs` | The money ledger (migration `20261002200000_ledger_foundation`): double-entry posting rules, idempotency, append-only journal, balance reconstruction, overflow bounds, privileges and concurrent postings (see `docs/money/LEDGER.md`). |
 
@@ -171,6 +173,61 @@ sockets: the table UI (actions, turn clock, buy-in dialog, connection state),
 table lifecycle (leaving, idle warning and closure notices), session handling,
 and the legal pages and age/terms gate (`game-flow`, `table-ui`,
 `table-lifecycle`, `session`, `shell-legal` specs).
+
+Accounts (there is no guest play): the fixture server emulates every auth and
+account route of the edge API in memory (`test/support/auth-fixture.mjs`:
+sign-up, sign-in by username or email, TOTP and backup codes with real RFC 6238
+codes from `totp.mjs`, passkeys, step-up, email links, sessions, devices), sets
+`poker_session_hint` like the API, and records every request for assertions
+(`/__test/requests`). `test/support/fixtures.ts` stubs the Turnstile script
+(`turnstile-stub.js`), resets the accounts before each test and signs the
+browser in as `Player-0` unless a spec uses `session: "signed-out"`. Specs:
+`auth-gate` (middleware and client redirects, `next=`, the updated-terms
+prompt for an account on older or no terms), `login` (identifier,
+errors, rate limits, Turnstile reset), `signup` (18+/terms, strength, the
+recommended-not-forced protection step), `mfa`, `passkeys` (a CDP virtual
+authenticator on `localhost`), `account-switch` (remembered accounts, sign-out
+across tabs), `email-password` (verify, email change, reset and "This wasn't
+me" links with the token in the fragment), `security-settings`.
+
+Do not edit `apps/web/src` while the suite runs: `next dev` recompiles and a
+test can load a half-written chunk (`ChunkLoadError`).
+
+`test/e2e-live` (`playwright.live.config.ts`, only with `POKER_LIVE_E2E=1`) is a
+two-browser hand against local `wrangler dev` and `next dev`; it signs two new
+accounts up through `/signup`. It is not part of CI.
+
+## Edge API: Vitest in workerd (`apps/edge/test`)
+
+The tests run inside workerd (`@cloudflare/vitest-plugin`), so a library that
+does not work on Workers fails here. The HTTP suites mount the real Hono app
+over an in-memory database (`memory-db.ts`, Prisma filter semantics, unique
+keys, transaction rollback) and a test mailbox (`attachTestMailbox`); they
+never call Have I Been Pwned or Resend (`PASSWORD_BREACH_CHECK=false`, and
+the suites that turn it on stub `breach.check` and `fetch`). The Durable
+Object suites (`lobby`, `table-actor`) need the embedded PostgreSQL.
+
+| File | Proves |
+| --- | --- |
+| `auth.test.ts` | Refresh rotation, grace and reuse; one PBKDF2 per login and the same 401 for unknown, guest, bot and wrong; lockout and the familiar-address exemption; registration rules; an existing account accepting a newer terms version (`/auth/terms/accept`); the guest route is a 404. |
+| `guest-removal.test.ts` | A surviving guest session is refused at refresh (cookies cleared, `GUEST_RETIRED`, sockets told), at `/me`, at the lobby socket and at the table socket; the new end reasons round-trip in every edge list. |
+| `totp.test.ts` | The six RFC 6238 vectors, the ±1 step window, base32, the otpauth URI, sealing under the auth ring (bound to the user), backup-code format, normalisation and per-user HMAC. |
+| `mfa-login.test.ts` | Enrolment (setup needs a fresh step-up; wrong and stale codes); the ticket step (no refresh cookie, a device cookie, one PBKDF2); codes and tickets work once; tickets bound to the browser and the credentials version; the second-factor lock and the known-device exemption; backup codes; 503 without the auth secrets; the first step unchanged. |
+| `passkeys.test.ts` | A software authenticator through `@simplewebauthn/server`: registration (step-up, stored fields, rename), wrong origin / RP ID / user verification / ceremony type / cross-origin refused, single-use challenges, discoverable sign-in (also for a TOTP account), one 401 body for every credential problem, counter regression, removal and re-adding, the 20-passkey limit, passkey step-up, passkeys off on an IP origin. |
+| `recovery.test.ts` | Verification links; forgot (same 202 for unknown, guest, bot and real accounts; hourly cap; Turnstile); reset (weak or breached keeps the link, revokes every session, signs nobody in, expiry, TOTP still required); email change (step-up, taken address, confirm, superseded and raced links); "This wasn't me" after a new-sign-in alert (sessions, passkeys, TOTP, devices, reset required, single use, works after an attacker's password change), TOTP restored and email reverted. |
+| `devices.test.ts` | New-sign-in alerts (no storm after rollout, verified email only, details in the email); the device, hint and refresh cookie flags; "keep me signed in" off; a known device bypasses the account lock; sign-in revokes an old refresh cookie's session; listing and forgetting devices. |
+| `step-up.test.ts` | The 5-minute window on every step-up route; password and TOTP step-up; password change needs the password; `requireMoneyAuth`; failed step-ups count toward the lock; money grants by TOTP, emailed code (bound, capped, 5 tries, expiry, single use) and passkey (challenge bound to purpose and bind); the account overview and paged history; turning TOTP off. |
+| `mail.test.ts` | The Resend request and retry policy; the sink on http and https; HTML escaping; no token, code, password or address in any log line. |
+| `breached.test.ts` | The range request (prefix only, padding), breached / ok / unknown, fail-open at registration, the username rule. |
+| `rate-limits.test.ts` | `RL_CREDENTIALS` and `RL_EMAIL` cover their routes, with the right keys. |
+| `sweep.test.ts` | The daily housekeeping deletes only rows that can no longer matter. |
+| `config.test.ts` | The account-security settings parse, refuse partial or reused secrets, and fail closed when absent; on https, placeholder keys and repetitive secrets are refused but random hex secrets are not. |
+| `tables-http.test.ts`, `health.test.ts`, `lobby.test.ts`, `table-actor.test.ts` | Tables over HTTP, health, and the Durable Objects against PostgreSQL. |
+
+Known on this Windows laptop: 4 to 5 `table-actor` tests time out at Vitest's
+5 s default when the whole suite runs in parallel; they pass with a longer
+timeout. They are speed limits of the machine, not functional failures. The
+cold-start `health` request has its own 30 s timeout for the same reason.
 
 ## Deploy configuration
 

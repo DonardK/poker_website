@@ -4,6 +4,7 @@ import type { PrismaClient } from "../generated/prisma/client";
 const ISSUER = "poker-server";
 const END_REASONS: readonly SessionEndReason[] = [
   "LOGOUT", "LOGOUT_ALL", "SESSION_REVOKED", "PASSWORD_CHANGED", "REFRESH_REUSE", "EXPIRED", "ACCOUNT_RESTRICTED",
+  "GUEST_RETIRED", "SECURITY_LOCKDOWN",
 ];
 
 export type AuthErrorCode = "NO_TOKEN" | "INVALID_TOKEN" | "EXPIRED" | "REVOKED" | "USER_BLOCKED";
@@ -117,6 +118,8 @@ export async function assertLiveSession(prisma: PrismaClient, sessionId: string,
     throw new AuthError("EXPIRED", "Session expired", "EXPIRED");
   }
   if (row.user.kind !== "HUMAN") throw new AuthError("USER_BLOCKED", "Account cannot sign in", "ACCOUNT_RESTRICTED");
+  // Guest play was retired (2026-10); the migration revoked guest sessions, this is the second line.
+  if (row.user.isGuest) throw new AuthError("USER_BLOCKED", "Account cannot sign in", "GUEST_RETIRED");
   return { sessionId: row.id, userId: row.userId, username: row.user.username };
 }
 

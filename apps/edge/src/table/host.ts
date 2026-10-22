@@ -368,7 +368,7 @@ export async function prepareFixture(runtime: TableRuntime, input: {
   return withDb(runtime.env, async (db) => {
     const players: PreparedPlayer[] = [];
     for (const player of input.players) {
-      const user = await db.prisma.user.create({ data: { username: player.username, bankroll: player.bankroll, isGuest: true, kind: "HUMAN" } });
+      const user = await db.prisma.user.create({ data: { username: player.username, bankroll: player.bankroll, isGuest: false, kind: "HUMAN" } });
       const session = await db.prisma.session.create({
         data: {
           userId: user.id,

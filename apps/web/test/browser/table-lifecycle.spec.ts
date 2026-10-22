@@ -1,6 +1,5 @@
-import { test, expect, type APIRequestContext, type Locator, type Page } from "@playwright/test";
-
-const fixture = "http://127.0.0.1:4107";
+import type { APIRequestContext, Locator, Page } from "@playwright/test";
+import { expect, fixture, test } from "../support/fixtures";
 
 /** Three seated players, a hand running, and the viewer (Player-0) to act. */
 async function openActiveTable(page: Page, request: APIRequestContext) {

@@ -39,32 +39,52 @@ export interface KeyRingInput {
   activeKeyId?: string | undefined;
 }
 
+/** Variable names used in error messages, so each ring's errors name its own settings. */
+export interface KeyRingNames {
+  keys: string;
+  activeKeyId: string;
+  legacyKey: string;
+}
+
+export const GAME_KEY_RING_NAMES: KeyRingNames = {
+  keys: "GAME_ENCRYPTION_KEYS",
+  activeKeyId: "GAME_ENCRYPTION_ACTIVE_KEY_ID",
+  legacyKey: "GAME_ENCRYPTION_KEY",
+};
+
+/** The account-security ring (TOTP secrets). It has no legacy single key; its keys never equal game keys (env.ts). */
+export const AUTH_KEY_RING_NAMES: KeyRingNames = {
+  keys: "AUTH_ENCRYPTION_KEYS",
+  activeKeyId: "AUTH_ENCRYPTION_ACTIVE_KEY_ID",
+  legacyKey: "AUTH_ENCRYPTION_KEYS",
+};
+
 /** Builds the ring; throws (without echoing any key material) on malformed input. */
-export function parseKeyRing(input: KeyRingInput): KeyRing {
+export function parseKeyRing(input: KeyRingInput, names: KeyRingNames = GAME_KEY_RING_NAMES): KeyRing {
   const keys = new Map<string, CipherBytes>();
   const legacy = input.legacyKey?.trim();
   if (legacy) {
-    if (!HEX64.test(legacy)) throw new Error("GAME_ENCRYPTION_KEY must be 64 hex characters");
+    if (!HEX64.test(legacy)) throw new Error(`${names.legacyKey} must be 64 hex characters`);
     keys.set(LEGACY_KEY_ID, Buffer.from(legacy, "hex"));
   }
   for (const entry of (input.keys ?? "").split(",").map((part) => part.trim()).filter(Boolean)) {
     const separator = entry.indexOf(":");
     const kid = separator < 0 ? "" : entry.slice(0, separator).trim();
     const hex = separator < 0 ? "" : entry.slice(separator + 1).trim();
-    if (!KEY_ID.test(kid)) throw new Error("GAME_ENCRYPTION_KEYS: each entry must be <kid>:<64 hex>, kid of 1-32 letters, digits, '_' or '-'");
-    if (!HEX64.test(hex)) throw new Error(`GAME_ENCRYPTION_KEYS: key "${kid}" must be 64 hex characters`);
+    if (!KEY_ID.test(kid)) throw new Error(`${names.keys}: each entry must be <kid>:<64 hex>, kid of 1-32 letters, digits, '_' or '-'`);
+    if (!HEX64.test(hex)) throw new Error(`${names.keys}: key "${kid}" must be 64 hex characters`);
     if (keys.has(kid)) throw new Error(kid === LEGACY_KEY_ID && legacy
-      ? `GAME_ENCRYPTION_KEYS: key id "${LEGACY_KEY_ID}" is reserved for GAME_ENCRYPTION_KEY`
-      : `GAME_ENCRYPTION_KEYS: key id "${kid}" appears twice`);
+      ? `${names.keys}: key id "${LEGACY_KEY_ID}" is reserved for ${names.legacyKey}`
+      : `${names.keys}: key id "${kid}" appears twice`);
     keys.set(kid, Buffer.from(hex, "hex"));
   }
-  if (keys.size === 0) throw new Error("Set GAME_ENCRYPTION_KEYS (with GAME_ENCRYPTION_ACTIVE_KEY_ID) or the legacy GAME_ENCRYPTION_KEY");
+  if (keys.size === 0) throw new Error(`Set ${names.keys} (with ${names.activeKeyId}) or the legacy ${names.legacyKey}`);
   const requested = input.activeKeyId?.trim();
   let activeKeyId: string;
   if (requested) activeKeyId = requested;
   else if (keys.size === 1) activeKeyId = [...keys.keys()][0]!;
-  else throw new Error("GAME_ENCRYPTION_ACTIVE_KEY_ID is required when the ring holds more than one key");
-  if (!keys.has(activeKeyId)) throw new Error(`GAME_ENCRYPTION_ACTIVE_KEY_ID "${activeKeyId.slice(0, 32)}" is not in the key ring`);
+  else throw new Error(`${names.activeKeyId} is required when the ring holds more than one key`);
+  if (!keys.has(activeKeyId)) throw new Error(`${names.activeKeyId} "${activeKeyId.slice(0, 32)}" is not in the key ring`);
   return { activeKeyId, keys };
 }
 
@@ -78,6 +98,18 @@ const PLACEHOLDER_KEYS = new Set([
 ]);
 
 const distinct = (values: Iterable<unknown>): number => new Set(values).size;
+
+/**
+ * The fewest distinct characters a random secret reliably shows. A hex secret
+ * (DEPLOY.md generates the JWT secrets as 32 random bytes in hex) draws from
+ * only 16 characters, and about 1 in 4 random 64-character hex strings lacks
+ * one of them, so requiring all 16 would refuse good production secrets and
+ * stop the API. A hex secret needs 8 (a random 32-character one falls short
+ * with probability below 1e-7); any other secret needs 16.
+ */
+export function minDistinctCharacters(secret: string): number {
+  return /^[0-9a-f]+$/i.test(secret) ? 8 : 16;
+}
 
 /**
  * Production-only strength checks for the key ring and JWT secrets. Throws
@@ -101,7 +133,8 @@ export function assertProductionSecrets(ring: KeyRing, jwtAccessSecret: string, 
   }
   for (const [name, secret] of [["JWT_ACCESS_SECRET", jwtAccessSecret], ["JWT_REFRESH_SECRET", jwtRefreshSecret]] as const) {
     if (secret.length < 32) throw new Error(`${name} must be at least 32 characters`);
-    if (distinct(secret) < 16) throw new Error(`${name} must contain at least 16 distinct characters (generate it with randomBytes(48).toString("base64url"))`);
+    const needed = minDistinctCharacters(secret);
+    if (distinct(secret) < needed) throw new Error(`${name} must contain at least ${needed} distinct characters (generate it with randomBytes(48).toString("base64url"))`);
   }
   if (jwtAccessSecret === jwtRefreshSecret) throw new Error("JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must differ");
 }
