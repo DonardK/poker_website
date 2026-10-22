@@ -68,7 +68,8 @@ class IsolateCounters {
     return this.entries.get(`${userId}|${scope}`)?.lockedUntil ?? 0;
   }
 
-  record(userId: string, scope: string, now: number, lockMs: (failures: number) => number): number {
+  /** Count a failure; returns the new count and the lock it started (0 for none). */
+  record(userId: string, scope: string, now: number, lockMs: (failures: number) => number): { failures: number; lockMs: number } {
     const key = `${userId}|${scope}`;
     if (!this.entries.has(key) && this.entries.size >= FAMILIAR_MAX_ENTRIES) {
       for (const [stored, entry] of this.entries) if (now - entry.touchedAt > STALE_MS) this.entries.delete(stored);
@@ -87,7 +88,7 @@ class IsolateCounters {
     const lock = lockMs(entry.failures);
     if (lock) entry.lockedUntil = now + lock;
     this.entries.set(key, entry);
-    return lock;
+    return { failures: entry.failures, lockMs: lock };
   }
 
   clear(userId: string, scope: string): void {
@@ -107,7 +108,7 @@ export function familiarLockedUntil(userId: string, scope: string): number {
 }
 
 export function recordFamiliarFailure(userId: string, scope: string, now: number, lockMs: (failures: number) => number): number {
-  return familiar.record(userId, scope, now, lockMs);
+  return familiar.record(userId, scope, now, lockMs).lockMs;
 }
 
 export function clearFamiliarFailures(userId: string, scope: string): void {
@@ -119,7 +120,8 @@ export function deviceMfaLockedUntil(userId: string, deviceHash: string): number
   return secondFactor.lockedUntil(userId, `device:${deviceHash}`);
 }
 
-export function recordDeviceMfaFailure(userId: string, deviceHash: string, now: number): number {
+/** Count an attempt for one known device (before its code is checked; a right code clears it). */
+export function recordDeviceMfaFailure(userId: string, deviceHash: string, now: number): { failures: number; lockMs: number } {
   return secondFactor.record(userId, `device:${deviceHash}`, now, loginLockMs);
 }
 

@@ -147,6 +147,7 @@ test.describe("forgotten password", () => {
     await expect(page.getByRole("heading", { level: 1, name: "Choose a new password" })).toBeVisible();
     // No browser check on the token form: the token is the proof (and no third-party script runs with it).
     await expect(page.locator("main iframe")).toHaveCount(0);
+    expect(await page.evaluate(() => document.getElementById("cf-turnstile-api") === null && !("turnstile" in window))).toBe(true);
     const field = page.getByLabel("New password", { exact: true });
     await field.fill("short");
     await page.getByRole("button", { name: "Set new password" }).click();

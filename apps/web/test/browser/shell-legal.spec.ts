@@ -365,10 +365,11 @@ test.describe("security headers", () => {
   }
 
   test("the Turnstile script is rendered only on the forms that use it", async ({ request }) => {
-    for (const path of ["/login", "/signup", "/reset-password"]) {
+    for (const path of ["/login", "/signup"]) {
       expect(await (await request.get(path, { maxRedirects: 0 })).text(), path).toContain("challenges.cloudflare.com/turnstile/v0/api.js");
     }
-    for (const path of ["/", "/table/x", "/account/security", "/rules", "/verify-email"]) {
+    // /reset-password may open with a reset token in its fragment: its request form loads the script only after checking.
+    for (const path of ["/", "/table/x", "/account/security", "/rules", "/verify-email", "/reset-password", "/auth/not-me"]) {
       const html = await (await request.get(path, { maxRedirects: 0, headers: HINT })).text();
       expect(html, path).not.toContain("challenges.cloudflare.com/turnstile/v0/api.js");
     }

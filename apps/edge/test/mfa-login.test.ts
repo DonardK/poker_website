@@ -169,6 +169,11 @@ describe("sign-in with TOTP", () => {
     expect([locked.status, locked.body]).toEqual([429, { error: "Too many wrong codes. Try again later.", code: "MFA_LOCKED" }]);
     expect(Number(locked.headers.get("retry-after"))).toBeGreaterThan(0);
     expect(h.db.rows("accountSecurityEvent").map((event) => event.type)).toContain("MFA_LOCKOUT");
+    // The ticket died when its wrong codes started the lock: after the lock it still needs the password (and Turnstile) again.
+    advanceClock(31_000);
+    const burned = await h.request("/auth/login/mfa", { ip, cookie: attacker.header(), body: { mfaTicket: ticket, method: "totp", code: await codeAt(secret, 1) } });
+    expect([burned.status, burned.body.code]).toEqual([401, "MFA_TICKET_INVALID"]);
+    expect(h.db.user(gail.userId)!.mfaFailedCount).toBe(5);
 
     // The owner's browser is a known device: its own counter applies.
     const owner = await signIn(h, gail);

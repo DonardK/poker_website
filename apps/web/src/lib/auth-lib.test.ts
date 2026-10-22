@@ -26,6 +26,18 @@ describe("safeNext", () => {
     }
   });
 
+  it("refuses dot segments, which URL resolution would collapse into a protocol-relative URL", () => {
+    for (const raw of [
+      "/.//evil.example", "/..//evil.example", "/%2e//evil.example", "/%2E//evil.example", "/%2e%2e//evil.example",
+      "/a/..//evil.example", "/a/..//evil.example/x", "/./", "/a/../b", "/a/.?x=1",
+    ]) {
+      assert.equal(safeNext(raw), "/", raw);
+    }
+    // A dot inside a segment is an ordinary path.
+    assert.equal(safeNext("/table/a.b"), "/table/a.b");
+    assert.equal(safeNext("/table/...x"), "/table/...x");
+  });
+
   it("never sends a sign-in back to a sign-in or email-link page", () => {
     for (const raw of ["/login", "/login?next=/", "/signup/", "/reset-password", "/verify-email", "/email-change", "/auth/not-me"]) {
       assert.equal(safeNext(raw), "/", raw);
@@ -62,7 +74,8 @@ describe("route classes", () => {
   it("renders Turnstile only on its three forms", () => {
     assert.equal(isTurnstilePath("/login"), true);
     assert.equal(isTurnstilePath("/signup"), true);
-    assert.equal(isTurnstilePath("/reset-password"), true);
+    // The reset link carries a token in its fragment: no third-party script in that page's HTML.
+    assert.equal(isTurnstilePath("/reset-password"), false);
     assert.equal(isTurnstilePath("/"), false);
     assert.equal(isTurnstilePath("/table/x"), false);
     assert.equal(isTurnstilePath(null), false);

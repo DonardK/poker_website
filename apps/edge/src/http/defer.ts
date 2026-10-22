@@ -6,8 +6,9 @@ import { errBrief, logWarn } from "./log";
  * Without an execution context (unit tests), the guarded promise is returned
  * so the caller's `await` finishes the work before the response.
  *
- * Deferred work must not touch the database: the request's Prisma client is
- * disconnected once the response is sent (app.ts).
+ * Deferred work must not use the request's database client: it is
+ * disconnected once the response is sent (app.ts). Use withOwnDb
+ * (request-db.ts) for deferred database work.
  */
 export function defer(c: Ctx, task: Promise<unknown>): Promise<void> {
   const guarded = task.then(

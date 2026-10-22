@@ -3,6 +3,7 @@ dist/
 .next/
 .next-dev/
 .next-browser-test/
+.next-live-test/
 test-results/
 playwright-report/
 out/

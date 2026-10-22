@@ -7,8 +7,8 @@ import { useEffect, useRef, useState } from "react";
  * mode. Pre-clearance is off: no `cf_clearance` flow and no `/cdn-cgi/` fetch.
  *
  * CSP is nonce + strict-dynamic. The root layout renders the API script with
- * the request nonce on the Turnstile pages only (/login, /signup,
- * /reset-password; routes.ts). Arriving there by a client-side navigation,
+ * the request nonce on /login and /signup only (routes.ts). Elsewhere (the
+ * /reset-password request form, or arriving by a client-side navigation),
  * the loader below adds the script itself (a script created by an already
  * trusted script is allowed by 'strict-dynamic'). `https://challenges.cloudflare.com`
  * stays in script-src, frame-src and connect-src for every page, because a
@@ -65,6 +65,11 @@ export function turnstileTokenField(token: string | null): { turnstileToken: str
 /** True while a configured widget has not produced a token yet: the form waits ("Checking your browser…"). */
 export function needsTurnstileToken(token: string | null): boolean {
   return Boolean(turnstileSiteKey()) && !token;
+}
+
+/** True when this document holds the Turnstile script (rendered by the layout or loaded by a widget). */
+export function turnstileScriptLoaded(): boolean {
+  return typeof document !== "undefined" && (document.getElementById(TURNSTILE_SCRIPT_ID) !== null || window.turnstile !== undefined);
 }
 
 function documentNonce(): string | undefined {

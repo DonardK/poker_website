@@ -139,13 +139,11 @@ node -e "console.log(require('node:crypto').randomBytes(32).toString('hex'))"
 
 Preview uses the same six names with `--env preview` and different values (section 17).
 
-Account security (optional; until they are set, TOTP, passkeys, MFA sign-in and money step-up stay off and answer 503, and play is unaffected). Set the three `AUTH_*` secrets together, before or after the deploy:
+Account security (optional; until they are set, TOTP, passkeys, MFA sign-in and money step-up stay off and answer 503, and play is unaffected). Each `secret put` deploys a new Worker version at once, so put the three `AUTH_*` secrets in one version with `secret bulk`, before or after the deploy. Write the JSON file outside the repository and delete it afterwards:
 
 ```powershell
-npx wrangler secret put AUTH_HMAC_SECRET
-npx wrangler secret put AUTH_ENCRYPTION_KEYS
-npx wrangler secret put AUTH_ENCRYPTION_ACTIVE_KEY_ID
-npx wrangler secret put RESEND_API_KEY
+# auth-secrets.json (outside the repo): {"AUTH_HMAC_SECRET": "...", "AUTH_ENCRYPTION_KEYS": "a1:...", "AUTH_ENCRYPTION_ACTIVE_KEY_ID": "a1"}
+npx wrangler secret bulk C:\path\outside\repo\auth-secrets.json
 ```
 
 | Secret | Value |
@@ -153,9 +151,10 @@ npx wrangler secret put RESEND_API_KEY
 | `AUTH_HMAC_SECRET` | a fourth random string (`randomBytes(48).toString('base64url')`), different from the three above |
 | `AUTH_ENCRYPTION_KEYS` | `a1:` plus a new 64-character hex string, never a game key |
 | `AUTH_ENCRYPTION_ACTIVE_KEY_ID` | `a1` |
-| `RESEND_API_KEY` | optional; also set the `MAIL_FROM` var to an address on a domain verified in Resend, with click and open tracking off |
 
-Keep the auth key with the game keys, separately labelled: losing it disables every enrolled authenticator app. On the https origin the API refuses placeholder, low-entropy or reused keys in either ring.
+Email: first deploy the `MAIL_FROM` var (an address on a domain verified in Resend, with click and open tracking off) through `wrangler.jsonc`, then `npx wrangler secret put RESEND_API_KEY`.
+
+A partial, mistyped or reused value never stops sign-in, refresh or play: the API leaves that feature off (503 on its routes) and logs `CONFIG_SETTING_IGNORED` with the variable name, once per isolate. Check the Worker logs for it after every secret change. Keep the auth key with the game keys, separately labelled: losing it disables every enrolled authenticator app. On the https origin a placeholder, published, low-entropy or reused auth key or `AUTH_HMAC_SECRET` keeps account security off. For the secrets play depends on, the API still refuses what it always refused (missing or short values, equal JWT and ticket secrets, `change`/`replace`/`development` in them) plus the repository's own `test-only` test secrets; a weak or published game key or a low-entropy JWT secret is accepted so players are not locked out, and logged as `WEAK_PRODUCTION_SECRET`: rotate it.
 
 Local `wrangler dev` reads the same six names from `apps/edge/.dev.vars` (gitignored). Copy `apps/edge/.dev.vars.example`. The Turnstile test secret `1x0000000000000000000000000000000AA` always passes. Do not use it in production.
 
@@ -167,7 +166,7 @@ Local `wrangler dev` reads the same six names from `apps/edge/.dev.vars` (gitign
 | --- | --- |
 | `HYPERDRIVE` | binding. Local URL is `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE` in `.dev.vars`, host `127.0.0.1`, user `poker_app` |
 | `TABLES`, `LOBBY`, `USER_SESSIONS` | Durable Object bindings |
-| `RL_GENERAL`, `RL_CREDENTIALS`, `RL_REFRESH`, `RL_ADMIN`, `RL_WS` | rate-limit bindings |
+| `RL_GENERAL`, `RL_CREDENTIALS`, `RL_REFRESH`, `RL_ADMIN`, `RL_WS`, `RL_EMAIL` | rate-limit bindings |
 | `CLIENT_ORIGIN` | var. Demo `https://poker-web.<subdomain>.workers.dev`. Local `http://127.0.0.1:3000` when using the Next dev proxy |
 | `TERMS_VERSION` | var |
 | `JWT_ACCESS_TTL`, `JWT_REFRESH_TTL` | vars |
@@ -185,6 +184,8 @@ Local `wrangler dev` reads the same six names from `apps/edge/.dev.vars` (gitign
 | `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET`, `WS_TICKET_SECRET` | secrets. At least 32 characters, all different |
 | `GAME_ENCRYPTION_KEYS`, `GAME_ENCRYPTION_ACTIVE_KEY_ID` | secrets |
 | `TURNSTILE_SECRET_KEY` | secret |
+| `WEBAUTHN_RP_ID`, `WEBAUTHN_RP_NAME`, `WEBAUTHN_EXTRA_ORIGINS`, `TOTP_ISSUER`, `MAIL_FROM`, `MAIL_REPLY_TO`, `PASSWORD_BREACH_CHECK`, `SECURITY_HOLD_HOURS`, `ADMIN_REQUIRE_PASSKEY` | optional vars (account security). An unusable value is ignored and logged (`CONFIG_SETTING_IGNORED`); passkeys or email then stay off, and `ADMIN_REQUIRE_PASSKEY` falls back to `true` |
+| `AUTH_HMAC_SECRET`, `AUTH_ENCRYPTION_KEYS`, `AUTH_ENCRYPTION_ACTIVE_KEY_ID`, `RESEND_API_KEY` | optional secrets (account security, above) |
 
 `next dev` proxies `/api` and `/ws` to `http://127.0.0.1:8787` (`POKER_EDGE_ORIGIN` overrides the target). Leave `NEXT_PUBLIC_API_URL` and `NEXT_PUBLIC_SOCKET_URL` empty so the browser calls the Next origin. Cookies stay host-only (`Path=/api/auth` and `Path=/ws`). Set both to `http://localhost:4000` only for the legacy `npm run dev` server.
 

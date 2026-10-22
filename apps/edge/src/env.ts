@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { assertProductionSecrets, AUTH_KEY_RING_NAMES, minDistinctCharacters, parseKeyRing, type KeyRing } from "./game/key-ring";
+import { AUTH_KEY_RING_NAMES, jwtSecretProblem, keyRingProblem, minDistinctCharacters, parseKeyRing, PLACEHOLDER_SECRET, type KeyRing } from "./game/key-ring";
+import { logError } from "./http/log";
 
 /** Bindings and vars from wrangler.jsonc. Secrets arrive from wrangler secret / .dev.vars. */
 export interface Env {
@@ -47,7 +48,8 @@ export interface Env {
   /** Team subdomain only, for example "contoso" in https://contoso.cloudflareaccess.com. */
   CF_ACCESS_TEAM_DOMAIN?: string;
   // Account security. Every one is optional: a feature whose setting is absent
-  // is off and its routes fail closed, so a missing value never breaks play.
+  // or unusable is off and its routes fail closed (503), so a missing, partial
+  // or mistyped value never breaks sign-in or play (readEdgeConfig logs it).
   /**
    * Passkey relying-party id. Blank = the CLIENT_ORIGIN host. Otherwise that
    * host or a parent domain of it; never an IP address or a public suffix
@@ -78,8 +80,9 @@ export interface Env {
   /** Blank = no email is delivered (logged on an http origin, dropped on https). */
   RESEND_API_KEY?: string;
   /**
-   * Set all three or none. Blank = TOTP, passkeys, MFA sign-in and money
-   * step-up are disabled (they answer 503, never a misleading 401).
+   * Set all three or none. Blank, partial or unusable = TOTP, passkeys, MFA
+   * sign-in and money step-up are disabled (they answer 503, never a
+   * misleading 401; an unusable set is logged as CONFIG_SETTING_IGNORED).
    * AUTH_HMAC_SECRET keys MFA tickets, challenge tokens and code hashes; the
    * ring (same format as GAME_ENCRYPTION_KEYS, independent keys) seals TOTP secrets.
    */
@@ -133,7 +136,12 @@ function isMailbox(value: string): boolean {
 }
 const displayName = z.string().trim().min(1).max(64).refine((value) => !/[\u0000-\u001f\u007f]/.test(value));
 
-const bindingSchema = z.object({
+/**
+ * The settings play depends on (as before the account-security work). A
+ * missing or malformed one fails every request (HTTP 500): there is no
+ * default secret.
+ */
+const requiredSchema = z.object({
   CLIENT_ORIGIN: z.string().url(),
   TERMS_VERSION: z.string().trim().min(1).max(64),
   JWT_ACCESS_TTL: z.string(),
@@ -155,6 +163,24 @@ const bindingSchema = z.object({
   ADMIN_REQUIRE_CF_ACCESS: flag("false"),
   TURNSTILE_SITE_KEY: z.string(),
   TABLE_DO_LOCATION_HINT: z.string().trim().min(1).max(16),
+  JWT_ACCESS_SECRET: secret("JWT_ACCESS_SECRET"),
+  JWT_REFRESH_SECRET: secret("JWT_REFRESH_SECRET"),
+  WS_TICKET_SECRET: secret("WS_TICKET_SECRET"),
+  GAME_ENCRYPTION_KEYS: z.string().min(1, "GAME_ENCRYPTION_KEYS is required"),
+  GAME_ENCRYPTION_ACTIVE_KEY_ID: z.string().trim().min(1, "GAME_ENCRYPTION_ACTIVE_KEY_ID is required"),
+  TURNSTILE_SECRET_KEY: z.string().min(1, "TURNSTILE_SECRET_KEY is required"),
+});
+
+type RequiredConfig = z.infer<typeof requiredSchema>;
+
+/**
+ * The account-security settings. Every one is optional, and a bad value
+ * never fails a request: the setting is ignored (logged once per isolate,
+ * naming the variable) and its feature stays off, or for a safety switch the
+ * stricter value applies. So a half-finished `wrangler secret put` sequence
+ * or a typo cannot stop sign-in, refresh or play.
+ */
+const optionalSchema = {
   WEBAUTHN_RP_ID: optional(z.string().trim().toLowerCase().max(253).regex(/^[a-z0-9.-]+$/)),
   WEBAUTHN_RP_NAME: optional(displayName),
   WEBAUTHN_EXTRA_ORIGINS: optional(z.string().max(2048)),
@@ -164,23 +190,65 @@ const bindingSchema = z.object({
   PASSWORD_BREACH_CHECK: flag("true"),
   SECURITY_HOLD_HOURS: z.preprocess(blankIsUnset, z.coerce.number().int().min(0).max(168).default(24)),
   ADMIN_REQUIRE_PASSKEY: flag("false"),
-  JWT_ACCESS_SECRET: secret("JWT_ACCESS_SECRET"),
-  JWT_REFRESH_SECRET: secret("JWT_REFRESH_SECRET"),
-  WS_TICKET_SECRET: secret("WS_TICKET_SECRET"),
-  GAME_ENCRYPTION_KEYS: z.string().min(1, "GAME_ENCRYPTION_KEYS is required"),
-  GAME_ENCRYPTION_ACTIVE_KEY_ID: z.string().trim().min(1, "GAME_ENCRYPTION_ACTIVE_KEY_ID is required"),
-  TURNSTILE_SECRET_KEY: z.string().min(1, "TURNSTILE_SECRET_KEY is required"),
   RESEND_API_KEY: optional(z.string().trim().regex(/^re_[A-Za-z0-9_]{8,200}$/)),
   AUTH_HMAC_SECRET: optional(secret("AUTH_HMAC_SECRET").refine((value) => new Set(value).size >= minDistinctCharacters(value))),
   AUTH_ENCRYPTION_KEYS: optional(z.string().trim().min(1)),
   AUTH_ENCRYPTION_ACTIVE_KEY_ID: optional(z.string().trim().min(1)),
-});
+};
 
-type RawConfig = z.infer<typeof bindingSchema>;
+type OptionalName = keyof typeof optionalSchema;
+type OptionalConfig = { [K in OptionalName]: z.infer<(typeof optionalSchema)[K]> };
+
+/**
+ * Used for a setting that is present but invalid. Undefined is "not set"; the
+ * feature that needs it is then off (readSecurity, readWebAuthn, readMail).
+ * The safety switches take their stricter value.
+ */
+const INVALID_FALLBACK: OptionalConfig = {
+  WEBAUTHN_RP_ID: undefined,
+  WEBAUTHN_RP_NAME: undefined,
+  WEBAUTHN_EXTRA_ORIGINS: undefined,
+  TOTP_ISSUER: undefined,
+  MAIL_FROM: undefined,
+  MAIL_REPLY_TO: undefined,
+  PASSWORD_BREACH_CHECK: "true",
+  SECURITY_HOLD_HOURS: 24,
+  ADMIN_REQUIRE_PASSKEY: "true",
+  RESEND_API_KEY: undefined,
+  AUTH_HMAC_SECRET: undefined,
+  AUTH_ENCRYPTION_KEYS: undefined,
+  AUTH_ENCRYPTION_ACTIVE_KEY_ID: undefined,
+};
+
+/** Settings ignored while reading one config, and weak production secrets that were accepted. Variable names only, never values. */
+export interface ConfigProblems {
+  /** An optional setting was invalid, or a feature's settings did not fit together: that feature is off. */
+  ignored: string[];
+  /** A required production secret looks weak or published. Accepted (play must keep working) but logged: rotate it. */
+  weak: string[];
+}
+
+function readOptional(env: Env, problems: ConfigProblems): { raw: OptionalConfig; invalid: ReadonlySet<OptionalName> } {
+  const raw = {} as Record<OptionalName, unknown>;
+  const invalid = new Set<OptionalName>();
+  for (const name of Object.keys(optionalSchema) as OptionalName[]) {
+    const parsed = optionalSchema[name].safeParse((env as unknown as Record<string, unknown>)[name]);
+    if (parsed.success) {
+      raw[name] = parsed.data;
+    } else {
+      raw[name] = INVALID_FALLBACK[name];
+      invalid.add(name);
+      problems.ignored.push(`${name} is invalid and was ignored`);
+    }
+  }
+  return { raw: raw as OptionalConfig, invalid };
+}
 
 const DEFAULT_SITE_NAME = "Hold'em Live";
 /** Public-suffix hosts this deployment can sit under; a passkey RP ID can never be one (Public Suffix List). */
 const PUBLIC_SUFFIXES = new Set(["workers.dev", "pages.dev"]);
+/** Main's refusal for the JWT and WebSocket ticket secrets, plus the repository's own test marker (those values are public). */
+const REFUSED_JWT_PHRASE = /change|replace|development|test-only/i;
 
 export type MailConfig =
   | { transport: "resend"; apiKey: string; from: string; replyTo: string | null }
@@ -227,9 +295,9 @@ export interface EdgeConfig {
   gameEncryptionKeys: string;
   gameEncryptionActiveKeyId: string;
   turnstileSecretKey: string;
-  /** Account-security secrets; null when unset (TOTP, passkeys, MFA sign-in and money step-up fail closed). */
+  /** Account-security secrets; null when unset or unusable (TOTP, passkeys, MFA sign-in and money step-up fail closed). */
   security: SecurityConfig | null;
-  /** Null when security is null, or the RP ID would be an IP address, or the origin is not a secure context. */
+  /** Null when security is null, a WEBAUTHN_* setting is unusable, the RP ID would be an IP address, or the origin is not a secure context. */
   webauthn: WebAuthnConfig | null;
   totpIssuer: string;
   mail: MailConfig;
@@ -247,69 +315,143 @@ function isLocalhost(host: string): boolean {
   return host === "localhost" || host.endsWith(".localhost");
 }
 
-/** All three account-security secrets or none; the ring must parse and share no key with the game ring. */
-function readSecurity(raw: RawConfig, gameRing: () => KeyRing, httpsOrigin: boolean): SecurityConfig | null {
-  const values = [raw.AUTH_HMAC_SECRET, raw.AUTH_ENCRYPTION_KEYS, raw.AUTH_ENCRYPTION_ACTIVE_KEY_ID];
-  if (values.every((value) => value === undefined)) return null;
-  if (values.some((value) => value === undefined)) {
-    throw new Error("Set AUTH_HMAC_SECRET, AUTH_ENCRYPTION_KEYS and AUTH_ENCRYPTION_ACTIVE_KEY_ID together, or none of them");
+const AUTH_SECRET_NAMES = ["AUTH_HMAC_SECRET", "AUTH_ENCRYPTION_KEYS", "AUTH_ENCRYPTION_ACTIVE_KEY_ID"] as const;
+
+/**
+ * All three account-security secrets or none. The ring must parse and share
+ * no key with the game ring, and AUTH_HMAC_SECRET must be independent of every
+ * other secret and key; on https the production checks apply too. Any problem
+ * leaves security off (null) and is reported, never thrown.
+ */
+function readSecurity(
+  required: RequiredConfig,
+  opt: OptionalConfig,
+  invalid: ReadonlySet<OptionalName>,
+  gameRing: () => KeyRing,
+  httpsOrigin: boolean,
+  problems: ConfigProblems,
+): SecurityConfig | null {
+  const values = [opt.AUTH_HMAC_SECRET, opt.AUTH_ENCRYPTION_KEYS, opt.AUTH_ENCRYPTION_ACTIVE_KEY_ID];
+  const malformed = AUTH_SECRET_NAMES.some((name) => invalid.has(name));
+  if (!malformed && values.every((value) => value === undefined)) return null;
+  try {
+    // A malformed value was already reported by name; the other two alone are not a usable set.
+    if (malformed) throw new Error("AUTH_* secrets are unusable (see the setting named above)");
+    if (values.some((value) => value === undefined)) {
+      throw new Error("Set AUTH_HMAC_SECRET, AUTH_ENCRYPTION_KEYS and AUTH_ENCRYPTION_ACTIVE_KEY_ID together, or none of them");
+    }
+    const security = { hmacSecret: opt.AUTH_HMAC_SECRET!, authKeys: opt.AUTH_ENCRYPTION_KEYS!, authActiveKeyId: opt.AUTH_ENCRYPTION_ACTIVE_KEY_ID! };
+    const hmac = security.hmacSecret.trim();
+    if ([required.JWT_ACCESS_SECRET, required.JWT_REFRESH_SECRET, required.WS_TICKET_SECRET].includes(security.hmacSecret)) {
+      throw new Error("JWT, WebSocket ticket and AUTH_HMAC_SECRET secrets must be distinct");
+    }
+    if (httpsOrigin && PLACEHOLDER_SECRET.test(hmac)) throw new Error("Use an independent random AUTH_HMAC_SECRET");
+    const ring = parseKeyRing({ keys: security.authKeys, activeKeyId: security.authActiveKeyId }, AUTH_KEY_RING_NAMES);
+    const gameKeys = new Map([...gameRing().keys].map(([kid, key]) => [key.toString("hex"), kid]));
+    if (gameKeys.has(hmac.toLowerCase())) throw new Error(`AUTH_HMAC_SECRET reuses game encryption key "${gameKeys.get(hmac.toLowerCase())}"; every purpose needs an independent secret`);
+    for (const [kid, key] of ring.keys) {
+      const hex = key.toString("hex");
+      if (gameKeys.has(hex)) throw new Error(`AUTH_ENCRYPTION_KEYS key "${kid}" is also a game encryption key; every purpose needs an independent key`);
+      if (hmac.toLowerCase() === hex) throw new Error(`AUTH_HMAC_SECRET reuses encryption key "${kid}"; every purpose needs an independent secret`);
+    }
+    if (httpsOrigin) {
+      const problem = keyRingProblem(ring, [["JWT_ACCESS_SECRET", required.JWT_ACCESS_SECRET], ["JWT_REFRESH_SECRET", required.JWT_REFRESH_SECRET]]);
+      if (problem) throw new Error(`AUTH_ENCRYPTION_KEYS: ${problem}`);
+    }
+    return security;
+  } catch (err) {
+    problems.ignored.push(`${err instanceof Error ? err.message : "AUTH_* secrets are unusable"}; TOTP, passkeys, MFA sign-in and money step-up are off`);
+    return null;
   }
-  const security = { hmacSecret: raw.AUTH_HMAC_SECRET!, authKeys: raw.AUTH_ENCRYPTION_KEYS!, authActiveKeyId: raw.AUTH_ENCRYPTION_ACTIVE_KEY_ID! };
-  const ring = parseKeyRing({ keys: security.authKeys, activeKeyId: security.authActiveKeyId }, AUTH_KEY_RING_NAMES);
-  const gameKeys = new Set([...gameRing().keys.values()].map((key) => key.toString("hex")));
-  for (const [kid, key] of ring.keys) {
-    const hex = key.toString("hex");
-    if (gameKeys.has(hex)) throw new Error(`AUTH_ENCRYPTION_KEYS key "${kid}" is also a game encryption key; every purpose needs an independent key`);
-    if (security.hmacSecret.trim().toLowerCase() === hex) throw new Error(`AUTH_HMAC_SECRET reuses encryption key "${kid}"; every purpose needs an independent secret`);
-  }
-  if (httpsOrigin) assertProductionSecrets(ring, raw.JWT_ACCESS_SECRET, raw.JWT_REFRESH_SECRET);
-  return security;
 }
 
-function readWebAuthn(raw: RawConfig, origin: URL, security: SecurityConfig | null): WebAuthnConfig | null {
-  const host = origin.hostname.toLowerCase();
-  const explicit = raw.WEBAUTHN_RP_ID;
-  if (explicit !== undefined) {
-    if (isIpLiteral(explicit)) throw new Error("WEBAUTHN_RP_ID must be a domain name, not an IP address");
-    if (host !== explicit && !host.endsWith(`.${explicit}`)) throw new Error("WEBAUTHN_RP_ID must be the CLIENT_ORIGIN host or a parent domain of it");
-    if (PUBLIC_SUFFIXES.has(explicit) || (!explicit.includes(".") && explicit !== "localhost")) {
-      throw new Error("WEBAUTHN_RP_ID cannot be a public suffix; use the full host");
+function readWebAuthn(opt: OptionalConfig, invalid: ReadonlySet<OptionalName>, origin: URL, security: SecurityConfig | null, problems: ConfigProblems): WebAuthnConfig | null {
+  try {
+    // A typo in the RP ID must not register passkeys under another one: an unusable value turns passkeys off.
+    if (invalid.has("WEBAUTHN_RP_ID") || invalid.has("WEBAUTHN_EXTRA_ORIGINS")) throw new Error("WEBAUTHN_* settings are unusable (see the setting named above)");
+    const host = origin.hostname.toLowerCase();
+    const explicit = opt.WEBAUTHN_RP_ID;
+    if (explicit !== undefined) {
+      if (isIpLiteral(explicit)) throw new Error("WEBAUTHN_RP_ID must be a domain name, not an IP address");
+      if (host !== explicit && !host.endsWith(`.${explicit}`)) throw new Error("WEBAUTHN_RP_ID must be the CLIENT_ORIGIN host or a parent domain of it");
+      if (PUBLIC_SUFFIXES.has(explicit) || (!explicit.includes(".") && explicit !== "localhost")) {
+        throw new Error("WEBAUTHN_RP_ID cannot be a public suffix; use the full host");
+      }
     }
-  }
-  const origins = [origin.origin];
-  for (const entry of (raw.WEBAUTHN_EXTRA_ORIGINS ?? "").split(",").map((part) => part.trim()).filter(Boolean)) {
-    let extra: URL;
-    try { extra = new URL(entry); } catch { throw new Error("WEBAUTHN_EXTRA_ORIGINS must be a comma list of https origins"); }
-    if (extra.protocol !== "https:" || extra.username || extra.password || extra.pathname !== "/" || extra.search || extra.hash || isIpLiteral(extra.hostname)) {
-      throw new Error("WEBAUTHN_EXTRA_ORIGINS must be a comma list of https origins");
+    const origins = [origin.origin];
+    for (const entry of (opt.WEBAUTHN_EXTRA_ORIGINS ?? "").split(",").map((part) => part.trim()).filter(Boolean)) {
+      let extra: URL;
+      try { extra = new URL(entry); } catch { throw new Error("WEBAUTHN_EXTRA_ORIGINS must be a comma list of https origins"); }
+      if (extra.protocol !== "https:" || extra.username || extra.password || extra.pathname !== "/" || extra.search || extra.hash || isIpLiteral(extra.hostname)) {
+        throw new Error("WEBAUTHN_EXTRA_ORIGINS must be a comma list of https origins");
+      }
+      if (!origins.includes(extra.origin)) origins.push(extra.origin);
     }
-    if (!origins.includes(extra.origin)) origins.push(extra.origin);
+    if (!security) return null;
+    const rpId = explicit ?? host;
+    // 127.0.0.1 is not a valid RP ID, and WebAuthn needs a secure context (https or localhost).
+    if (isIpLiteral(rpId) || (origin.protocol !== "https:" && !isLocalhost(host))) return null;
+    return { rpId, rpName: opt.WEBAUTHN_RP_NAME ?? DEFAULT_SITE_NAME, origins };
+  } catch (err) {
+    problems.ignored.push(`${err instanceof Error ? err.message : "WEBAUTHN_* settings are unusable"}; passkeys are off`);
+    return null;
   }
-  if (!security) return null;
-  const rpId = explicit ?? host;
-  // 127.0.0.1 is not a valid RP ID, and WebAuthn needs a secure context (https or localhost).
-  if (isIpLiteral(rpId) || (origin.protocol !== "https:" && !isLocalhost(host))) return null;
-  return { rpId, rpName: raw.WEBAUTHN_RP_NAME ?? DEFAULT_SITE_NAME, origins };
 }
 
-function readMail(raw: RawConfig, origin: URL): MailConfig {
-  if (raw.RESEND_API_KEY === undefined) return { transport: "sink", exposeLinks: origin.protocol === "http:" };
-  if (raw.MAIL_FROM === undefined) throw new Error("MAIL_FROM is required when RESEND_API_KEY is set");
-  return { transport: "resend", apiKey: raw.RESEND_API_KEY, from: raw.MAIL_FROM, replyTo: raw.MAIL_REPLY_TO ?? null };
+function readMail(opt: OptionalConfig, invalid: ReadonlySet<OptionalName>, origin: URL, problems: ConfigProblems): MailConfig {
+  const sink: MailConfig = { transport: "sink", exposeLinks: origin.protocol === "http:" };
+  if (opt.RESEND_API_KEY === undefined) {
+    if (invalid.has("RESEND_API_KEY")) problems.ignored.push("Email is off until RESEND_API_KEY is fixed");
+    return sink;
+  }
+  if (opt.MAIL_FROM === undefined) {
+    problems.ignored.push("MAIL_FROM is required when RESEND_API_KEY is set; email is off");
+    return sink;
+  }
+  return { transport: "resend", apiKey: opt.RESEND_API_KEY, from: opt.MAIL_FROM, replyTo: opt.MAIL_REPLY_TO ?? null };
 }
 
 /**
- * Validate bindings and secrets for one request. Throws Error (no secret
- * values) when a required secret is missing or a TTL is out of range.
- * Callers turn that into HTTP 500. There is no default secret.
+ * The production (https) checks on the secrets play depends on. Only what
+ * the API refused before the account-security work stays fatal, plus the
+ * repository's own published test secrets: anything else is reported as
+ * weak and accepted, so a deploy never locks every player out over a
+ * heuristic. The game ring is parsed lazily, as the table actors do.
  */
-export function readEdgeConfig(env: Env): EdgeConfig {
-  const parsed = bindingSchema.safeParse(env);
+function checkRequiredSecrets(required: RequiredConfig, gameRing: () => KeyRing, httpsOrigin: boolean, problems: ConfigProblems): void {
+  const secrets = [required.JWT_ACCESS_SECRET, required.JWT_REFRESH_SECRET, required.WS_TICKET_SECRET];
+  if (new Set(secrets).size !== secrets.length) throw new Error("JWT and WebSocket ticket secrets must be distinct");
+  if (!httpsOrigin) return;
+  if (REFUSED_JWT_PHRASE.test(secrets.join(""))) throw new Error("Use independent random JWT and WebSocket ticket secrets");
+  if (PLACEHOLDER_SECRET.test(secrets.join(""))) problems.weak.push("A JWT or WebSocket ticket secret looks like a placeholder; rotate it");
+  const jwt = jwtSecretProblem(required.JWT_ACCESS_SECRET, required.JWT_REFRESH_SECRET);
+  if (jwt) problems.weak.push(jwt);
+  let ring: KeyRing;
+  try {
+    ring = gameRing();
+  } catch (err) {
+    // Table actors refuse this ring themselves (as before); sign-in does not need it.
+    problems.weak.push(err instanceof Error ? err.message : "GAME_ENCRYPTION_KEYS is unusable");
+    return;
+  }
+  const keys = keyRingProblem(ring, [["JWT_ACCESS_SECRET", required.JWT_ACCESS_SECRET], ["JWT_REFRESH_SECRET", required.JWT_REFRESH_SECRET]]);
+  if (keys) problems.weak.push(`GAME_ENCRYPTION_KEYS: ${keys}`);
+}
+
+/**
+ * Validate bindings and secrets for one request and report every ignored or
+ * weak setting. Throws Error (no secret values) only when a setting play
+ * depends on is missing or malformed, or a TTL is out of range; callers turn
+ * that into HTTP 500. There is no default secret.
+ */
+export function readEdgeConfigReport(env: Env): { config: EdgeConfig; problems: ConfigProblems } {
+  const parsed = requiredSchema.safeParse(env);
   if (!parsed.success) {
     const name = parsed.error.issues[0]?.path.join(".") || "config";
     throw new Error(`Invalid edge config: ${name}`);
   }
   const raw = parsed.data;
+  const problems: ConfigProblems = { ignored: [], weak: [] };
   const accessTtlSeconds = boundedDurationSeconds(raw.JWT_ACCESS_TTL, "JWT_ACCESS_TTL", 60, 3_600, "1 minute and 60 minutes");
   const refreshTtlSeconds = boundedDurationSeconds(raw.JWT_REFRESH_TTL, "JWT_REFRESH_TTL", 3_600, 30 * 86_400, "1 hour and 30 days");
   const sessionIdleTtlMs = durationMs("SESSION_IDLE_TTL", raw.SESSION_IDLE_TTL);
@@ -317,19 +459,14 @@ export function readEdgeConfig(env: Env): EdgeConfig {
   if (sessionIdleTtlMs > sessionAbsoluteTtlMs) throw new Error("SESSION_IDLE_TTL cannot exceed SESSION_ABSOLUTE_TTL");
   if (raw.TIME_BANK_INITIAL_MS > raw.TIME_BANK_MAX_MS) throw new Error("TIME_BANK_INITIAL_MS cannot exceed TIME_BANK_MAX_MS");
   if (raw.TIME_BANK_REFILL_MS > raw.TIME_BANK_MAX_MS) throw new Error("TIME_BANK_REFILL_MS cannot exceed TIME_BANK_MAX_MS");
-  const secrets = [raw.JWT_ACCESS_SECRET, raw.JWT_REFRESH_SECRET, raw.WS_TICKET_SECRET, ...(raw.AUTH_HMAC_SECRET ? [raw.AUTH_HMAC_SECRET] : [])];
-  if (new Set(secrets).size !== secrets.length) throw new Error("JWT, WebSocket ticket and AUTH_HMAC_SECRET secrets must be distinct");
   const origin = new URL(raw.CLIENT_ORIGIN);
   const httpsOrigin = origin.protocol === "https:";
-  if (httpsOrigin && /change|replace|development/i.test(secrets.join(""))) {
-    throw new Error("Use independent random JWT, WebSocket ticket and AUTH_HMAC_SECRET secrets");
-  }
   let parsedGameRing: KeyRing | undefined;
   const gameRing = () => (parsedGameRing ??= parseKeyRing({ keys: raw.GAME_ENCRYPTION_KEYS, activeKeyId: raw.GAME_ENCRYPTION_ACTIVE_KEY_ID }));
-  // Production (https): placeholder, low-entropy or reused keys are refused (key-ring.ts).
-  if (httpsOrigin) assertProductionSecrets(gameRing(), raw.JWT_ACCESS_SECRET, raw.JWT_REFRESH_SECRET);
-  const security = readSecurity(raw, gameRing, httpsOrigin);
-  return {
+  checkRequiredSecrets(raw, gameRing, httpsOrigin, problems);
+  const { raw: opt, invalid } = readOptional(env, problems);
+  const security = readSecurity(raw, opt, invalid, gameRing, httpsOrigin, problems);
+  const config: EdgeConfig = {
     clientOrigin: origin.origin,
     termsVersion: raw.TERMS_VERSION,
     jwtAccessTtl: `${accessTtlSeconds}s`,
@@ -357,11 +494,37 @@ export function readEdgeConfig(env: Env): EdgeConfig {
     gameEncryptionActiveKeyId: raw.GAME_ENCRYPTION_ACTIVE_KEY_ID,
     turnstileSecretKey: raw.TURNSTILE_SECRET_KEY,
     security,
-    webauthn: readWebAuthn(raw, origin, security),
-    totpIssuer: raw.TOTP_ISSUER ?? DEFAULT_SITE_NAME,
-    mail: readMail(raw, origin),
-    passwordBreachCheck: isOn(raw.PASSWORD_BREACH_CHECK),
-    securityHoldMs: raw.SECURITY_HOLD_HOURS * 3_600_000,
-    adminRequirePasskey: isOn(raw.ADMIN_REQUIRE_PASSKEY),
+    webauthn: readWebAuthn(opt, invalid, origin, security, problems),
+    totpIssuer: opt.TOTP_ISSUER ?? DEFAULT_SITE_NAME,
+    mail: readMail(opt, invalid, origin, problems),
+    passwordBreachCheck: isOn(opt.PASSWORD_BREACH_CHECK),
+    securityHoldMs: opt.SECURITY_HOLD_HOURS * 3_600_000,
+    adminRequirePasskey: isOn(opt.ADMIN_REQUIRE_PASSKEY),
   };
+  return { config, problems };
+}
+
+/** Problems already logged by this isolate (readEdgeConfig runs on every request). */
+const loggedProblems = new Set<string>();
+const LOGGED_PROBLEMS_MAX = 64;
+
+function logOnce(key: string, log: () => void): void {
+  if (loggedProblems.has(key) || loggedProblems.size >= LOGGED_PROBLEMS_MAX) return;
+  loggedProblems.add(key);
+  log();
+}
+
+/**
+ * readEdgeConfigReport, logging each ignored or weak setting once per
+ * isolate (variable names only). Throws only for the settings play needs.
+ */
+export function readEdgeConfig(env: Env): EdgeConfig {
+  const { config, problems } = readEdgeConfigReport(env);
+  for (const detail of problems.ignored) {
+    logOnce(`ignored:${detail}`, () => logError({ security: "CONFIG_SETTING_IGNORED", detail }, "an account-security setting is unusable; its feature is off until it is fixed"));
+  }
+  for (const detail of problems.weak) {
+    logOnce(`weak:${detail}`, () => logError({ security: "WEAK_PRODUCTION_SECRET", detail }, "a production secret looks weak or published; accepted so play continues, rotate it"));
+  }
+  return config;
 }

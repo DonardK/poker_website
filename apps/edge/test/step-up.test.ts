@@ -164,6 +164,8 @@ describe("money step-up grants", () => {
     const h = moneyHarness();
     const hal = await signUp(h, "Hal_Grant", { verified: true });
     const { secret } = await enableTotp(h, hal);
+    // Enrolled with a password-only step-up: withdrawals are held (see the enrolment test below). Let it pass.
+    h.db.user(hal.userId)!.securityHoldUntil = null;
     const grant = (proof: unknown, purpose = "withdrawal", bind = BIND) => h.request("/auth/step-up", { token: hal.accessToken, body: { purpose, bind, proof } });
     expect((await grant({ kind: "totp", password: "wrong password", code: await codeAt(secret, 1) })).status).toBe(401);
     const badCode = await grant({ kind: "totp", password: PASSWORD, code: "000000" });
@@ -251,6 +253,8 @@ describe("money step-up grants", () => {
     const h = moneyHarness();
     const kai = await signUp(h, "Kai_Grant", { verified: true });
     const auth = await addPasskey(h, kai);
+    // Added with a password-only step-up: withdrawals are held. Let it pass.
+    h.db.user(kai.userId)!.securityHoldUntil = null;
     const options = async (body: unknown) => (await h.request("/auth/reauth/passkey/options", { token: kai.accessToken, body })).body;
     const grant = async (opts: { challengeToken: string; options: { challenge: string } }, purpose = "withdrawal", bind = BIND) =>
       h.request("/auth/step-up", { token: kai.accessToken, body: { purpose, bind, proof: { kind: "passkey", challengeToken: opts.challengeToken, credential: await auth.get(opts.options) } } });
@@ -280,6 +284,36 @@ describe("money step-up grants", () => {
     expect((await grant(held, "payout_destination")).body.code).toBe("SECURITY_HOLD");
   }, SLOW);
 
+  it("a factor enrolled with only the password holds withdrawals, so it cannot replace the emailed code for money at once", async () => {
+    // Someone who knows only the password of a password-only account (no access to its inbox).
+    const h = moneyHarness();
+    const ada = await signUp(h, "Ada_Hold", { verified: true });
+    const withdraw = (code: string) => h.request("/auth/step-up", { token: ada.accessToken, body: { purpose: "withdrawal", bind: BIND, proof: { kind: "totp", password: PASSWORD, code } } });
+    expect((await withdraw("123456")).body.code).toBe("STEP_UP_METHOD_NOT_ALLOWED");
+    const { secret } = await enableTotp(h, ada);
+    expect(h.db.user(ada.userId)!.securityHoldUntil!.getTime()).toBeGreaterThan(Date.now());
+    const held = await withdraw(await codeAt(secret, 1));
+    expect([held.status, held.body.code]).toEqual([403, "SECURITY_HOLD"]);
+    // The owner's notice ("This wasn't me") is the way out; the hold gives them time to see it.
+    expect(h.mails.at(-1)!.kind).toBe("TOTP_ENABLED");
+
+    // The same for a first passkey.
+    const bo = await signUp(h, "Bo_Hold", { verified: true });
+    await addPasskey(h, bo);
+    expect(h.db.user(bo.userId)!.securityHoldUntil!.getTime()).toBeGreaterThan(Date.now());
+
+    // A factor added after a step-up with an existing second factor sets no hold.
+    const cy = await signUp(h, "Cy_Hold", { verified: true });
+    const cyKey = await addPasskey(h, cy);
+    h.db.user(cy.userId)!.securityHoldUntil = null;
+    const reauth = (await h.request("/auth/reauth/passkey/options", { token: cy.accessToken, body: {} })).body;
+    const stepped = await h.request("/auth/reauth/passkey", { token: cy.accessToken, body: { challengeToken: reauth.challengeToken, credential: await cyKey.get(reauth.options) } });
+    expect(stepped.status).toBe(200);
+    const setup = await h.request("/account/2fa/totp/setup", { token: cy.accessToken, body: {} });
+    expect((await h.request("/account/2fa/totp/enable", { token: cy.accessToken, body: { code: await codeAt(setup.body.secret) } })).status).toBe(200);
+    expect(h.db.user(cy.userId)!.securityHoldUntil).toBeNull();
+  }, SLOW);
+
   it("is unavailable (503) without the account-security secrets", async () => {
     const h = createHarness({ AUTH_HMAC_SECRET: "", AUTH_ENCRYPTION_KEYS: "", AUTH_ENCRYPTION_ACTIVE_KEY_ID: "" });
     const lea = await signUp(h, "Lea_Grant", { verified: true });
@@ -301,9 +335,10 @@ describe("account overview", () => {
       pendingEmail: null,
       totp: { enabled: true, backupCodesRemaining: 10 },
       passkeys: [],
-      securityHoldUntil: null,
       capabilities: { email: false, passkeys: true, totp: true },
     });
+    // The first second factor was enrolled after a password-only step-up: withdrawals are held.
+    expect(Date.parse(security.body.securityHoldUntil)).toBeGreaterThan(Date.now());
     expect(Date.parse(security.body.passwordChangedAt)).toBeGreaterThan(0);
     expect(Date.parse(security.body.stepUpUntil)).toBeGreaterThan(Date.now());
     expect(Date.parse(security.body.totp.enabledAt)).toBeGreaterThan(0);

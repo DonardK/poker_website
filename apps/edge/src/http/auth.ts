@@ -14,9 +14,11 @@ import { checkPassword } from "../auth/password-check";
 import { recordSecurityEvent } from "../auth/security-events";
 import { newPasswordSchema, passwordProblem, presentedPasswordSchema } from "../auth/password-policy";
 import { passwords } from "../auth/password";
-import { clearSecondFactorFailures, recordSecondFactorFailure, secondFactorRetryAfter, verifySecondFactor } from "../auth/second-factor";
+import {
+  clearSecondFactorFailures, recordSecondFactorFailure, reserveSecondFactorAttempt, secondFactorLockedFor, verifySecondFactor,
+} from "../auth/second-factor";
 import { hashRefresh, idleTtlMs, REFRESH_GRACE_MS, revokeSession, revokeUserSessions, sessionExpiry } from "../auth/sessions";
-import { consumeNonce, nonceExpiry, signMfaTicket, verifyMfaTicket } from "../auth/tickets";
+import { consumeNonce, nonceExpiry, nonceUsed, signMfaTicket, verifyMfaTicket } from "../auth/tickets";
 import { signRefreshToken, verifyRefreshToken } from "../auth/tokens";
 import { canonicalUsername, checkChosenUsername } from "../auth/usernames";
 import { emailLink, linkMail, prepareNotice } from "../mail/notify";
@@ -294,15 +296,22 @@ export function registerAuth(app: Hono<{ Bindings: Env }>): void {
     if (!user || user.kind !== "HUMAN" || user.isGuest || user.credentialsVersion !== claims.cv || user.passwordResetRequired) return expired();
     const known = await findKnownDevice(db, user.id, device.hash);
     const scope = { userId: user.id, knownDeviceHash: known ? device.hash : null };
-    const retryAfter = secondFactorRetryAfter(user, scope, now.getTime());
-    if (retryAfter > 0) return mfaLocked(c, retryAfter);
+    const locked = secondFactorLockedFor(user, scope, now);
+    if (locked > 0) return mfaLocked(c, locked);
+    // A ticket already used, or burned when its wrong codes started a lock, needs the password (and Turnstile) again.
+    if (await nonceUsed(db, claims.jti)) return expired();
+    // Counted before the code is checked, so parallel guesses are held to the lock schedule.
+    const attempt = await reserveSecondFactorAttempt(db, user, scope, now);
+    if (!attempt.ok) return mfaLocked(c, attempt.retryAfterS);
     const result = await verifySecondFactor(db, config, user.id, parsed.data.method, parsed.data.code, now);
     if (!result.ok) {
-      await recordSecondFactorFailure(db, scope, now, facts);
+      await recordSecondFactorFailure(db, attempt, facts);
+      if (attempt.lockMs) await consumeNonce(db, claims.jti, "mfa:login", nonceExpiry(claims));
       return c.json({ error: "Invalid code", code: "MFA_INVALID" }, 401);
     }
     if (!await consumeNonce(db, claims.jti, "mfa:login", nonceExpiry(claims))) return expired();
-    if (scope.knownDeviceHash) await clearSecondFactorFailures(db, scope, { mfaFailedCount: 0, mfaLockedUntil: null });
+    // The account-wide counter is reset by the sign-in itself (signedInData).
+    if (scope.knownDeviceHash) await clearSecondFactorFailures(db, attempt);
     const history = await addressHistory(db, user.id, facts.ip, now.getTime());
     return completeSignIn(c, db, {
       user: (tx, at) => tx.user.update({ where: { id: user.id }, data: signedInData(at) }) as Promise<AccountUser>,

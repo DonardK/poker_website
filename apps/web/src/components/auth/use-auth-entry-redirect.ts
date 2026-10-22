@@ -2,6 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { leaveAuthPage } from "@/lib/session-actions";
 import { useAuthStore } from "@/stores/session";
 
 /**
@@ -14,7 +15,7 @@ export function useAuthEntryRedirect({ next, paused }: { next: string; paused: b
   const signedIn = useAuthStore((s) => s.hydrated && s.user !== null);
   const redirecting = signedIn && !paused;
   useEffect(() => {
-    if (redirecting) router.replace(next);
+    if (redirecting) leaveAuthPage(router, next);
   }, [redirecting, next, router]);
   return redirecting;
 }

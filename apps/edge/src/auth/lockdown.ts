@@ -18,14 +18,21 @@ import { revokeUserSessions } from "./sessions";
  *    since are soft-removed (this order: one created and removed since ends removed);
  * 4. TOTP enabled since is deleted with its backup codes; TOTP disabled since
  *    is re-enabled; backup codes created since (a regeneration) are deleted;
- * 5. an email change since is reverted (data.revertEmail), when that address is still free;
+ * 5. the email goes back to the address this link was mailed to (verified),
+ *    when that address is still free: it was the account's verified address
+ *    at the incident instant (for an email-change notice, the address it
+ *    replaced), so an email change since is undone whichever notice was used;
  * 6. devices first seen since are forgotten, so the next sign-in there alerts again;
  * 7. outstanding reset, email-change and verification links and emailed
- *    step-up codes are voided;
+ *    step-up codes are voided, and so is every other "This wasn't me" link
+ *    sent at or after the incident: those may have gone to an address the
+ *    attacker set, and must not undo the owner's recovery later;
  * 8. a fresh 30-minute reset token is issued and returned, so the same page
  *    can set the new password.
  *
  * Passkeys left after this predate the incident, so passkey sign-in stays open.
+ * Links sent before the incident stay usable (an earlier change, such as a
+ * passkey added before an email change, can still be undone from its own notice).
  */
 
 export interface LockdownOutcome {
@@ -104,14 +111,16 @@ export async function applyLockdown(tx: AppDb, input: {
     if (totp !== "removed") await tx.userBackupCode.deleteMany({ where: { userId: user.id, createdAt: { gte: incidentAt } } });
   }
 
+  // The address this link was mailed to, not data.revertEmail: a new-sign-in
+  // alert redeemed after an email change must restore the address too.
   let email = updated.email;
   let emailReverted = false;
-  const revertEmail = typeof data.revertEmail === "string" ? data.revertEmail : null;
-  if (revertEmail && revertEmail !== updated.email) {
-    const holder = await tx.user.findUnique({ where: { email: revertEmail }, select: { id: true } }) as { id: string } | null;
+  const restoreTo = token.email.trim().toLowerCase();
+  if (restoreTo && restoreTo !== updated.email) {
+    const holder = await tx.user.findUnique({ where: { email: restoreTo }, select: { id: true } }) as { id: string } | null;
     if (!holder) {
-      await tx.user.update({ where: { id: user.id }, data: { email: revertEmail, emailVerifiedAt: now }, select: { id: true } });
-      email = revertEmail;
+      await tx.user.update({ where: { id: user.id }, data: { email: restoreTo, emailVerifiedAt: now }, select: { id: true } });
+      email = restoreTo;
       emailReverted = true;
       await recordSecurityEvent(tx, { userId: user.id, type: "EMAIL_CHANGED", facts: input.facts, data: { reverted: true, by: "lockdown" } });
     } else {
@@ -121,6 +130,10 @@ export async function applyLockdown(tx: AppDb, input: {
 
   await tx.knownDevice.deleteMany({ where: { userId: user.id, firstSeenAt: { gte: incidentAt } } });
   await voidEmailTokens(tx, user.id, ["PASSWORD_RESET", "EMAIL_CHANGE", "VERIFY_EMAIL"], now);
+  await tx.emailToken.updateMany({
+    where: { userId: user.id, purpose: "SECURITY_LOCKDOWN", consumedAt: null, expiresAt: { gt: now }, createdAt: { gte: incidentAt } },
+    data: { consumedAt: now },
+  });
   await tx.stepUpEmailChallenge.updateMany({ where: { userId: user.id, consumedAt: null }, data: { consumedAt: now } });
 
   const reset = await issueEmailToken(tx, {

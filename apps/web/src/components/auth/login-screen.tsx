@@ -27,7 +27,7 @@ import { focusSoon } from "@/lib/focus";
 import {
   forgetAccount, forgetAllAccounts, readRememberedAccounts, subscribeRememberedAccounts, type RememberedAccount,
 } from "@/lib/remembered-accounts";
-import { completeSignIn, signOut } from "@/lib/session-actions";
+import { completeSignIn, leaveAuthPage, signOut } from "@/lib/session-actions";
 import { cancelPasskeyCeremony } from "@/lib/webauthn";
 import { useAuthStore } from "@/stores/session";
 
@@ -276,7 +276,7 @@ export function LoginScreen({ next, as, switching, notice }: LoginScreenProps) {
     return (
       <section aria-labelledby="signed-in-heading" className="flex flex-col gap-4">
         <h1 id="signed-in-heading" className="font-[family-name:var(--font-display)] text-3xl">You&apos;re signed in as {user.username}</h1>
-        <Button onClick={() => router.replace(next)}>Continue as {user.username}</Button>
+        <Button onClick={() => leaveAuthPage(router, next)}>Continue as {user.username}</Button>
         <Button variant="secondary" onClick={() => void signOut({ reason: "switch" })}>Use another account</Button>
       </section>
     );

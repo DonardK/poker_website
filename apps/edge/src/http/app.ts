@@ -18,6 +18,7 @@ import { registerAuthRecovery } from "./auth-recovery";
 import { registerStepUp } from "./auth-step-up";
 import { registerTables } from "./tables";
 import { registerWsTicket } from "./ws-ticket";
+import { testDatabase } from "./request-db";
 
 declare module "hono" {
   interface ContextVariableMap {
@@ -48,16 +49,7 @@ const CREDENTIAL_PATHS = new Set([
 const EMAIL_PATHS = new Set([
   "/api/auth/password/forgot", "/api/account/email", "/api/account/email/verification", "/api/auth/step-up/email-code",
 ]);
-const TEST_DATABASE = Symbol.for("poker.edge.httpTestDatabase");
-
-export function attachTestDatabase(env: object, db: AppDb): void {
-  Object.defineProperty(env, TEST_DATABASE, { value: db, enumerable: false, configurable: true });
-}
-
-function testDatabase(env: Env): AppDb | null {
-  const value = (env as Env & Record<symbol, AppDb | undefined>)[TEST_DATABASE];
-  return value ?? null;
-}
+export { attachTestDatabase } from "./request-db";
 
 let securityUnconfiguredLogged = false;
 

@@ -1,6 +1,7 @@
 "use client";
 
 import type { AuthResponse } from "@poker/shared";
+import { turnstileScriptLoaded } from "@/components/turnstile-widget";
 import { clearLiveEvidence } from "@/hooks/use-table-socket";
 import { resetAccountCache } from "@/lib/account-cache";
 import { api, broadcastSignedOut, forgetSharedSession, shareSession } from "@/lib/api";
@@ -66,6 +67,21 @@ export function switchAccount(): Promise<void> {
 }
 
 /**
+ * SECURITY (G6): go on from a sign-in page into the app. When this document
+ * holds Cloudflare's Turnstile script (a third party, loaded for the sign-in
+ * form), go with a full page load so the script is not left running on the
+ * lobby, account or wallet pages; the new page restores the session from the
+ * refresh cookie. Otherwise a client-side navigation. `next` is a safeNext path.
+ */
+export function leaveAuthPage(router: AppRouter, next: string): void {
+  if (turnstileScriptLoaded()) {
+    window.location.replace(next);
+    return;
+  }
+  router.replace(next);
+}
+
+/**
  * A sign-in or sign-up succeeded: adopt the session, hand it to the other
  * tabs, remember the username when "Stay signed in" was ticked (never
  * otherwise), and go on.
@@ -75,5 +91,5 @@ export function completeSignIn(data: AuthResponse, opts: { remember: boolean; ne
   useAuthStore.getState().setSession(data.user, data.accessToken);
   shareSession(data);
   if (opts.remember) rememberAccount(data.user);
-  opts.router.replace(opts.next);
+  leaveAuthPage(opts.router, opts.next);
 }

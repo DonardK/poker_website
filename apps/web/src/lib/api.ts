@@ -142,6 +142,8 @@ let channel: BroadcastChannel | null | undefined;
 /** Increments on every session another tab shares; a refresh adopts a share newer than its own start. */
 let shareSeq = 0;
 let lastShare: { seq: number; data: AuthResponse } | null = null;
+/** Increments on every sign-out this tab learns of (forgetSharedSession). A refresh that straddles one is not shared. */
+let signOutEpoch = 0;
 const shareListeners = new Set<(data: AuthResponse) => void>();
 const signedOutListeners = new Set<(reason: SignedOutShare["reason"]) => void>();
 
@@ -202,6 +204,7 @@ export function broadcastSignedOut(reason: SignedOutShare["reason"]): void {
 export function forgetSharedSession(): void {
   lastShare = null;
   shareSeq++;
+  signOutEpoch++;
 }
 
 /** Called with each session another tab refreshed. Returns the unsubscribe function. */
@@ -248,6 +251,7 @@ export function refreshSession(): Promise<RefreshOutcome> {
   if (pendingRefresh) return pendingRefresh;
   sessionChannel();
   const startedAtShare = shareSeq;
+  const startedAtSignOut = signOutEpoch;
   pendingRefresh = withRefreshLock(async (): Promise<RefreshOutcome> => {
     // Another tab refreshed while this one waited for the lock: its result is
     // current, and a second rotation would only spend the new cookie.
@@ -255,7 +259,10 @@ export function refreshSession(): Promise<RefreshOutcome> {
     // A refresh may rotate the cookie on the server after a client-side timeout.
     // Let the transport fail naturally so a retry cannot invalidate that session.
     const data = await api<AuthResponse>("/api/auth/refresh", { method: "POST", signal: null });
-    shareSession(data);
+    // SECURITY (G4): a sign-out happened while this was in flight. The other
+    // tabs were told to forget the account; handing them its fresh token now
+    // would sign them back in (the caller discards the result too).
+    if (signOutEpoch === startedAtSignOut) shareSession(data);
     return { ...data, adopted: false };
   }).finally(() => { pendingRefresh = null; });
   return pendingRefresh;

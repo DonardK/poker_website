@@ -5,7 +5,7 @@ import { z } from "zod";
 import type { Env } from "../env";
 import { readFactors } from "../auth/factors";
 import { presentedPasswordSchema } from "../auth/password-policy";
-import { recordSecondFactorFailure, secondFactorRetryAfter, clearSecondFactorFailures, verifySecondFactor } from "../auth/second-factor";
+import { clearSecondFactorFailures, recordSecondFactorFailure, reserveSecondFactorAttempt, verifySecondFactor } from "../auth/second-factor";
 import { recordSecurityEvent } from "../auth/security-events";
 import { assertNoSecurityHold } from "../auth/step-up";
 import {
@@ -159,16 +159,16 @@ export function registerStepUp(app: Hono<{ Bindings: Env }>): void {
       if (!await verifyStepUpPassword(c, db, gate, proof.password)) return c.json({ error: "Invalid credentials" }, 401);
       if (proof.kind === "totp") {
         const now = new Date();
-        const scope = { userId: gate.userId, knownDeviceHash: null };
-        const retryAfter = secondFactorRetryAfter(gate.user, scope, now.getTime());
-        if (retryAfter > 0) return mfaLocked(c, retryAfter);
+        // Counted before the code is checked, so parallel guesses are held to the lock schedule.
+        const attempt = await reserveSecondFactorAttempt(db, gate.user, { userId: gate.userId, knownDeviceHash: null }, now);
+        if (!attempt.ok) return mfaLocked(c, attempt.retryAfterS);
         const code = proof.code.trim();
         const result = await verifySecondFactor(db, config, gate.userId, /^\d{6}$/.test(code) ? "totp" : "backup_code", code, now);
         if (!result.ok) {
-          await recordSecondFactorFailure(db, scope, now, facts);
+          await recordSecondFactorFailure(db, attempt, facts);
           return c.json({ error: "Invalid code", code: "MFA_INVALID" }, 401);
         }
-        await clearSecondFactorFailures(db, scope, gate.user);
+        await clearSecondFactorFailures(db, attempt);
         if (result.amr === "backup") {
           notice = await prepareNotice(db, config, gate.user, "BACKUP_CODE_USED", { now, details: { remaining: result.remainingBackupCodes ?? 0 } });
         }
@@ -180,11 +180,13 @@ export function registerStepUp(app: Hono<{ Bindings: Env }>): void {
           && new Date(challenge.expiresAt).getTime() > now && challenge.attempts < STEP_UP_EMAIL_CODE_MAX_ATTEMPTS
           && challenge.email === gate.user.email;
         if (!live) return c.json(CHALLENGE_INVALID, 400);
+        // The attempt is counted before the code is compared: parallel guesses cannot pass the cap.
+        const { count } = await db.stepUpEmailChallenge.updateMany({
+          where: { id: challenge!.id, consumedAt: null, attempts: { lt: STEP_UP_EMAIL_CODE_MAX_ATTEMPTS }, expiresAt: { gt: new Date(now) } },
+          data: { attempts: { increment: 1 } },
+        });
+        if (count !== 1) return c.json(CHALLENGE_INVALID, 400);
         if (!await emailCodeMatches(config.security.hmacSecret, challenge!.id, proof.emailCode, challenge!.codeHash)) {
-          await db.stepUpEmailChallenge.updateMany({
-            where: { id: challenge!.id, consumedAt: null, attempts: { lt: STEP_UP_EMAIL_CODE_MAX_ATTEMPTS } },
-            data: { attempts: { increment: 1 } },
-          });
           const left = Math.max(0, STEP_UP_EMAIL_CODE_MAX_ATTEMPTS - challenge!.attempts - 1);
           return c.json({ error: "That code is not right.", code: "EMAIL_CODE_INVALID", attemptsRemaining: left }, 401);
         }
@@ -194,8 +196,9 @@ export function registerStepUp(app: Hono<{ Bindings: Env }>): void {
     const now = new Date();
     const grant = await db.$transaction(async (tx) => {
       if (challenge) {
+        // attempts already counts this (right) attempt, so it may equal the cap here.
         const { count } = await tx.stepUpEmailChallenge.updateMany({
-          where: { id: challenge.id, consumedAt: null, attempts: { lt: STEP_UP_EMAIL_CODE_MAX_ATTEMPTS }, expiresAt: { gt: now } },
+          where: { id: challenge.id, consumedAt: null, attempts: { lte: STEP_UP_EMAIL_CODE_MAX_ATTEMPTS }, expiresAt: { gt: now } },
           data: { consumedAt: now },
         });
         if (count !== 1) throw new Refusal(400, { ...CHALLENGE_INVALID });

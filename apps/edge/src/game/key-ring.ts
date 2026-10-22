@@ -88,14 +88,27 @@ export function parseKeyRing(input: KeyRingInput, names: KeyRingNames = GAME_KEY
   return { activeKeyId, keys };
 }
 
-/** Hex keys that have shipped in examples or documentation. */
+/**
+ * Hex keys that have shipped in examples, documentation or (git history of)
+ * the test configuration. They are public, so they protect nothing.
+ */
 const PLACEHOLDER_KEYS = new Set([
   "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
   "fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210",
   "deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
   "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
   "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+  // Edge test keys committed before the suites generated their own per run.
+  "c549a47e88271398c0804736a4fcbaa0273d3b09c944b7ee5bea23f3ad51b784",
+  "5f2c8e1a9b7d4c3e6f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6a",
+  "6d5ce40d26950b96f5de1c391d98b0a2f952496a370bd764446c42f9ea0fc1e9",
 ]);
+
+/**
+ * Words that mark a secret as a placeholder or a published test value. The
+ * repository's own test secrets all contain "test-only".
+ */
+export const PLACEHOLDER_SECRET = /change|replace|development|test-only|example|dummy|placeholder/i;
 
 const distinct = (values: Iterable<unknown>): number => new Set(values).size;
 
@@ -111,6 +124,42 @@ export function minDistinctCharacters(secret: string): number {
   return /^[0-9a-f]+$/i.test(secret) ? 8 : 16;
 }
 
+/** A secret and the variable it came from, for messages that name only the variable. */
+export type NamedSecret = readonly [name: string, value: string];
+
+/**
+ * The first production problem of a key ring, or null: a published or
+ * low-entropy key, two ids with one key, or a key pasted into one of
+ * `secrets` too (compared as hex text and as raw bytes). Names only.
+ */
+export function keyRingProblem(ring: KeyRing, secrets: readonly NamedSecret[]): string | null {
+  const seen = new Map<string, string>();
+  for (const [kid, key] of ring.keys) {
+    const hex = key.toString("hex");
+    if (PLACEHOLDER_KEYS.has(hex)) return `Encryption key "${kid}" is a published placeholder; generate a random key`;
+    if (distinct(key) === 1) return `Encryption key "${kid}" repeats a single byte; generate a random key`;
+    if (distinct(key) < 16) return `Encryption key "${kid}" has fewer than 16 distinct byte values; generate a random key`;
+    const twin = seen.get(hex);
+    if (twin !== undefined) return `Encryption keys "${twin}" and "${kid}" are identical; every key id needs its own key`;
+    seen.set(hex, kid);
+    for (const [name, secret] of secrets) {
+      if (secret.trim().toLowerCase() === hex || Buffer.from(secret, "utf8").equals(key)) return `${name} reuses encryption key "${kid}"; every purpose needs an independent secret`;
+    }
+  }
+  return null;
+}
+
+/** The first strength problem of the JWT secrets, or null. */
+export function jwtSecretProblem(jwtAccessSecret: string, jwtRefreshSecret: string): string | null {
+  for (const [name, secret] of [["JWT_ACCESS_SECRET", jwtAccessSecret], ["JWT_REFRESH_SECRET", jwtRefreshSecret]] as const) {
+    if (secret.length < 32) return `${name} must be at least 32 characters`;
+    const needed = minDistinctCharacters(secret);
+    if (distinct(secret) < needed) return `${name} must contain at least ${needed} distinct characters (generate it with randomBytes(48).toString("base64url"))`;
+  }
+  if (jwtAccessSecret === jwtRefreshSecret) return "JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must differ";
+  return null;
+}
+
 /**
  * Production-only strength checks for the key ring and JWT secrets. Throws
  * the first problem found. A JWT secret is compared with each key both as
@@ -118,25 +167,9 @@ export function minDistinctCharacters(secret: string): number {
  * caught either way.
  */
 export function assertProductionSecrets(ring: KeyRing, jwtAccessSecret: string, jwtRefreshSecret: string): void {
-  const seen = new Map<string, string>();
-  for (const [kid, key] of ring.keys) {
-    const hex = key.toString("hex");
-    if (PLACEHOLDER_KEYS.has(hex)) throw new Error(`Encryption key "${kid}" is a published placeholder; generate a random key`);
-    if (distinct(key) === 1) throw new Error(`Encryption key "${kid}" repeats a single byte; generate a random key`);
-    if (distinct(key) < 16) throw new Error(`Encryption key "${kid}" has fewer than 16 distinct byte values; generate a random key`);
-    const twin = seen.get(hex);
-    if (twin !== undefined) throw new Error(`Encryption keys "${twin}" and "${kid}" are identical; every key id needs its own key`);
-    seen.set(hex, kid);
-    for (const [name, secret] of [["JWT_ACCESS_SECRET", jwtAccessSecret], ["JWT_REFRESH_SECRET", jwtRefreshSecret]] as const) {
-      if (secret.trim().toLowerCase() === hex || Buffer.from(secret, "utf8").equals(key)) throw new Error(`${name} reuses encryption key "${kid}"; every purpose needs an independent secret`);
-    }
-  }
-  for (const [name, secret] of [["JWT_ACCESS_SECRET", jwtAccessSecret], ["JWT_REFRESH_SECRET", jwtRefreshSecret]] as const) {
-    if (secret.length < 32) throw new Error(`${name} must be at least 32 characters`);
-    const needed = minDistinctCharacters(secret);
-    if (distinct(secret) < needed) throw new Error(`${name} must contain at least ${needed} distinct characters (generate it with randomBytes(48).toString("base64url"))`);
-  }
-  if (jwtAccessSecret === jwtRefreshSecret) throw new Error("JWT_ACCESS_SECRET and JWT_REFRESH_SECRET must differ");
+  const problem = keyRingProblem(ring, [["JWT_ACCESS_SECRET", jwtAccessSecret], ["JWT_REFRESH_SECRET", jwtRefreshSecret]])
+    ?? jwtSecretProblem(jwtAccessSecret, jwtRefreshSecret);
+  if (problem) throw new Error(problem);
 }
 
 // ---------------------------------------------------------------------------

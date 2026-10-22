@@ -96,6 +96,26 @@ describe("forgot and reset password", () => {
     expect(tokens.filter((row) => row.consumedAt === null)).toHaveLength(1);
   }, SLOW);
 
+  it("forgot answers before any reset work runs (no timing difference for a real account); the link follows after the response", async () => {
+    const h = createHarness();
+    const real = await signUp(h, "Eve_Rec");
+    const before = h.mails.length;
+    // The deferred cap check waits on this hold until the test releases it, after the 202 has arrived.
+    h.db.hold("emailToken.count", 2);
+    const pending: Promise<unknown>[] = [];
+    const known = await h.request("/auth/password/forgot", { body: { email: real.email }, waitUntil: pending });
+    const unknownPending: Promise<unknown>[] = [];
+    const unknown = await h.request("/auth/password/forgot", { body: { email: "nobody@example.com" }, waitUntil: unknownPending });
+    expect([known.status, known.body]).toEqual([unknown.status, unknown.body]);
+    expect([pending.length, unknownPending.length]).toEqual([1, 0]);
+    expect(h.db.rows("emailToken").filter((row) => row.purpose === "PASSWORD_RESET")).toHaveLength(0);
+    await h.db.api.emailToken.count({ where: { userId: "release-the-hold" } });
+    await Promise.all(pending);
+    expect(h.mails.slice(before).map((mail) => [mail.kind, mail.to])).toEqual([["PASSWORD_RESET", real.email]]);
+    const reset = await h.request("/auth/password/reset", { body: { token: h.lastToken("PASSWORD_RESET"), newPassword: NEW_PASSWORD } });
+    expect(reset.status).toBe(204);
+  }, SLOW);
+
   it("reset: a weak or breached password keeps the link; success revokes everything and signs nobody in", async () => {
     // The breach check is on here, but stubbed: tests never call Have I Been Pwned.
     const check = vi.spyOn(breach, "check").mockResolvedValue("ok");
@@ -166,12 +186,14 @@ describe("email change", () => {
     const mailsBefore = h.mails.length;
     const taken = await h.request("/account/email", { token: hal.accessToken, body: { newEmail: ivy.email } });
     expect([taken.status, taken.body]).toEqual([202, { ok: true, pendingEmail: ivy.email }]);
-    expect(h.mails.slice(mailsBefore).map((mail) => [mail.kind, mail.to])).toEqual([["EMAIL_IN_USE", ivy.email]]);
+    // The requester's own view is the same as for a free address: a pending change and the notice to the current address.
+    expect(h.mails.slice(mailsBefore).map((mail) => [mail.kind, mail.to])).toEqual([["EMAIL_IN_USE", ivy.email], ["EMAIL_CHANGE_NOTICE", hal.email]]);
     expect(h.db.user(hal.userId)!.email).toBe(hal.email);
+    expect((await h.request("/account/security", { method: "GET", token: hal.accessToken })).body.pendingEmail).toBe(ivy.email);
 
     const requested = await h.request("/account/email", { token: hal.accessToken, body: { newEmail: "Hal.New@Example.com" } });
     expect([requested.status, requested.body]).toEqual([202, { ok: true, pendingEmail: "hal.new@example.com" }]);
-    const kinds = h.mails.slice(mailsBefore + 1).map((mail) => [mail.kind, mail.to]);
+    const kinds = h.mails.slice(mailsBefore + 2).map((mail) => [mail.kind, mail.to]);
     expect(kinds).toEqual([["EMAIL_CHANGE_CONFIRM", "hal.new@example.com"], ["EMAIL_CHANGE_NOTICE", hal.email]]);
     expect(h.mails.at(-2)!.text).toContain("/email-change#t=");
     const security = await h.request("/account/security", { method: "GET", token: hal.accessToken });
@@ -307,6 +329,71 @@ describe("this wasn't me (lockdown)", () => {
     const user = h.db.user(ned.userId)!;
     expect(user.email).toBe(ned.email);
     expect(user.emailVerifiedAt).toBeInstanceOf(Date);
+  }, SLOW);
+
+  it("links mailed to the attacker's address during the incident die with the owner's lockdown and cannot undo the recovery", async () => {
+    vi.setSystemTime(new Date("2026-10-19T10:00:00Z"));
+    const h = createHarness();
+    const owner = await signUp(h, "Ola_Rec", { verified: true });
+    advanceClock(60_000);
+    // The attacker knows the password: signs in, moves the email to their own address.
+    const attacker = { ...owner, jar: cookieJar() };
+    const s1 = await signIn(h, attacker);
+    attacker.accessToken = s1.body.accessToken;
+    expect((await h.request("/account/email", { token: attacker.accessToken, body: { newEmail: "thief@example.com" } })).status).toBe(202);
+    expect((await h.request("/auth/email/change/confirm", { body: { token: h.lastToken("EMAIL_CHANGE_CONFIRM") } })).status).toBe(200);
+    const ownerNotice = h.lastToken("EMAIL_CHANGE_NOTICE", owner.email)!;
+    advanceClock(60_000);
+    // Another sign-in: its alert, with a lockdown link, now goes to the attacker's address.
+    expect((await signIn(h, { ...owner, jar: cookieJar() })).status).toBe(200);
+    const stockpiled = h.lastToken("NEW_SIGN_IN", "thief@example.com")!;
+    expect(stockpiled).toBeTruthy();
+
+    // The owner recovers from the old address, sets a new password and turns TOTP on.
+    advanceClock(60_000);
+    const locked = await h.request("/auth/security/lockdown", { body: { token: ownerNotice } });
+    expect(locked.status).toBe(200);
+    expect(h.db.user(owner.userId)!.email).toBe(owner.email);
+    expect((await h.request("/auth/password/reset", { body: { token: locked.body.resetToken, newPassword: NEW_PASSWORD } })).status).toBe(204);
+    advanceClock(60_000);
+    const back = owner.jar.take(await h.request("/auth/login", { cookie: owner.jar.header(), body: { identifier: owner.username, password: NEW_PASSWORD } }));
+    expect(back.status).toBe(200);
+    owner.accessToken = back.body.accessToken;
+    owner.sessionId = JSON.parse(atob(back.body.accessToken.split(".")[1].replace(/-/g, "+").replace(/_/g, "/"))).sid;
+    await enableTotp(h, owner);
+
+    // Days later the attacker's stockpiled link is dead: no reset token, the owner's TOTP stays.
+    advanceClock(2 * 86_400_000);
+    const replay = await h.request("/auth/security/lockdown", { body: { token: stockpiled } });
+    expect([replay.status, replay.body.code]).toEqual([400, "TOKEN_INVALID"]);
+    expect(h.db.rows("userTotp")[0]!.enabledAt).toBeInstanceOf(Date);
+    expect(h.db.user(owner.userId)!.passwordResetRequired).toBe(false);
+  }, SLOW);
+
+  it("any notice's lockdown link, not only the email-change notice, puts the email back to the address it was sent to", async () => {
+    vi.setSystemTime(new Date("2026-10-19T10:00:00Z"));
+    const h = createHarness();
+    const owner = await signUp(h, "Pia_Rec", { verified: true });
+    advanceClock(60_000);
+    // A second known device first, so the next new device raises an alert.
+    expect((await signIn(h, { ...owner, jar: cookieJar() })).status).toBe(200);
+    advanceClock(60_000);
+    const attacker = { ...owner, jar: cookieJar() };
+    const s1 = await signIn(h, attacker);
+    const alert = h.lastToken("NEW_SIGN_IN", owner.email)!;
+    expect(alert).toBeTruthy();
+    expect((await h.request("/account/email", { token: s1.body.accessToken, body: { newEmail: "thief2@example.com" } })).status).toBe(202);
+    expect((await h.request("/auth/email/change/confirm", { body: { token: h.lastToken("EMAIL_CHANGE_CONFIRM") } })).status).toBe(200);
+    advanceClock(60_000);
+    // The owner clicks "This wasn't me" in the first mail they got: the new-sign-in alert.
+    expect((await h.request("/auth/security/lockdown", { body: { token: alert } })).status).toBe(200);
+    const user = h.db.user(owner.userId)!;
+    expect(user.email).toBe(owner.email);
+    expect(user.emailVerifiedAt).toBeInstanceOf(Date);
+    // Forgot-password to the attacker's address now reaches no account.
+    const before = h.mails.length;
+    expect((await h.request("/auth/password/forgot", { body: { email: "thief2@example.com" } })).status).toBe(202);
+    expect(h.mails.slice(before).filter((mail) => mail.kind === "PASSWORD_RESET")).toHaveLength(0);
   }, SLOW);
 
   it("a forged, malformed or expired lockdown token is refused", async () => {

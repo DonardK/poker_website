@@ -17,9 +17,9 @@ import { allowFrame } from "../src/lobby/rate";
 import { loadLobbyTables } from "../src/lobby/tables";
 import type { PrismaClient } from "../src/generated/prisma/client";
 
-/** Must match the test bindings in vitest.config.ts. Not production secrets. */
-const WS_TICKET_SECRET = "test-only-ws-ticket-secret-32chars";
-const JWT_ACCESS_SECRET = "test-only-access-secret-32chars-min";
+/** The test bindings vitest.config.ts generated for this run (random, never committed). */
+const WS_TICKET_SECRET = (env as unknown as Env).WS_TICKET_SECRET;
+const JWT_ACCESS_SECRET = (env as unknown as Env).JWT_ACCESS_SECRET;
 
 const realKeepAlive = lobbyPorts.tableKeepAlive;
 lobbyPorts.userSessions = () => ({

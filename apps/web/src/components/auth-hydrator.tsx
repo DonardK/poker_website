@@ -186,7 +186,8 @@ export function AuthHydrator({ children }: { children: React.ReactNode }) {
 
     // Another tab refreshed: take its session instead of rotating the cookie again.
     const unsubscribeShared = onSharedSession((data) => {
-      if (cancelled) return;
+      // SECURITY (G4): while this browser's sign-out is pending, no tab adopts a session (a real sign-in clears the marker first).
+      if (cancelled || readPendingLogout()) return;
       lastRefreshAt = Date.now();
       offlineAttempt = 0;
       window.clearTimeout(retryTimer);
@@ -223,9 +224,10 @@ export function AuthHydrator({ children }: { children: React.ReactNode }) {
     } else {
       void refresh();
     }
-    const interval = window.setInterval(() => { if (useAuthStore.getState().user) void refresh(); }, REFRESH_EVERY_MS);
+    // Like mount and pageshow: never refresh with the old cookie while a sign-out is pending (G4).
+    const interval = window.setInterval(() => { if (useAuthStore.getState().user && !readPendingLogout()) void refresh(); }, REFRESH_EVERY_MS);
     const onVisible = () => {
-      if (document.visibilityState === "visible" && useAuthStore.getState().user && Date.now() - lastRefreshAt >= VISIBLE_REFRESH_AFTER_MS) void refresh();
+      if (document.visibilityState === "visible" && useAuthStore.getState().user && !readPendingLogout() && Date.now() - lastRefreshAt >= VISIBLE_REFRESH_AFTER_MS) void refresh();
     };
     const onOnline = () => { if (useAuthStore.getState().apiOffline) void refresh(); };
     // A page restored from the back-forward cache may hold a session that was revoked meanwhile.

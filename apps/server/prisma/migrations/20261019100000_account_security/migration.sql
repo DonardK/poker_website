@@ -315,18 +315,26 @@ CREATE TRIGGER "AccountSecurityEvent_append_only" BEFORE UPDATE OR DELETE ON pub
 -- changes, whichever role holds UPDATE ("consumedAt"). A consumer's
 -- UPDATE ... WHERE "consumedAt" IS NULL AND "expiresAt" > CURRENT_TIMESTAMP
 -- matches no row for a used or expired grant, so this only fires on misuse.
--- poker.break_glass = 'on' is the maintenance hatch, as for hand history.
+-- Expiry is judged by the database clock, not by the consumedAt the caller
+-- writes, and that value must be the time of use (give or take 5 minutes).
+-- poker.break_glass = 'on' is the maintenance hatch, as for hand history,
+-- but only for an administrator (superuser or BYPASSRLS, as the migration
+-- role is): any role can set a custom setting like poker.break_glass.
 CREATE FUNCTION public.step_up_grant_single_use() RETURNS trigger
 LANGUAGE plpgsql
 SET search_path = pg_catalog, public, pg_temp
 AS $fn$
 BEGIN
-  IF pg_catalog.current_setting('poker.break_glass', true) IS NOT DISTINCT FROM 'on' THEN
+  IF pg_catalog.current_setting('poker.break_glass', true) IS NOT DISTINCT FROM 'on'
+     AND EXISTS (SELECT 1 FROM pg_catalog.pg_roles AS r WHERE r.rolname = current_user AND (r.rolsuper OR r.rolbypassrls)) THEN
     RETURN NEW;
   END IF;
   IF OLD."consumedAt" IS NOT NULL
      OR NEW."consumedAt" IS NULL
+     OR OLD."expiresAt" <= pg_catalog.statement_timestamp()
      OR NEW."consumedAt" >= OLD."expiresAt"
+     OR NEW."consumedAt" < pg_catalog.statement_timestamp() - interval '5 minutes'
+     OR NEW."consumedAt" > pg_catalog.statement_timestamp() + interval '5 minutes'
      OR ROW(NEW."id", NEW."userId", NEW."sessionId", NEW."purpose", NEW."bindHash", NEW."method", NEW."createdAt", NEW."expiresAt")
         IS DISTINCT FROM ROW(OLD."id", OLD."userId", OLD."sessionId", OLD."purpose", OLD."bindHash", OLD."method", OLD."createdAt", OLD."expiresAt") THEN
     RAISE EXCEPTION USING ERRCODE = 'SU001',

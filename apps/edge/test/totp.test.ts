@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { generateBackupCodes, hashBackupCode, normalizeBackupCode } from "../src/auth/backup-codes";
 import { base32Decode, base32Encode, matchTotp, newTotpSecret, openTotpSecret, otpauthUri, sealTotpSecret, totpCode } from "../src/auth/totp";
-import { createHarness } from "./harness";
+import { createHarness, randomTestHex } from "./harness";
 
 const RFC_SECRET = "GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ"; // ASCII "12345678901234567890"
 const VECTORS: [number, string][] = [
@@ -84,7 +84,7 @@ describe("backup codes", () => {
   });
 
   it("hash with the HMAC key and differ per user", async () => {
-    const secret = "test-only-auth-hmac-secret-32chars-ok";
+    const secret = randomTestHex();
     const a = await hashBackupCode(secret, "user-a", "ABCDEFGHJK");
     expect(a).toMatch(/^[0-9a-f]{64}$/);
     expect(await hashBackupCode(secret, "user-a", "ABCDEFGHJK")).toBe(a);

@@ -8,6 +8,7 @@ import type { Env } from "../env";
 import { randomToken } from "../auth/bytes";
 import { deviceLabel, readDevice } from "../auth/devices";
 import { emailCapReached, EMAIL_TOKEN_CAP, issueEmailToken, voidEmailTokens } from "../auth/email-tokens";
+import { includesSecondFactor } from "../auth/factors";
 import { remainingBackupCodes, replaceBackupCodes } from "../auth/backup-codes";
 import { newPasswordSchema } from "../auth/password-policy";
 import { passwords } from "../auth/password";
@@ -78,6 +79,19 @@ async function loadUser(db: AppDb, userId: string): Promise<AccountUser> {
 
 function holdUntil(now: Date, holdMs: number): Date {
   return new Date(now.getTime() + holdMs);
+}
+
+/**
+ * A new TOTP or passkey enrolled by a session whose step-up had no second
+ * factor (a password-only account, or a passkey account signed in with its
+ * password) holds withdrawals, as a password change does. Otherwise someone
+ * with only the password could swap the emailed-code money proof for a
+ * factor of their own and withdraw at once; the hold gives the owner time to
+ * act on the notice ("This wasn't me" removes the factor).
+ */
+function enrolmentHold(gate: GateOk, now: Date, holdMs: number): { securityHoldUntil?: Date } {
+  if (includesSecondFactor(gate.session.reauthMethods ?? [])) return {};
+  return { securityHoldUntil: holdUntil(now, holdMs) };
 }
 
 function idParam(c: Ctx): string | null {
@@ -294,10 +308,9 @@ export function registerAccount(app: Hono<{ Bindings: Env }>): void {
     const holder = await db.user.findUnique({ where: { email: newEmail }, select: { id: true } }) as { id: string } | null;
     const mails = await db.$transaction(async (tx): Promise<(MailMessage | null)[]> => {
       await recordSecurityEvent(tx, { userId: user.id, type: "EMAIL_CHANGE_REQUESTED", sessionId: gate.sessionId, facts });
-      if (holder) {
-        // No enumeration: the same answer, and the address's owner learns someone tried.
-        return [{ kind: "EMAIL_IN_USE", to: newEmail, userId: null, idempotencyKey: `EMAIL_IN_USE:${randomToken(16)}`, ...emailInUse() }];
-      }
+      // No enumeration: a taken address leaves the same state as a free one (a
+      // pending change, so the overview's pendingEmail matches, and the same
+      // notice to the current address). Only the mail to the new address differs.
       await voidEmailTokens(tx, user.id, ["EMAIL_CHANGE"], now);
       const issued = await issueEmailToken(tx, {
         userId: user.id,
@@ -308,13 +321,17 @@ export function registerAccount(app: Hono<{ Bindings: Env }>): void {
         now,
         ignoreCap: true,
       });
-      const link = emailLink(config, "EMAIL_CHANGE", issued!.token);
-      const confirm = linkMail("EMAIL_CHANGE_CONFIRM", newEmail, user.id, issued!, link, emailChangeConfirm({ username: user.username, link, newEmail }));
       const notice = user.email
         ? await prepareNotice(tx, config, user, "EMAIL_CHANGE_NOTICE", {
           now, to: user.email, data: { revertEmail: user.email }, details: { newEmail, stage: "requested" },
         })
         : null;
+      if (holder) {
+        // Its link is never sent (a confirm would fail on the unique email anyway); the address's owner learns someone tried.
+        return [{ kind: "EMAIL_IN_USE", to: newEmail, userId: null, idempotencyKey: `EMAIL_IN_USE:${randomToken(16)}`, ...emailInUse() }, notice];
+      }
+      const link = emailLink(config, "EMAIL_CHANGE", issued!.token);
+      const confirm = linkMail("EMAIL_CHANGE_CONFIRM", newEmail, user.id, issued!, link, emailChangeConfirm({ username: user.username, link, newEmail }));
       return [confirm, notice];
     });
     await sendMail(c, ...mails);
@@ -379,7 +396,10 @@ export function registerAccount(app: Hono<{ Bindings: Env }>): void {
       });
       if (count !== 1) throw new Refusal(409, { error: "Start the setup again.", code: "TOTP_NOT_PENDING" });
       const codes = await replaceBackupCodes(tx, config.security!.hmacSecret, gate.userId, now);
-      const updated = await tx.user.update({ where: { id: gate.userId }, data: { credentialsVersion: { increment: 1 } } }) as AccountUser;
+      const updated = await tx.user.update({
+        where: { id: gate.userId },
+        data: { credentialsVersion: { increment: 1 }, ...enrolmentHold(gate, now, config.securityHoldMs) },
+      }) as AccountUser;
       // This session just proved the new factor: it counts as a second-factor step-up.
       const methods = [...new Set([...gate.session.reauthMethods, "otp"])];
       await tx.session.updateMany({ where: { id: gate.sessionId, revokedAt: null }, data: { reauthMethods: methods } });
@@ -537,6 +557,8 @@ export function registerAccount(app: Hono<{ Bindings: Env }>): void {
         },
       }) as PasskeyRow;
       await recordSecurityEvent(tx, { userId: gate.userId, type: "PASSKEY_ADDED", sessionId: gate.sessionId, facts: requestFacts(c), data: { passkeyId: row.id, name } });
+      const hold = enrolmentHold(gate, now, config.securityHoldMs);
+      if (hold.securityHoldUntil) await tx.user.update({ where: { id: gate.userId }, data: hold, select: { id: true } });
       const user = await loadUser(tx, gate.userId);
       return { row, notice: await prepareNotice(tx, config, user, "PASSKEY_ADDED", { now, details: { passkeyName: name } }) };
     });

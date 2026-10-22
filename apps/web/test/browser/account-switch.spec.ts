@@ -1,5 +1,5 @@
 import type { Page } from "@playwright/test";
-import { expectOnLogin, expectSignedIn, fixtureRequests, openAccountMenu, signInViaUi } from "../support/auth";
+import { accountMenuButton, expectOnLogin, expectSignedIn, fixtureRequests, openAccountMenu, signInViaUi } from "../support/auth";
 import { expect, fixture, test } from "../support/fixtures";
 
 test.use({ session: "signed-out" });
@@ -123,6 +123,35 @@ test.describe("signed in", () => {
     await first.getByRole("button", { name: "Sign out", exact: true }).click();
     await expectOnLogin(first);
     await expect(second).toHaveURL(/\/login\?next=%2Faccount%2Fsecurity/, { timeout: 3_000 });
+  });
+
+  test("a refresh still in flight when this browser signs out is never handed to the other tabs", async ({ context, request }) => {
+    await request.post(`${fixture}/__test/reset`, { data: { mode: "unseated" } });
+    await request.post(`${fixture}/__test/session`, { data: { refreshMode: "rotate" } });
+    const first = await context.newPage();
+    const second = await context.newPage();
+    await first.goto("/");
+    await second.goto("/account/security");
+    await expectSignedIn(first);
+    await expectSignedIn(second);
+    // The first tab's periodic refresh is on its way when the user signs out there, and the network fails.
+    await request.post(`${fixture}/__test/hold-refresh`);
+    await first.waitForFunction(() => "__pokerSession" in window);
+    const inFlight = first.evaluate(() => (window as unknown as { __pokerSession: { refresh: () => Promise<void> } }).__pokerSession.refresh());
+    await expect.poll(async () => (await (await request.get(`${fixture}/__test/waiting-refresh`)).json()).count).toBe(1);
+    await first.route(`${fixture}/api/auth/logout`, (route) => route.abort("internetdisconnected"));
+    await openAccountMenu(first);
+    await first.getByRole("button", { name: "Sign out", exact: true }).click();
+    await expectOnLogin(first);
+    await expect(second).toHaveURL(/\/login\?next=%2Faccount%2Fsecurity/, { timeout: 3_000 });
+    // The refresh answers after the sign-out: no tab takes that session back.
+    await request.post(`${fixture}/__test/release-refresh`);
+    await inFlight;
+    await second.waitForTimeout(1_000);
+    for (const tab of [first, second]) {
+      await expect(tab).toHaveURL(/\/login/);
+      await expect(accountMenuButton(tab)).toHaveCount(0);
+    }
   });
 
   test("changing account remounts the page: nothing typed for one account survives into the next", async ({ page, request }) => {

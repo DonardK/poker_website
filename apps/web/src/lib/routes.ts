@@ -21,8 +21,12 @@ export const AUTH_TOKEN_PATHS = ["/reset-password", "/verify-email", "/email-cha
 export const STATIC_PUBLIC = ["/robots.txt", "/sitemap.xml", "/icon.svg", "/apple-icon", "/favicon.ico"] as const;
 /** Prefixes that are public as a whole (security.txt, a future /.well-known/webauthn). */
 export const PUBLIC_PREFIXES = ["/.well-known/"] as const;
-/** The only pages that render the Cloudflare Turnstile script tag. */
-export const TURNSTILE_PATHS = ["/login", "/signup", "/reset-password"] as const;
+/**
+ * The only pages whose server HTML carries the Cloudflare Turnstile script tag.
+ * /reset-password is not one: its link (#t=) holds a reset token, so its
+ * request form loads the script itself, only after the token check found none.
+ */
+export const TURNSTILE_PATHS = ["/login", "/signup"] as const;
 
 const PUBLIC_EXACT: ReadonlySet<string> = new Set<string>([
   ...LEGAL_PATHS, ...AUTH_ENTRY_PATHS, ...AUTH_TOKEN_PATHS, ...STATIC_PUBLIC,

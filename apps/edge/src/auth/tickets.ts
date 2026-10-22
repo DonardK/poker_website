@@ -143,6 +143,11 @@ export async function consumeNonce(db: AppDb, jti: string, purpose: string, expi
   }
 }
 
+/** True when the ticket or challenge was already used, or burned after a run of wrong codes. */
+export async function nonceUsed(db: AppDb, jti: string): Promise<boolean> {
+  return await db.authNonce.findUnique({ where: { id: jti }, select: { id: true } }) !== null;
+}
+
 /** The expiry a nonce row needs: the ticket's own, so the sweep can drop it afterwards. */
 export function nonceExpiry(claims: { exp: number }): Date {
   return new Date(claims.exp * 1000);

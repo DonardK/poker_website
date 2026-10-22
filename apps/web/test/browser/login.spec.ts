@@ -39,6 +39,17 @@ test("a username or an email signs in, sending identifier, remember and a browse
   expect(sent!.body).toMatchObject({ identifier: "player0@example.test", remember: false });
 });
 
+test("signing in leaves the sign-in page with a full page load: the Turnstile script does not follow into the app", async ({ page, request }) => {
+  await request.post(`${fixture}/__test/reset`, { data: { mode: "unseated" } });
+  await page.goto("/login?next=%2Faccount%2Fsecurity");
+  await expect.poll(() => page.evaluate(() => "turnstile" in window)).toBe(true);
+  await fill(page, "Player-0", "fixture-password-0");
+  await signIn(page).click();
+  await expect(page).toHaveURL(/\/account\/security$/);
+  await expectSignedIn(page, "Player-0");
+  expect(await page.evaluate(() => document.getElementById("cf-turnstile-api") === null && !("turnstile" in window))).toBe(true);
+});
+
 test("a wrong password reads the same as an unknown user, clears the password and never resends a spent token", async ({ page, request }) => {
   await page.goto("/login");
   await fill(page, "Player-0", "not-the-password");

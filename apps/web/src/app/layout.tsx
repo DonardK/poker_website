@@ -57,8 +57,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
   // Browsers hide a script's nonce from later script, so the Turnstile API
   // tag has to be rendered here with the request nonce. The widget only calls
   // turnstile.render. SECURITY (G6): third-party script only where a form
-  // needs it (/login, /signup, /reset-password; middleware passes the path),
-  // never on the lobby, table or account pages. Omitted without a site key.
+  // needs it (/login and /signup; middleware passes the path), never on the
+  // lobby, table or account pages, and never in the HTML of an email-link
+  // page whose fragment holds a token (/reset-password's request form loads
+  // it on demand). Signing in from these pages leaves them with a full page
+  // load (leaveAuthPage), so the script does not follow. Omitted without a site key.
   const requestHeaders = await headers();
   const nonce = requestHeaders.get("x-nonce") ?? undefined;
   const turnstile = Boolean(process.env.NEXT_PUBLIC_TURNSTILE_SITE_KEY?.trim()) && isTurnstilePath(requestHeaders.get("x-pathname"));

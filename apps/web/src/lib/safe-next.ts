@@ -11,11 +11,15 @@ import { isAuthEntryPath, isAuthTokenPath } from "./routes";
  * 2. starts with "/" but not "//" or "/\" (protocol-relative URLs);
  * 3. no backslash, control character or whitespace;
  * 4. the percent-decoded value still satisfies 2-3 ("/%2F%2Fevil.example");
- * 5. resolves to the same origin;
- * 6. is not /login, /signup or an email-link page, so signing in never lands
+ * 5. no "." or ".." path segment, raw or decoded ("/.//evil.example",
+ *    "/%2e//evil.example"): URL resolution would collapse it into "//evil.example";
+ * 6. resolves to the same origin, and the path it resolves to (the value
+ *    returned) still satisfies 2-3;
+ * 7. is not /login, /signup or an email-link page, so signing in never lands
  *    back on a sign-in screen or replays a spent token.
  */
 const BAD_CHARACTER = /[\u0000- \u007f\\]|\s/;
+const DOT_SEGMENT = /(^|\/)\.{1,2}(\/|$|[?#])/;
 const BASE = "http://n.invalid";
 
 function wellFormed(value: string): boolean {
@@ -32,6 +36,7 @@ export function safeNext(raw: unknown, fallback = "/"): string {
     return fallback;
   }
   if (!wellFormed(decoded)) return fallback;
+  if (DOT_SEGMENT.test(raw) || DOT_SEGMENT.test(decoded)) return fallback;
   let url: URL;
   try {
     url = new URL(raw, BASE);
@@ -40,7 +45,9 @@ export function safeNext(raw: unknown, fallback = "/"): string {
   }
   if (url.origin !== BASE) return fallback;
   if (isAuthEntryPath(url.pathname) || isAuthTokenPath(url.pathname)) return fallback;
-  return `${url.pathname}${url.search}${url.hash}`;
+  // What the router is given is checked too, not only what came in.
+  const out = `${url.pathname}${url.search}${url.hash}`;
+  return wellFormed(out) ? out : fallback;
 }
 
 /**

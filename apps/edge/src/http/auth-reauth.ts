@@ -8,9 +8,11 @@ import { readFactors } from "../auth/factors";
 import { addressHistory, familiarScope } from "../auth/lockout";
 import { checkPassword } from "../auth/password-check";
 import { presentedPasswordSchema } from "../auth/password-policy";
-import { clearSecondFactorFailures, recordSecondFactorFailure, secondFactorRetryAfter, verifySecondFactor } from "../auth/second-factor";
+import {
+  clearSecondFactorFailures, recordSecondFactorFailure, reserveSecondFactorAttempt, secondFactorLockedFor, verifySecondFactor,
+} from "../auth/second-factor";
 import { recordSecurityEvent } from "../auth/security-events";
-import { consumeNonce, nonceExpiry, signMfaTicket, verifyMfaTicket } from "../auth/tickets";
+import { consumeNonce, nonceExpiry, nonceUsed, signMfaTicket, verifyMfaTicket } from "../auth/tickets";
 import { authenticationOptions } from "../auth/webauthn";
 import { prepareNotice, sendMail } from "../mail/notify";
 import { mfaBody, mfaLocked, securityNotConfigured } from "./auth";
@@ -97,15 +99,20 @@ export function registerReauth(app: Hono<{ Bindings: Env }>): void {
     if (!claims || claims.sub !== gate.userId || claims.sid !== gate.sessionId || claims.cv !== gate.user.credentialsVersion) return expired();
     // An authenticated session: the account-wide counter applies (a stolen session cannot brute-force codes per isolate).
     const scope = { userId: gate.userId, knownDeviceHash: null };
-    const retryAfter = secondFactorRetryAfter(gate.user, scope, now.getTime());
-    if (retryAfter > 0) return mfaLocked(c, retryAfter);
+    const locked = secondFactorLockedFor(gate.user, scope, now);
+    if (locked > 0) return mfaLocked(c, locked);
+    if (await nonceUsed(db, claims.jti)) return expired();
+    // Counted before the code is checked, so parallel guesses are held to the lock schedule.
+    const attempt = await reserveSecondFactorAttempt(db, gate.user, scope, now);
+    if (!attempt.ok) return mfaLocked(c, attempt.retryAfterS);
     const result = await verifySecondFactor(db, config, gate.userId, parsed.data.method, parsed.data.code, now);
     if (!result.ok) {
-      await recordSecondFactorFailure(db, scope, now, requestFacts(c));
+      await recordSecondFactorFailure(db, attempt, requestFacts(c));
+      if (attempt.lockMs) await consumeNonce(db, claims.jti, "mfa:reauth", nonceExpiry(claims));
       return c.json({ error: "Invalid code", code: "MFA_INVALID" }, 401);
     }
     if (!await consumeNonce(db, claims.jti, "mfa:reauth", nonceExpiry(claims))) return expired();
-    await clearSecondFactorFailures(db, scope, gate.user);
+    await clearSecondFactorFailures(db, attempt);
     const window = await openWindow(c, db, gate, ["pwd", result.amr]);
     if (result.amr === "backup") {
       await sendMail(c, await prepareNotice(db, config, gate.user, "BACKUP_CODE_USED", { now, details: { remaining: result.remainingBackupCodes ?? 0 } }));

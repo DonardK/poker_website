@@ -9,6 +9,21 @@ import { createMemoryDb, type MemoryDb } from "./memory-db";
 export const TERMS = { acceptTerms: true as const, confirmAge: true as const, termsVersion: "2026-10-19" };
 export const PASSWORD = "correct horse battery staple";
 
+/** 32 random bytes as hex: a fresh test secret, never a value committed to the repository. */
+export function randomTestHex(): string {
+  return [...crypto.getRandomValues(new Uint8Array(32))].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+/** This run's harness secrets and keys (generated once per test file). */
+export const TEST_SECRETS = {
+  JWT_ACCESS_SECRET: randomTestHex(),
+  JWT_REFRESH_SECRET: randomTestHex(),
+  WS_TICKET_SECRET: randomTestHex(),
+  GAME_ENCRYPTION_KEYS: `k0:${randomTestHex()}`,
+  AUTH_HMAC_SECRET: randomTestHex(),
+  AUTH_ENCRYPTION_KEYS: `a1:${randomTestHex()}`,
+} as const;
+
 /** Routes behind Turnstile: the harness adds a passing test token unless the body sets one. */
 const CREDENTIAL = new Set(["/auth/register", "/auth/login", "/auth/password/forgot"]);
 
@@ -58,6 +73,12 @@ export interface Harness {
     country?: string;
     /** Request origin. Defaults to http://example.com. Use the CLIENT_ORIGIN host to imitate the service binding. */
     baseUrl?: string;
+    /**
+     * Give the request an execution context whose waitUntil promises land
+     * here, so deferred work (defer.ts) runs after the response as in
+     * production. Without it, deferred work finishes before the response.
+     */
+    waitUntil?: Promise<unknown>[];
   }): Promise<ApiResult>;
 }
 
@@ -90,15 +111,10 @@ export function createHarness(extra: Record<string, string> = {}, options: Harne
     ENABLE_LEGACY_BOTS: "false",
     TURNSTILE_SITE_KEY: "1x00000000000000000000AA",
     TABLE_DO_LOCATION_HINT: "weur",
-    JWT_ACCESS_SECRET: "test-only-access-secret-32chars-min",
-    JWT_REFRESH_SECRET: "test-only-refresh-secret-32chars-min",
-    WS_TICKET_SECRET: "test-only-ws-ticket-secret-32chars",
-    // Random test-only key: an https CLIENT_ORIGIN (some tests) runs the production key checks.
-    GAME_ENCRYPTION_KEYS: "k0:6d5ce40d26950b96f5de1c391d98b0a2f952496a370bd764446c42f9ea0fc1e9",
+    // Random per run (an https CLIENT_ORIGIN, in some tests, runs the production checks on them).
+    ...TEST_SECRETS,
     GAME_ENCRYPTION_ACTIVE_KEY_ID: "k0",
     TURNSTILE_SECRET_KEY: "1x0000000000000000000000000000000AA",
-    AUTH_HMAC_SECRET: "test-only-auth-hmac-secret-32chars-ok",
-    AUTH_ENCRYPTION_KEYS: "a1:5f2c8e1a9b7d4c3e6f0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f6a",
     AUTH_ENCRYPTION_ACTIVE_KEY_ID: "a1",
     PASSWORD_BREACH_CHECK: "false",
     HYPERDRIVE: { connectionString: "postgresql://poker_app:local-only@127.0.0.1:5432/poker" },
@@ -174,7 +190,11 @@ export function createHarness(extra: Record<string, string> = {}, options: Harne
       const base = (opts.baseUrl ?? "http://example.com").replace(/\/+$/, "");
       const init: RequestInit & { cf?: { country: string } } = { method, headers, body };
       if (opts.country) init.cf = { country: opts.country };
-      const res = await app.request(`${base}/api${path}`, init, env);
+      const pending = opts.waitUntil;
+      const executionCtx = pending
+        ? { waitUntil: (promise: Promise<unknown>) => { pending.push(promise); }, passThroughOnException: () => undefined, props: {} }
+        : undefined;
+      const res = await app.request(`${base}/api${path}`, init, env, executionCtx as ExecutionContext | undefined);
       const text = await res.text();
       const setCookies = typeof res.headers.getSetCookie === "function" ? res.headers.getSetCookie() : [];
       const setCookie = setCookies.find((cookie) => cookie.startsWith(`${REFRESH_COOKIE_NAME}=`)) ?? null;

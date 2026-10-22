@@ -116,10 +116,11 @@ async function consume(row) {
   }
 }
 
-async function asProbe(statement, params = []) {
+async function asProbe(statement, params = [], { breakGlass = false } = {}) {
   await admin.query("BEGIN");
   try {
     await admin.query(`SET LOCAL ROLE ${probeRole}`);
+    if (breakGlass) await admin.query("SELECT set_config('poker.break_glass', 'on', true)");
     return await admin.query(statement, params);
   } finally { await admin.query("ROLLBACK"); }
 }
@@ -251,6 +252,13 @@ test("StepUpGrant: the consumer uses a grant exactly once, never after expiry, a
   await expectCode(() => asProbe(`UPDATE public."StepUpGrant" SET "consumedAt" = now() WHERE id = $1`, [row.id]), "SU001");
   await expectCode(() => asProbe(`UPDATE public."StepUpGrant" SET "bindHash" = $2 WHERE id = $1`, [row.id, OTHER_HASH]), "42501");
   await expectCode(() => asProbe(`DELETE FROM public."StepUpGrant" WHERE id = $1`, [row.id]), "42501");
+  // Any role can set poker.break_glass; for the consumer it changes nothing.
+  await expectCode(() => asProbe(`UPDATE public."StepUpGrant" SET "consumedAt" = NULL WHERE id = $1`, [row.id], { breakGlass: true }), "SU001", /STEP_UP_GRANT_SINGLE_USE/);
+  // consumedAt must be the time of use, not a value the caller picks.
+  const live = grant();
+  await insertGrant(admin, live);
+  await expectCode(() => asProbe(`UPDATE public."StepUpGrant" SET "consumedAt" = now() - interval '1 hour' WHERE id = $1`, [live.id]), "SU001");
+  await expectCode(() => asProbe(`UPDATE public."StepUpGrant" SET "consumedAt" = now() + interval '1 hour' WHERE id = $1`, [live.id]), "SU001");
 
   // Even a role with every privilege (the administrator) cannot rewrite one without break_glass.
   const fresh = grant();
@@ -269,6 +277,9 @@ test("StepUpGrant: the consumer uses a grant exactly once, never after expiry, a
   await insertGrant(admin, expired);
   assert.deepEqual(await consume(expired), []);
   await expectCode(() => admin.query(`UPDATE public."StepUpGrant" SET "consumedAt" = now() WHERE id = $1`, [expired.id]), "SU001");
+  // The database clock decides expiry: a backdated consumedAt does not help, with or without break_glass.
+  await expectCode(() => asProbe(`UPDATE public."StepUpGrant" SET "consumedAt" = "createdAt" WHERE id = $1`, [expired.id]), "SU001");
+  await expectCode(() => asProbe(`UPDATE public."StepUpGrant" SET "consumedAt" = "createdAt" WHERE id = $1`, [expired.id], { breakGlass: true }), "SU001");
 });
 
 test("StepUpEmailChallenge: money purposes only, 5 attempts, at most 10 minutes; the runtime role cannot rewrite the code", async () => {

@@ -9,17 +9,18 @@ import { uniqueViolation } from "../auth/errors";
 import { applyLockdown, onAccountLockdown } from "../auth/lockdown";
 import { newPasswordSchema } from "../auth/password-policy";
 import { passwords } from "../auth/password";
-import { recordSecurityEvent } from "../auth/security-events";
+import { recordSecurityEvent, type RequestFacts } from "../auth/security-events";
 import { revokeUserSessions } from "../auth/sessions";
 import { emailLink, linkMail, prepareNotice, sendMail } from "../mail/notify";
 import { passwordReset } from "../mail/templates";
-import { mailUnavailable } from "../mail/transport";
+import { mailer, mailUnavailable } from "../mail/transport";
 import { rejectPassword } from "./auth";
 import type { AppDb } from "./db";
 import { defer } from "./defer";
 import { authRoute, Refusal, requestFacts, turnstileGate, type Ctx } from "./guard";
 import { logWarn } from "./log";
 import { fanoutRevoke } from "./realtime";
+import { withOwnDb } from "./request-db";
 import { clearSessionCookies, type AccountUser } from "./session-issue";
 
 /**
@@ -38,6 +39,25 @@ function invalidLink(): Refusal {
 
 function usableAccount(user: AccountUser | null): user is AccountUser {
   return user !== null && user.kind === "HUMAN" && !user.isGuest;
+}
+
+/** Forgot password, deferred part: cap, token, event and mail (the route already answered 202). */
+async function sendResetLink(c: Ctx, db: AppDb, user: AccountUser, facts: RequestFacts, now: Date): Promise<void> {
+  const config = c.get("config")!;
+  if (await emailCapReached(db, user.id, "PASSWORD_RESET", now)) {
+    logWarn({ security: "RESET_CAP_REACHED", userId: user.id }, "password reset not sent: hourly cap reached");
+    return;
+  }
+  const mail = await db.$transaction(async (tx) => {
+    await voidEmailTokens(tx, user.id, ["PASSWORD_RESET"], now);
+    const issued = await issueEmailToken(tx, { userId: user.id, purpose: "PASSWORD_RESET", email: user.email!, credentialsVersion: user.credentialsVersion, now, ignoreCap: true });
+    await recordSecurityEvent(tx, { userId: user.id, type: "PASSWORD_RESET_REQUESTED", facts });
+    const link = emailLink(config, "PASSWORD_RESET", issued!.token);
+    return linkMail("PASSWORD_RESET", user.email!, user.id, issued!, link, passwordReset({ username: user.username, link }));
+  });
+  if (mailUnavailable(c.env, config)) logWarn({ mail: "DISABLED", kind: "PASSWORD_RESET", userId: user.id }, "password reset requested but email is not configured");
+  // Already deferred: send directly (a nested waitUntil is not needed).
+  await mailer.send(c.env, config, mail);
 }
 
 /** POST /api/auth/email/change/confirm: the link sent to the new address. */
@@ -83,23 +103,14 @@ export function registerAuthRecovery(app: Hono<{ Bindings: Env }>): void {
     const parsed = z.object({ email: z.string().trim().email().max(254).transform((value) => value.toLowerCase()) }).safeParse(c.get("jsonBody"));
     if (!parsed.success) return c.json({ error: "Invalid request payload" }, 400);
     const db = c.get("db")!;
-    const config = c.get("config")!;
-    const now = new Date();
     const user = await db.user.findUnique({ where: { email: parsed.data.email } }) as AccountUser | null;
     if (usableAccount(user) && user.passwordHash && user.email) {
-      if (await emailCapReached(db, user.id, "PASSWORD_RESET", now)) {
-        logWarn({ security: "RESET_CAP_REACHED", userId: user.id }, "password reset not sent: hourly cap reached");
-      } else {
-        const mail = await db.$transaction(async (tx) => {
-          await voidEmailTokens(tx, user.id, ["PASSWORD_RESET"], now);
-          const issued = await issueEmailToken(tx, { userId: user.id, purpose: "PASSWORD_RESET", email: user.email!, credentialsVersion: user.credentialsVersion, now, ignoreCap: true });
-          await recordSecurityEvent(tx, { userId: user.id, type: "PASSWORD_RESET_REQUESTED", facts: requestFacts(c) });
-          const link = emailLink(config, "PASSWORD_RESET", issued!.token);
-          return linkMail("PASSWORD_RESET", user.email!, user.id, issued!, link, passwordReset({ username: user.username, link }));
-        });
-        if (mailUnavailable(c.env, config)) logWarn({ mail: "DISABLED", kind: "PASSWORD_RESET", userId: user.id }, "password reset requested but email is not configured");
-        await sendMail(c, mail);
-      }
+      // After the response, on a client of its own: before the 202 a real
+      // account costs the same single lookup as an unknown address, so the
+      // answer's timing does not tell them apart either.
+      const facts = requestFacts(c);
+      const now = new Date();
+      await defer(c, withOwnDb(c.env, (own) => sendResetLink(c, own, user, facts, now)));
     }
     // Same answer whether or not the address has an account.
     return c.json({ ok: true }, 202);

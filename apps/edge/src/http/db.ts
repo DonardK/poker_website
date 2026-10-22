@@ -74,6 +74,7 @@ export interface AppDb {
     count: Count;
   };
   authNonce: {
+    findUnique: Find;
     create: Write;
     deleteMany: WriteMany;
   };
