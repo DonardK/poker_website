@@ -98,6 +98,7 @@ export function AccountMenu() {
           </div>
           <nav aria-label="Account" className="mt-1 flex flex-col">
             <Link href="/" className={`${ITEM} sm:hidden`}>Lobby</Link>
+            <Link href="/wallet" className={ITEM}>Wallet</Link>
             <Link href="/account" className={ITEM}>Account</Link>
             <Link href="/account/security" className={ITEM}>Account &amp; security</Link>
             <Link href="/responsible-gaming" className={ITEM}>Responsible gaming</Link>

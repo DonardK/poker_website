@@ -1,0 +1,141 @@
+{
+  // poker-payments (docs/money/WALLET.md section 3; docs/money/PAYMENTS_RUNBOOK.md).
+  // The only Worker with the poker_payments_app database login and the provider
+  // secrets. poker-api reaches it through a PAYMENTS service binding
+  // (entrypoint PaymentsRpc); providers reach POST /webhooks/:providerKey on
+  // its workers.dev host. CI only dry-runs this file: the operator deploys it
+  // (runbook) after creating its Hyperdrive config. PAYMENTS_MODE stays off in
+  // production until the licence, contracts and the three switches allow money.
+  "$schema": "../../node_modules/wrangler/config-schema.json",
+  "name": "poker-payments",
+  "main": "src/payments/worker.ts",
+  "compatibility_date": "2026-10-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  // Public for provider webhooks, /health and (outside production) the sandbox pages only.
+  "workers_dev": true,
+  "placement": { "region": "aws:eu-west-1" },
+  "vars": {
+    "ENVIRONMENT": "production",
+    "PAYMENTS_MODE": "off",
+    "PUBLIC_SITE_ORIGIN": "https://poker-web.poker-demo.workers.dev",
+    "PAYMENTS_PUBLIC_ORIGIN": "",
+    "REAL_MONEY_COUNTRIES": "MT",
+    "KYC_BEFORE_DEPOSIT": "true",
+    "KYC_CDD_THRESHOLD_MINOR": "200000",
+    "SOF_THRESHOLD_MINOR": "1000000",
+    "DEPOSIT_MIN_MINOR": "1000",
+    "DEPOSIT_MAX_MINOR": "500000",
+    "WITHDRAWAL_MIN_MINOR": "2000",
+    "WITHDRAWAL_MAX_MINOR": "1000000",
+    "AUTO_APPROVE_MAX_MINOR": "50000",
+    "AUTO_APPROVE_DAILY_MAX_MINOR": "100000",
+    "DUAL_APPROVAL_MIN_MINOR": "500000",
+    // The database enforces a 24 h floor whatever this says.
+    "NEW_DESTINATION_COOLDOWN": "24h",
+    "DEPOSIT_SESSION_TTL": "30m",
+    "WITHDRAWAL_QUOTE_TTL": "120s",
+    // No reverse withdrawals (docs/product/DECISIONS.md).
+    "ALLOW_WITHDRAWAL_CANCEL": "false",
+    // Prepaid cards are always refused.
+    "CARD_FUNDING_ALLOWED": "debit,credit",
+    "CARD_PROVIDER_KEY": "nuvei",
+    "CRYPTO_PROVIDER_KEY": "bvnk",
+    "KYC_PROVIDER_KEY": "sumsub",
+    "CRYPTO_PAY_ASSETS": "USDC_ERC20,BTC,ETH",
+    "CRYPTO_ALLOW_USDT_NON_EEA": "false",
+    "PAYMENTS_EGRESS_MODE": "direct",
+    "ADMIN_REQUIRE_CF_ACCESS": "true",
+    "CF_ACCESS_AUD": "",
+    "CF_ACCESS_TEAM_DOMAIN": "",
+    "WEBHOOK_IP_ALLOWLIST": "{}",
+    "NUVEI_ENV": "prod",
+    "BVNK_ENV": "production",
+    "MAIL_FROM": "",
+    "MAIL_REPLY_TO": ""
+    // Secrets (wrangler secret put -c wrangler.payments.jsonc): NOTIFY_LINK_SECRET,
+    // RESEND_API_KEY, NUVEI_MERCHANT_ID, NUVEI_MERCHANT_SITE_ID, NUVEI_SECRET_KEY,
+    // BVNK_WALLET_ID_EUR, BVNK_HAWK_AUTH_ID, BVNK_HAWK_AUTH_KEY, BVNK_WEBHOOK_SECRET,
+    // SUMSUB_APP_TOKEN, SUMSUB_SECRET_KEY, SUMSUB_WEBHOOK_SECRET (preview: SANDBOX_WEBHOOK_SECRET).
+    // Var, not a secret: SUMSUB_SCREENING_INCLUDED=true only for a level with AML screening (see the runbook).
+  },
+  "hyperdrive": [
+    {
+      "binding": "HYPERDRIVE_PAYMENTS",
+      // Replace with the payments Hyperdrive config (caching disabled, user poker_payments_app); runbook step 2.
+      "id": "<PAYMENTS_HYPERDRIVE_ID_CACHE_DISABLED>",
+      "localConnectionString": "postgresql://poker_payments_app:replace-with-local-password@127.0.0.1:5432/poker"
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      { "name": "PAYOUT_DISPATCHER", "class_name": "PayoutDispatcher" },
+      { "name": "SANDBOX_PSP", "class_name": "SandboxPsp" }
+    ]
+  },
+  "exports": {
+    "PayoutDispatcher": { "type": "durable-object", "storage": "sqlite" },
+    "SandboxPsp": { "type": "durable-object", "storage": "sqlite" }
+  },
+  // One cron (Free plan: 5 per account; poker-api and its preview use one each).
+  // It only kicks the PayoutDispatcher; the daily reconciliation runs from its alarm after 03:15 UTC.
+  "triggers": { "crons": ["* * * * *"] },
+  "ratelimits": [
+    { "name": "RL_WEBHOOK", "namespace_id": "2001", "simple": { "limit": 600, "period": 60 } }
+  ],
+  "env": {
+    "preview": {
+      "name": "poker-payments-preview",
+      "workers_dev": true,
+      "vars": {
+        "ENVIRONMENT": "preview",
+        "PAYMENTS_MODE": "sandbox",
+        "PUBLIC_SITE_ORIGIN": "https://poker-web-preview.<subdomain>.workers.dev",
+        "PAYMENTS_PUBLIC_ORIGIN": "https://poker-payments-preview.<subdomain>.workers.dev",
+        "REAL_MONEY_COUNTRIES": "",
+        "KYC_BEFORE_DEPOSIT": "true",
+        "KYC_CDD_THRESHOLD_MINOR": "200000",
+        "SOF_THRESHOLD_MINOR": "1000000",
+        "DEPOSIT_MIN_MINOR": "1000",
+        "DEPOSIT_MAX_MINOR": "500000",
+        "WITHDRAWAL_MIN_MINOR": "2000",
+        "WITHDRAWAL_MAX_MINOR": "1000000",
+        "AUTO_APPROVE_MAX_MINOR": "50000",
+        "AUTO_APPROVE_DAILY_MAX_MINOR": "100000",
+        "DUAL_APPROVAL_MIN_MINOR": "500000",
+        "NEW_DESTINATION_COOLDOWN": "24h",
+        "DEPOSIT_SESSION_TTL": "30m",
+        "WITHDRAWAL_QUOTE_TTL": "120s",
+        "ALLOW_WITHDRAWAL_CANCEL": "false",
+        "CARD_FUNDING_ALLOWED": "debit,credit",
+        "CARD_PROVIDER_KEY": "sandbox",
+        "CRYPTO_PROVIDER_KEY": "sandbox",
+        "KYC_PROVIDER_KEY": "sandbox",
+        "CRYPTO_PAY_ASSETS": "USDC_ERC20,BTC,ETH",
+        "CRYPTO_ALLOW_USDT_NON_EEA": "false",
+        "PAYMENTS_EGRESS_MODE": "direct",
+        "ADMIN_REQUIRE_CF_ACCESS": "false",
+        "CF_ACCESS_AUD": "",
+        "CF_ACCESS_TEAM_DOMAIN": "",
+        "WEBHOOK_IP_ALLOWLIST": "{}",
+        "NUVEI_ENV": "int",
+        "BVNK_ENV": "sandbox",
+        "MAIL_FROM": "",
+        "MAIL_REPLY_TO": ""
+      },
+      "hyperdrive": [
+        { "binding": "HYPERDRIVE_PAYMENTS", "id": "<PREVIEW_PAYMENTS_HYPERDRIVE_ID>", "localConnectionString": "postgresql://poker_payments_app:replace-with-local-password@127.0.0.1:5432/poker" }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "PAYOUT_DISPATCHER", "class_name": "PayoutDispatcher" },
+          { "name": "SANDBOX_PSP", "class_name": "SandboxPsp" }
+        ]
+      },
+      "triggers": { "crons": ["* * * * *"] },
+      "ratelimits": [
+        { "name": "RL_WEBHOOK", "namespace_id": "2002", "simple": { "limit": 600, "period": 60 } }
+      ]
+    }
+  }
+}

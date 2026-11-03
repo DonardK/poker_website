@@ -72,7 +72,8 @@ export function turnstileScriptLoaded(): boolean {
   return typeof document !== "undefined" && (document.getElementById(TURNSTILE_SCRIPT_ID) !== null || window.turnstile !== undefined);
 }
 
-function documentNonce(): string | undefined {
+/** This document's CSP nonce, read from a script that carries it (browsers hide the attribute, not the property). */
+export function documentNonce(): string | undefined {
   for (const script of document.scripts) {
     if (script.nonce) return script.nonce;
   }

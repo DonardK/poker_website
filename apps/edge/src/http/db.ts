@@ -94,5 +94,16 @@ export interface AppDb {
     deleteMany: WriteMany;
     count: Count;
   };
+  // Responsible gaming (migration 20261019120000_payments_wallet; the runtime may insert, triggers set the timing).
+  responsibleGamingLimit: {
+    findMany: FindMany;
+    create: Write;
+  };
+  selfExclusion: {
+    findFirst: Find;
+    findMany: FindMany;
+    create: Write;
+    update: Write;
+  };
   $transaction<T>(fn: (tx: AppDb) => Promise<T>, options?: { maxWait?: number; timeout?: number }): Promise<T>;
 }

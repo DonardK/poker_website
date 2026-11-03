@@ -9,9 +9,14 @@
  * starts (and stops) its own cluster.
  * Run (from apps/server): node test/support/run-tests.mjs --import tsx test/db/ledger-foundation.test.mjs
  *
- * The runtime login (poker_app, inheriting poker_server) is used exactly as
- * production uses it; the
- * superuser only creates fixtures and inspects privileges.
+ * Each database login is used exactly as production uses it: the runtime
+ * (poker_app, inheriting poker_server) posts PLAY_GRANT, BUY_IN, CASH_OUT and
+ * RAKE through ledger_post; the payments Worker's login (poker_payments_app)
+ * posts the deposit and withdrawal types through ledger_post_payments, always
+ * with the payment row they are bound to (wallet-fixtures.mjs); the
+ * back-office login (poker_backoffice_app) posts ADJUSTMENT through
+ * ledger_post_backoffice. The superuser only creates fixtures and inspects
+ * privileges.
  */
 import { after, before, test } from "node:test";
 import assert from "node:assert/strict";
@@ -21,36 +26,71 @@ import pg from "pg";
 import { assertLoopbackUrl, migrationNames, migrationsDir, startTestDatabase, withDatabase } from "../support/pg.mjs";
 import { raceBehindRowLock } from "./support.mjs";
 import {
-  LedgerError, adjustment, buyIn, cashOut, creditDeposit, ensureAccount, getBalances, grantPlay, holdWithdrawal, post,
-  providerFee, rake, reconstructBalance, releaseWithdrawal, reverseDeposit, settleWithdrawal,
+  ENTRY_POINT, LedgerError, adjustment, buyIn, cashOut, ensureAccount, getBalances, grantPlay, post,
+  providerFee, rake, reconstructBalance,
 } from "../../src/money/ledger.ts";
+import {
+  creditBoundDeposit, holdBoundWithdrawal, inPoolTx, insertDeposit, recoverBoundChargeback, releaseBoundWithdrawal, returnBoundWithdrawal,
+  reverseBoundDeposit, settleBoundWithdrawal,
+} from "./wallet-fixtures.mjs";
 
 const MIGRATION = "20261002200000_ledger_foundation";
 let cluster = null;
 let adminUrl;
 let runtimeUrl;
+let paymentsUrl;
+let backofficeUrl;
 let admin;
 let runtime;
+let payments;
+let backoffice;
 
 before(async () => {
   if (process.env.POKER_TEST_ADMIN_DATABASE_URL && process.env.POKER_TEST_DATABASE_URL) {
     adminUrl = process.env.POKER_TEST_ADMIN_DATABASE_URL;
     runtimeUrl = process.env.POKER_TEST_DATABASE_URL;
+    paymentsUrl = process.env.POKER_TEST_PAYMENTS_DATABASE_URL;
+    backofficeUrl = process.env.POKER_TEST_BACKOFFICE_DATABASE_URL;
   } else {
     cluster = await startTestDatabase({ log: (line) => console.error(line) });
-    ({ adminUrl, runtimeUrl } = cluster);
+    ({ adminUrl, runtimeUrl, paymentsUrl, backofficeUrl } = cluster);
   }
   assertLoopbackUrl(adminUrl, "admin URL");
   assertLoopbackUrl(runtimeUrl, "runtime URL");
+  assertLoopbackUrl(paymentsUrl, "payments URL");
+  assertLoopbackUrl(backofficeUrl, "back-office URL");
   admin = new pg.Pool({ connectionString: adminUrl, max: 4 });
   runtime = new pg.Pool({ connectionString: runtimeUrl, max: 70 });
+  payments = new pg.Pool({ connectionString: paymentsUrl, max: 20 });
+  backoffice = new pg.Pool({ connectionString: backofficeUrl, max: 4 });
 });
 
 after(async () => {
+  await backoffice?.end();
+  await payments?.end();
   await runtime?.end();
   await admin?.end();
   await cluster?.stop();
 });
+
+/** A credited EUR or TEST_EUR deposit (payments login, bound row); returns { depositId, txId }. */
+const deposit = (input) => inPoolTx(payments, (client) => creditBoundDeposit(client, input));
+/** A back-office adjustment: a ticket, the author and a different approver. */
+const adjust = (db, input) => adjustment(db, { ticket: "OPS-1", createdBy: "staff:author", approvedBy: "staff:approver", ...input });
+/**
+ * What the payments Worker records when two administrators approve a money
+ * adjustment (each with a passkey step-up): one APPROVE row per admin, bound
+ * to the user, asset, signed amount and idempotency key. Written here by the
+ * administrator connection; the back-office login cannot write them.
+ */
+async function approveAdjustment(approvers, { key, asset, userId, amount }) {
+  for (const actor of approvers) {
+    await admin.query(`INSERT INTO public."PaymentReviewAction" ("subjectType", "subjectId", "subjectUserId", "actorKind", "actorUserId",
+        "actorStepUpMethod", "verb", "reasonCode", "metadata")
+      VALUES ('USER', $1, $1, 'ADMIN', $2, 'PASSKEY', 'APPROVE', $3, $4::jsonb)`,
+    [userId, actor, `ADJUSTMENT:${key}`, JSON.stringify({ asset, amountMinor: amount.toString() })]);
+  }
+}
 
 /** The $queryRaw tagged-template interface of a Prisma client, over a pg client. */
 function sqlDb(client) {
@@ -96,6 +136,14 @@ const rawPost = (client, key, type, reference, entries, createdBy = null) =>
   client.query("SELECT public.ledger_post($1, $2, $3::jsonb, $4::jsonb, $5)::text AS id",
     [key, type, typeof reference === "string" ? reference : JSON.stringify(reference), typeof entries === "string" ? entries : JSON.stringify(entries), createdBy])
     .then((r) => r.rows[0].id);
+
+/** Like rawPost, through a named entry point (the role of `client` must be allowed to execute it). */
+const rawPostVia = (client, fn, key, type, reference, entries, createdBy = null) => {
+  if (!/^ledger_post(?:_payments|_backoffice)?$/.test(fn)) throw new Error(`not an entry point: ${fn}`);
+  return client.query(`SELECT public.${fn}($1, $2, $3::jsonb, $4::jsonb, $5)::text AS id`,
+    [key, type, typeof reference === "string" ? reference : JSON.stringify(reference), typeof entries === "string" ? entries : JSON.stringify(entries), createdBy])
+    .then((r) => r.rows[0].id);
+};
 
 async function refused(promise, sqlstate, prefix) {
   await assert.rejects(promise, (error) => {
@@ -145,6 +193,8 @@ test("the ledger migration is applied after every earlier migration", async () =
     ["ETH", "CRYPTO", 9, 18, "ethereum", false],
     ["EUR", "FIAT", 2, null, null, false],
     ["PLAY", "PLAY", 0, null, null, true],
+    // Sandbox money (20261019120000_payments_wallet): enabled, booked only by the sandbox provider.
+    ["TEST_EUR", "TEST", 2, null, null, true],
     ["USDC_ERC20", "CRYPTO", 6, 6, "ethereum", false],
     ["USDT_ERC20", "CRYPTO", 6, 6, "ethereum", false],
     ["USDT_TRC20", "CRYPTO", 6, 6, "tron", false],
@@ -215,26 +265,44 @@ test("migration applies on a database with existing rows, leaves them untouched,
   }
 });
 
-test("functions are SECURITY DEFINER with a pinned search_path and only poker_server may execute them", async () => {
+test("functions are SECURITY DEFINER with a pinned search_path and each role may execute only its own entry point", async () => {
+  const ENTRY_POINTS = ["ledger_ensure_account", "ledger_post", "ledger_post_backoffice", "ledger_post_core", "ledger_post_payments"];
   const { rows } = await admin.query(`
     SELECT p.proname, p.prosecdef, p.proconfig FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
-     WHERE n.nspname = 'public' AND p.proname IN ('ledger_post', 'ledger_ensure_account') ORDER BY p.proname`);
-  assert.equal(rows.length, 2);
+     WHERE n.nspname = 'public' AND p.proname = ANY($1) ORDER BY p.proname`, [ENTRY_POINTS]);
+  assert.deepEqual(rows.map((row) => row.proname), ENTRY_POINTS);
+  // The two functions that write timestamps also pin UTC (TIMESTAMP(3) columns hold UTC whichever login calls them).
+  const writesTimestamps = new Set(["ledger_ensure_account", "ledger_post_core"]);
   for (const row of rows) {
     assert.equal(row.prosecdef, true, row.proname);
-    assert.deepEqual(row.proconfig, ["search_path=pg_catalog, public, pg_temp"], row.proname);
+    assert.deepEqual(row.proconfig, ["search_path=pg_catalog, public, pg_temp", ...(writesTimestamps.has(row.proname) ? ["TimeZone=UTC"] : [])], row.proname);
   }
   if ((await admin.query(`SELECT 1 FROM pg_roles WHERE rolname = 'ledger_outsider'`)).rowCount === 0) {
     await admin.query(`CREATE ROLE ledger_outsider NOLOGIN`);
   }
-  const priv = await admin.query(`SELECT
-      has_function_privilege('poker_server', 'public.ledger_post(text, text, jsonb, jsonb, text)', 'EXECUTE') AS rt_post,
-      has_function_privilege('poker_server', 'public.ledger_ensure_account(text, text, text, text, text)', 'EXECUTE') AS rt_ensure,
-      has_function_privilege('poker_app', 'public.ledger_post(text, text, jsonb, jsonb, text)', 'EXECUTE') AS app_post,
-      has_function_privilege('poker_app', 'public.ledger_ensure_account(text, text, text, text, text)', 'EXECUTE') AS app_ensure,
-      has_function_privilege('ledger_outsider', 'public.ledger_post(text, text, jsonb, jsonb, text)', 'EXECUTE') AS other_post,
-      has_function_privilege('ledger_outsider', 'public.ledger_ensure_account(text, text, text, text, text)', 'EXECUTE') AS other_ensure`);
-  assert.deepEqual(priv.rows[0], { rt_post: true, rt_ensure: true, app_post: true, app_ensure: true, other_post: false, other_ensure: false });
+  const signatures = {
+    ledger_ensure_account: "public.ledger_ensure_account(text, text, text, text, text)",
+    ledger_post: "public.ledger_post(text, text, jsonb, jsonb, text)",
+    ledger_post_payments: "public.ledger_post_payments(text, text, jsonb, jsonb, text)",
+    ledger_post_backoffice: "public.ledger_post_backoffice(text, text, jsonb, jsonb, text)",
+    ledger_post_core: "public.ledger_post_core(text[], text[], text, text, jsonb, jsonb, text)",
+  };
+  const expected = {
+    poker_server: ["ledger_ensure_account", "ledger_post"],
+    poker_app: ["ledger_ensure_account", "ledger_post"],
+    poker_payments: ["ledger_ensure_account", "ledger_post_payments"],
+    poker_payments_app: ["ledger_ensure_account", "ledger_post_payments"],
+    poker_backoffice: ["ledger_ensure_account", "ledger_post_backoffice"],
+    poker_backoffice_app: ["ledger_ensure_account", "ledger_post_backoffice"],
+    ledger_outsider: [],
+  };
+  for (const [role, allowed] of Object.entries(expected)) {
+    const granted = [];
+    for (const [name, signature] of Object.entries(signatures)) {
+      if ((await admin.query(`SELECT has_function_privilege($1, $2, 'EXECUTE') AS ok`, [role, signature])).rows[0].ok) granted.push(name);
+    }
+    assert.deepEqual(granted.sort(), allowed, role);
+  }
   const rls = await admin.query(`SELECT relname, relrowsecurity, relforcerowsecurity FROM pg_class
     WHERE relname IN ('Asset', 'LedgerAccount', 'LedgerTransaction', 'LedgerEntry') ORDER BY relname`);
   assert.equal(rls.rows.length, 4);
@@ -364,9 +432,16 @@ test("the database itself refuses invalid postings when ledger_post is called di
   await refused(rawPost(c, key(), "BUY_IN", {}, [e(user, "PLAY", -10), e(user2, "PLAY", 10)]), "LG018", "LEDGER_BAD_SHAPE");
   await refused(rawPost(c, key(), "CASH_OUT", {}, ok), "LG018", "LEDGER_BAD_SHAPE");
   await refused(rawPost(c, key(), "PLAY_GRANT", {}, [e(escrow, "PLAY", -10), e(user, "PLAY", 10)]), "LG018", "LEDGER_BAD_SHAPE");
-  await refused(rawPost(c, key(), "ADJUSTMENT", { reason: "x" }, [e(issuance, "PLAY", -10), e(user, "PLAY", 10)]), "LG018", "LEDGER_BAD_SHAPE");
-  await refused(rawPost(c, key(), "ADJUSTMENT", { reason: " " }, [e(issuance, "PLAY", -10), e(user, "PLAY", 10)], "staff:1"), "LG018", "LEDGER_BAD_SHAPE");
   await refused(rawPost(c, key(), "RAKE", {}, [e(escrow, "PLAY", -10), e(user, "PLAY", 10)]), "LG018", "LEDGER_BAD_SHAPE");
+  // An adjustment is never the runtime's to post (and the back office needs a ticket, an author and another approver).
+  await refused(rawPost(c, key(), "ADJUSTMENT", { reason: "x" }, [e(issuance, "PLAY", -10), e(user, "PLAY", 10)], "staff:1"), "LG022", "LEDGER_TYPE_FORBIDDEN");
+  const office = { reason: "x", ticket: "OPS-7", approvedBy: "staff:2" };
+  await refused(rawPostVia(backoffice, "ledger_post_backoffice", key(), "ADJUSTMENT", office, [e(issuance, "PLAY", -10), e(user, "PLAY", 10)]),
+    "LG022", "LEDGER_TYPE_FORBIDDEN");
+  await refused(rawPostVia(backoffice, "ledger_post_backoffice", key(), "ADJUSTMENT", { ...office, reason: " " }, [e(issuance, "PLAY", -10), e(user, "PLAY", 10)], "staff:1"),
+    "LG018", "LEDGER_BAD_SHAPE");
+  await refused(rawPostVia(backoffice, "ledger_post_backoffice", key(), "ADJUSTMENT", office, [e(issuance, "PLAY", -10), e(escrow, "PLAY", 10)], "staff:1"),
+    "LG018", "LEDGER_BAD_SHAPE");
   // A valid one goes through; nothing above changed any balance.
   assert.equal(await balanceOf(user), 1000n);
   assert.equal(await balanceOf(escrow), 0n);
@@ -380,23 +455,28 @@ test("the database refuses an asset mismatch, a disabled asset and a balance ove
   const tableId = await makeTable();
   const db = sqlDb(runtime);
   const playUser = await ensureAccount(db, { asset: "PLAY", type: "USER_AVAILABLE", userId });
+  const playEscrow = await ensureAccount(db, { asset: "PLAY", type: "TABLE_ESCROW", tableId });
   await admin.query(`UPDATE public."Asset" SET "enabled" = true WHERE "code" = 'ETH'`);
   let ethUser;
-  let ethEscrow;
   try {
     ethUser = await ensureAccount(db, { asset: "ETH", type: "USER_AVAILABLE", userId });
-    ethEscrow = await ensureAccount(db, { asset: "ETH", type: "TABLE_ESCROW", tableId });
-    // Entry claims PLAY on an ETH account (balanced per claimed asset), and
-    // the other way round: ETH on a PLAY account.
-    await refused(rawPost(runtime, `mismatch:${userId}`, "BUY_IN", {}, [e(playUser, "PLAY", -1), e(ethEscrow, "PLAY", 1)]), "LG007", "LEDGER_ASSET_MISMATCH");
-    await refused(rawPost(runtime, `mismatch2:${userId}`, "BUY_IN", {}, [e(playUser, "ETH", -1), e(ethEscrow, "ETH", 1)]), "LG007", "LEDGER_ASSET_MISMATCH");
-    await assert.rejects(post(db, { key: `mismatch3:${userId}`, type: "BUY_IN", reference: {}, entries: [{ accountId: ethUser, asset: "PLAY", amount: -1n }, { accountId: ethEscrow, asset: "PLAY", amount: 1n }] }),
+    // Table accounts hold PLAY only (real-money tables are Phase 2).
+    await refused(runtime.query("SELECT public.ledger_ensure_account('ETH', 'TABLE_ESCROW', NULL, $1, NULL)", [tableId]), "LG014", "LEDGER_BAD_ACCOUNT");
+    // Entry claims PLAY on an ETH account (balanced per claimed asset).
+    await refused(rawPost(runtime, `mismatch:${userId}`, "BUY_IN", {}, [e(playUser, "PLAY", -1), e(ethUser, "PLAY", 1)]), "LG007", "LEDGER_ASSET_MISMATCH");
+    // The runtime may not move a non-PLAY asset at all: refused before any account is read.
+    await refused(rawPost(runtime, `mismatch2:${userId}`, "BUY_IN", {}, [e(playUser, "ETH", -1), e(ethUser, "ETH", 1)]), "LG022", "LEDGER_TYPE_FORBIDDEN");
+    await assert.rejects(post(db, { key: `mismatch3:${userId}`, type: "BUY_IN", reference: {}, entries: [{ accountId: ethUser, asset: "PLAY", amount: -1n }, { accountId: playEscrow, asset: "PLAY", amount: 1n }] }),
       (error) => error instanceof LedgerError && error.code === "INVARIANT" && error.dbCode === "LEDGER_ASSET_MISMATCH");
   } finally {
     await admin.query(`UPDATE public."Asset" SET "enabled" = false WHERE "code" = 'ETH'`);
   }
-  await refused(rawPost(runtime, `disabled:${userId}`, "BUY_IN", {}, [e(ethUser, "ETH", -1), e(ethEscrow, "ETH", 1)]), "LG009", "LEDGER_ASSET_DISABLED");
-  await assert.rejects(post(db, { key: `disabled2:${userId}`, type: "BUY_IN", reference: {}, entries: [{ accountId: ethUser, asset: "ETH", amount: -1n }, { accountId: ethEscrow, asset: "ETH", amount: 1n }] }),
+  // The other way round, TEST_EUR claimed on a PLAY account, through the payments entry point.
+  const testUser = await ensureAccount(sqlDb(payments), { asset: "TEST_EUR", type: "USER_AVAILABLE", userId });
+  await refused(rawPostVia(payments, "ledger_post_payments", `mismatch4:${userId}`, "DEPOSIT_CREDIT", {}, [e(playUser, "TEST_EUR", -1), e(testUser, "TEST_EUR", 1)]),
+    "LG007", "LEDGER_ASSET_MISMATCH");
+  await refused(rawPost(runtime, `disabled:${userId}`, "BUY_IN", {}, [e(ethUser, "ETH", -1), e(playEscrow, "ETH", 1)]), "LG009", "LEDGER_ASSET_DISABLED");
+  await assert.rejects(post(db, { key: `disabled2:${userId}`, type: "BUY_IN", reference: {}, entries: [{ accountId: ethUser, asset: "ETH", amount: -1n }, { accountId: playEscrow, asset: "ETH", amount: 1n }] }),
     (error) => error instanceof LedgerError && error.code === "ASSET_DISABLED");
 
   const MAX = 9_223_372_036_854_775_807n;
@@ -423,31 +503,102 @@ test("the database refuses an asset mismatch, a disabled asset and a balance ove
   // Real asset: two providers' clearing accounts can each go to -BIGINT_MAX,
   // so a user balance can be pushed past +BIGINT_MAX, and one clearing account
   // past BIGINT_MIN. Both are refused as LEDGER_AMOUNT_OVERFLOW, never wrapped.
-  await admin.query(`UPDATE public."Asset" SET "enabled" = true, "maxAmount" = 9223372036854775807 WHERE "code" = 'ETH'`);
+  // Deposits are booked by the payments login, each bound to its Deposit row.
+  await admin.query(`UPDATE public."Asset" SET "enabled" = true, "maxAmount" = 9223372036854775807 WHERE "code" = 'EUR'`);
   try {
     const whale = await makeUser();
     const minnow = await makeUser();
-    const deposit = (key, user, providerKey, amount) => creditDeposit(db, { key, asset: "ETH", userId: user, providerKey, amount, providerReference: key });
-    await deposit(`overflow:eth:1:${whale}`, whale, "psp-a", MAX);
-    const whaleAccount = await ensureAccount(db, { asset: "ETH", type: "USER_AVAILABLE", userId: whale });
-    const clearingA = await ensureAccount(db, { asset: "ETH", type: "DEPOSIT_CLEARING", providerKey: "psp-a" });
+    const credit = (user, providerKey, amount) => deposit({ userId: user, providerKey, asset: "EUR", amount });
+    const whaleDeposit = await credit(whale, "psp-a", MAX);
+    const whaleAccount = await ensureAccount(db, { asset: "EUR", type: "USER_AVAILABLE", userId: whale });
+    const clearingA = await ensureAccount(db, { asset: "EUR", type: "DEPOSIT_CLEARING", providerKey: "psp-a" });
     assert.equal(await balanceOf(whaleAccount), MAX);
     // User balance above BIGINT_MAX.
-    await assert.rejects(deposit(`overflow:eth:2:${whale}`, whale, "psp-b", 1n), isOverflow(whaleAccount));
+    await assert.rejects(credit(whale, "psp-b", 1n), isOverflow(whaleAccount));
     assert.equal(await balanceOf(whaleAccount), MAX);
     // Clearing balance reaches exactly BIGINT_MIN (allowed), then one more unit is refused.
-    await deposit(`overflow:eth:3:${minnow}`, minnow, "psp-a", 1n);
+    const minnowDeposit = await credit(minnow, "psp-a", 1n);
     assert.equal(await balanceOf(clearingA), -MAX - 1n);
-    await assert.rejects(deposit(`overflow:eth:4:${minnow}`, minnow, "psp-a", 1n), isOverflow(clearingA));
+    await assert.rejects(credit(minnow, "psp-a", 1n), isOverflow(clearingA));
     assert.equal(await balanceOf(clearingA), -MAX - 1n);
+    // A refused credit leaves no Deposit row behind (one transaction).
+    const { rows: [rows] } = await admin.query(`SELECT count(*)::int AS n FROM public."Deposit" WHERE "userId" = ANY($1)`, [[whale, minnow]]);
+    assert.equal(rows.n, 2);
     // Undo, so the accounts end at zero (asset sums stay zero throughout).
-    await reverseDeposit(db, { key: `overflow:eth:undo1:${minnow}`, asset: "ETH", userId: minnow, providerKey: "psp-a", amount: 1n, userPortion: 1n, providerReference: "undo1" });
-    await reverseDeposit(db, { key: `overflow:eth:undo2:${whale}`, asset: "ETH", userId: whale, providerKey: "psp-a", amount: MAX, userPortion: MAX, providerReference: "undo2" });
+    await inPoolTx(payments, (client) => reverseBoundDeposit(client, { ...minnowDeposit, userId: minnow, providerKey: "psp-a", asset: "EUR", amount: 1n, userPortion: 1n }));
+    await inPoolTx(payments, (client) => reverseBoundDeposit(client, { ...whaleDeposit, userId: whale, providerKey: "psp-a", asset: "EUR", amount: MAX, userPortion: MAX }));
     assert.equal(await balanceOf(clearingA), 0n);
     assert.equal(await balanceOf(whaleAccount), 0n);
     for (const id of [whaleAccount, clearingA]) assert.equal((await reconstructBalance(db, id)).consistent, true);
   } finally {
-    await admin.query(`UPDATE public."Asset" SET "enabled" = false, "maxAmount" = 10000000000000 WHERE "code" = 'ETH'`);
+    await admin.query(`UPDATE public."Asset" SET "enabled" = false, "maxAmount" = 1000000000 WHERE "code" = 'EUR'`);
+  }
+});
+
+test("each entry point refuses every type of another role (LG022) before it looks at anything else", async () => {
+  const clients = { runtime: [runtime, "ledger_post"], payments: [payments, "ledger_post_payments"], backoffice: [backoffice, "ledger_post_backoffice"] };
+  // A valid key and an office-shaped reference; the entries are deliberately invalid: LG022 comes first.
+  const reference = { reason: "probe", ticket: "OPS-0", approvedBy: "staff:2" };
+  let pairs = 0;
+  for (const [point, [pool, fn]] of Object.entries(clients)) {
+    for (const [type, owner] of Object.entries(ENTRY_POINT)) {
+      if (owner === point) continue;
+      await refused(rawPostVia(pool, fn, `lg022:${point}:${type}`, type, reference, "[]", "staff:1"), "LG022", "LEDGER_TYPE_FORBIDDEN");
+      pairs++;
+    }
+  }
+  assert.equal(pairs, 2 * 13, "every (entry point, foreign type) pair");
+  // The same refusal through the TypeScript client is FORBIDDEN, and a role
+  // calling a foreign entry point is refused by the database privilege (42501).
+  await assert.rejects(post(sqlDb(runtime),
+    { key: "lg022:ts", type: "DEPOSIT_CREDIT", reference: {}, entries: [{ accountId: 1n, asset: "EUR", amount: -1n }, { accountId: 2n, asset: "EUR", amount: 1n }] }),
+  (error) => error instanceof LedgerError && error.code === "FORBIDDEN" && error.dbCode === "PERMISSION_DENIED");
+  await refused(rawPostVia(payments, "ledger_post", "lg022:acl", "BUY_IN", {}, "[]"), "42501");
+  await refused(rawPostVia(runtime, "ledger_post_payments", "lg022:acl2", "DEPOSIT_CREDIT", {}, "[]"), "42501");
+});
+
+test("the two new posting types have exactly their shapes: CHARGEBACK_RECOVERY inverts a reversal, WITHDRAWAL_RETURN brings a payout back", async () => {
+  await admin.query(`UPDATE public."Asset" SET "enabled" = true WHERE "code" = 'EUR'`);
+  try {
+    const userId = await makeUser();
+    const db = sqlDb(runtime);
+    const credited = await deposit({ userId, providerKey: "psp-shape", asset: "EUR", amount: 10_000n });
+    const user = await ensureAccount(db, { asset: "EUR", type: "USER_AVAILABLE", userId });
+    const clearing = await ensureAccount(db, { asset: "EUR", type: "DEPOSIT_CLEARING", providerKey: "psp-shape" });
+    const losses = await ensureAccount(db, { asset: "EUR", type: "CHARGEBACK_LOSSES" });
+    const wdClearing = await ensureAccount(db, { asset: "EUR", type: "WITHDRAWAL_CLEARING", providerKey: "psp-shape" });
+    const lossesBefore = await balanceOf(losses);
+    // Chargeback of 6000 with only 2000 of it still covered by the user; then the dispute is won.
+    const reversal = await inPoolTx(payments, (client) => reverseBoundDeposit(client, {
+      ...credited, userId, providerKey: "psp-shape", asset: "EUR", amount: 6000n, userPortion: 2000n,
+    }));
+    assert.equal(await balanceOf(user), 8000n);
+    assert.equal(await balanceOf(losses), lossesBefore - 4000n);
+    await inPoolTx(payments, (client) => recoverBoundChargeback(client, {
+      recoversReversalId: reversal.reversalId, depositId: credited.depositId, userId, providerKey: "psp-shape", asset: "EUR", amount: 6000n, userPortion: 2000n,
+    }));
+    assert.equal(await balanceOf(user), 10_000n);
+    assert.equal(await balanceOf(losses), lossesBefore);
+    const { rows: [dep] } = await admin.query(`SELECT "status"::text AS status, "reversedMinor"::text AS r, "recoveredMinor"::text AS c FROM public."Deposit" WHERE "id" = $1`, [credited.depositId]);
+    assert.deepEqual(dep, { status: "CREDITED", r: "6000", c: "6000" });
+    // Pay out 3000 (fee 100), then the rail returns the 2900 it carried.
+    const held = await inPoolTx(payments, (client) => holdBoundWithdrawal(client, { userId, asset: "EUR", amount: 3000n, fee: 100n, sourceDepositId: credited.depositId }));
+    await inPoolTx(payments, (client) => settleBoundWithdrawal(client, { ...held, userId, asset: "EUR", amount: 3000n, fee: 100n, providerKey: "psp-shape" }));
+    assert.equal(await balanceOf(user), 7000n);
+    assert.equal(await balanceOf(wdClearing), 2900n);
+    await inPoolTx(payments, (client) => returnBoundWithdrawal(client, { ...held, userId, asset: "EUR", amount: 2900n, providerKey: "psp-shape" }));
+    assert.equal(await balanceOf(user), 9900n);
+    assert.equal(await balanceOf(wdClearing), 0n);
+    // Shapes the database refuses for the new types (raw, as the payments login).
+    let n = 0;
+    const raw = (type, entries) => rawPostVia(payments, "ledger_post_payments", `shape:${userId}:${n++}`, type, {}, entries);
+    await refused(raw("CHARGEBACK_RECOVERY", [e(clearing, "EUR", 10), e(user, "EUR", -10)]), "LG018", "LEDGER_BAD_SHAPE");
+    await refused(raw("CHARGEBACK_RECOVERY", [e(losses, "EUR", -10), e(user, "EUR", 10)]), "LG018", "LEDGER_BAD_SHAPE");
+    await refused(raw("WITHDRAWAL_RETURN", [e(wdClearing, "EUR", 10), e(user, "EUR", -10)]), "LG018", "LEDGER_BAD_SHAPE");
+    await refused(raw("WITHDRAWAL_RETURN", [e(clearing, "EUR", -10), e(user, "EUR", 10)]), "LG018", "LEDGER_BAD_SHAPE");
+    for (const id of [user, clearing, losses, wdClearing]) assert.equal((await reconstructBalance(db, id)).consistent, true);
+  } finally {
+    await admin.query(`UPDATE public."Asset" SET "enabled" = false WHERE "code" = 'EUR'`);
   }
 });
 
@@ -684,28 +835,27 @@ test("first postings that create the same new accounts from opposite plan orders
 });
 
 test("disabling an asset is an exact stop: no posting validated before the disable commits after it", async () => {
+  // Real money moves only through the payments login (the runtime is PLAY only), so the stop is shown on its postings.
   await admin.query(`UPDATE public."Asset" SET "enabled" = true WHERE "code" = 'EUR'`);
   const holder = await admin.connect();
   try {
-    const userId = await makeUser();
-    const tableId = await makeTable();
-    const db = sqlDb(runtime);
-    await creditDeposit(db, { key: `stop:dep:${userId}`, asset: "EUR", userId, providerKey: "psp-stop", amount: 1000n, providerReference: "stop" });
-    const user = await ensureAccount(db, { asset: "EUR", type: "USER_AVAILABLE", userId });
-    await ensureAccount(db, { asset: "EUR", type: "TABLE_ESCROW", tableId });
-    const input = { asset: "EUR", userId, tableId, chips: 10, chipUnit: 1n };
+    const providerKey = `psp-stop-${Date.now().toString(36)}${(fixtureSeq++).toString(36)}`;
+    const db = sqlDb(payments);
+    const fees = await ensureAccount(db, { asset: "EUR", type: "PROVIDER_FEES", providerKey });
+    await ensureAccount(db, { asset: "EUR", type: "ADJUSTMENTS" });
+    const fee = (client, key) => providerFee(sqlDb(client), { key, asset: "EUR", providerKey, amount: 10n, providerReference: key });
 
     // 1. A disable is in progress (uncommitted) when a posting arrives: the
     //    posting waits for it and is then refused, instead of reading the old
     //    committed "enabled" and committing after the disable.
     await holder.query("BEGIN");
     await holder.query(`UPDATE public."Asset" SET "enabled" = false WHERE "code" = 'EUR'`);
-    const client = await runtime.connect();
+    const client = await payments.connect();
     const pid = (await client.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
     let attempt;
     try {
       await client.query("BEGIN");
-      attempt = track(buyIn(sqlDb(client), { ...input, key: `stop:buy1:${userId}` }));
+      attempt = track(fee(client, `stop:fee1:${providerKey}`));
       await waitUntilBlocked(pid);
       assert.equal(attempt.settled, false, "the posting waits for the pending disable");
       await holder.query("COMMIT");
@@ -714,15 +864,15 @@ test("disabling an asset is an exact stop: no posting validated before the disab
     } finally {
       client.release();
     }
-    assert.equal(await balanceOf(user), 1000n);
+    assert.equal(await balanceOf(fees), 0n);
 
     // 2. A posting is in flight (uncommitted) when the administrator disables
     //    the asset: the disable waits for it, and every later posting is refused.
     await admin.query(`UPDATE public."Asset" SET "enabled" = true WHERE "code" = 'EUR'`);
-    const inflight = await runtime.connect();
+    const inflight = await payments.connect();
     try {
       await inflight.query("BEGIN");
-      await buyIn(sqlDb(inflight), { ...input, key: `stop:buy2:${userId}` });
+      await fee(inflight, `stop:fee2:${providerKey}`);
       const holderPid = (await holder.query("SELECT pg_backend_pid() AS pid")).rows[0].pid;
       const disable = track(holder.query(`UPDATE public."Asset" SET "enabled" = false WHERE "code" = 'EUR'`));
       await waitUntilBlocked(holderPid);
@@ -732,9 +882,9 @@ test("disabling an asset is an exact stop: no posting validated before the disab
     } finally {
       inflight.release();
     }
-    assert.equal(await balanceOf(user), 990n, "the posting that was in flight before the disable committed");
-    await assert.rejects(buyIn(db, { ...input, key: `stop:buy3:${userId}` }), (error) => error instanceof LedgerError && error.code === "ASSET_DISABLED");
-    assert.equal(await balanceOf(user), 990n);
+    assert.equal(await balanceOf(fees), 10n, "the posting that was in flight before the disable committed");
+    await assert.rejects(fee(payments, `stop:fee3:${providerKey}`), (error) => error instanceof LedgerError && error.code === "ASSET_DISABLED");
+    assert.equal(await balanceOf(fees), 10n);
   } finally {
     await holder.query("ROLLBACK").catch(() => {});
     holder.release();
@@ -742,67 +892,252 @@ test("disabling an asset is an exact stop: no posting validated before the disab
   }
 });
 
-test("after 1,000+ random postings every account reconstructs from the journal and every asset sums to zero", async () => {
-  await admin.query(`UPDATE public."Asset" SET "enabled" = true WHERE "code" IN ('EUR', 'BTC')`);
+test("after 1,000+ random postings by all three roles every account reconstructs, every asset sums to zero and every payment posting is bound", async () => {
+  await admin.query(`UPDATE public."Asset" SET "enabled" = true WHERE "code" = 'EUR'`);
   try {
     const users = await Promise.all(Array.from({ length: 6 }, () => makeUser("r")));
     const tables = await Promise.all(Array.from({ length: 3 }, () => makeTable()));
+    // Two administrators approve each back-office money adjustment (as the payments Worker records it).
+    const approvers = await Promise.all(Array.from({ length: 2 }, () => makeUser("adm")));
+    await admin.query(`UPDATE public."User" SET "role" = 'ADMIN' WHERE "id" = ANY($1)`, [approvers]);
     let seed = 0x2f6b9d1;
-    const rand = (n) => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return seed % n; };
+    // The high bits of the LCG state: its low bits repeat with short periods,
+    // which would let a few flows (each drawing a fixed number of values) cycle.
+    const rand = (n) => { seed = (Math.imul(seed, 1103515245) + 12345) >>> 0; return Math.floor((seed / 4294967296) * n); };
     const pick = (list) => list[rand(list.length)];
     const run = `r${Date.now().toString(36)}`;
+    // Real money moves with a real provider, sandbox money with the sandbox,
+    // never the other way round (the database refuses it). Providers are this
+    // run's own, so their clearing accounts can be checked exactly below.
+    const realProviders = [`psp-${run}-a`, `psp-${run}-b`];
+    const sandboxProviders = [`sandbox-${run}-a`, `sandbox-${run}-b`];
+    const providersOf = (asset) => (asset === "TEST_EUR" ? sandboxProviders : realProviders);
+    const rail = () => { const asset = pick(["EUR", "TEST_EUR"]); return { asset, providerKey: pick(providersOf(asset)) }; };
+    const { rows: [{ seq: seqBefore }] } = await admin.query(`SELECT COALESCE(max("seq"), 0)::text AS seq FROM public."LedgerTransaction"`);
     let posted = 0;
+    let postings = 0;
     let refusedFunds = 0;
+    let retried = 0;
     let i = 0;
-    const real = () => pick(["EUR", "BTC"]);
-    const psp = () => pick(["psp-a", "psp-b"]);
-    // Each flow builds its whole input (random parameters drawn up front, so
-    // the sequence is reproducible) and returns a function of the db.
+
+    const sourceDeposit = async (client, userId, asset, providerKey) => {
+      const { rows } = await client.query(`SELECT "id"::text AS id FROM public."Deposit" WHERE "userId" = $1 AND "assetCode" = $2 LIMIT 1`, [userId, asset]);
+      return rows[0]?.id ?? insertDeposit(client, { userId, providerKey, asset, amount: 1n });
+    };
+    const lockHeld = (client) => client.query(`SELECT "id"::text AS id, "userId", "assetCode" AS asset, "amountMinor"::text AS amount, "feeMinor"::text AS fee
+      FROM public."Withdrawal" WHERE "status" = 'HELD' AND "userId" = ANY($1) LIMIT 1 FOR UPDATE SKIP LOCKED`, [users]).then((r) => r.rows[0]);
+    const newHeld = async (client, draw) => {
+      const { asset, providerKey } = rail();
+      const userId = pick(users);
+      const amount = BigInt(2 + (draw % 20_000));
+      const fee = BigInt(draw % Number(amount));
+      const held = await holdBoundWithdrawal(client, { userId, asset, amount, fee, sourceDepositId: await sourceDeposit(client, userId, asset, providerKey) });
+      return { id: held.withdrawalId, userId, asset, amount: amount.toString(), fee: fee.toString() };
+    };
+
+    // Each flow draws its random parameters up front and returns the login it
+    // runs as and the number of postings it made (in one transaction).
+    const runtimeFlow = (perform) => ({ pool: runtime, perform: async (client) => { await perform(sqlDb(client)); return 1; } });
     const flows = [
-      (key) => { const input = { key, userId: pick(users), amount: BigInt(1 + rand(5000)), reason: "random" }; return (db) => grantPlay(db, input); },
-      (key) => { const input = { key, asset: "PLAY", userId: pick(users), tableId: pick(tables), chips: 1 + rand(2000), chipUnit: 1n }; return (db) => buyIn(db, input); },
-      (key) => { const input = { key, asset: "PLAY", userId: pick(users), tableId: pick(tables), chips: 1 + rand(2000), chipUnit: 1n }; return (db) => cashOut(db, input); },
-      (key) => { const input = { key, asset: "PLAY", tableId: pick(tables), handUuid: key, chips: 1 + rand(30), chipUnit: 1n }; return (db) => rake(db, input); },
-      (key) => { const input = { key, asset: "EUR", userId: pick(users), tableId: pick(tables), chips: 1 + rand(500), chipUnit: 5n }; return (db) => buyIn(db, input); },
-      (key) => { const input = { key, asset: "EUR", userId: pick(users), tableId: pick(tables), chips: 1 + rand(500), chipUnit: 5n }; return (db) => cashOut(db, input); },
-      (key) => { const input = { key, asset: "EUR", tableId: pick(tables), handUuid: key, chips: 1 + rand(10), chipUnit: 5n }; return (db) => rake(db, input); },
-      (key) => { const input = { key, asset: real(), userId: pick(users), providerKey: psp(), amount: BigInt(1 + rand(100000)), providerReference: key }; return (db) => creditDeposit(db, input); },
-      (key) => {
-        const amount = BigInt(1 + rand(5000));
-        const input = { key, asset: real(), userId: pick(users), providerKey: psp(), amount, userPortion: BigInt(rand(Number(amount) + 1)), providerReference: key };
-        return (db) => reverseDeposit(db, input);
+      (key) => { const input = { key, userId: pick(users), amount: BigInt(1 + rand(5000)), reason: "random" }; return runtimeFlow((db) => grantPlay(db, input)); },
+      (key) => { const input = { key, asset: "PLAY", userId: pick(users), tableId: pick(tables), chips: 1 + rand(2000), chipUnit: 1n }; return runtimeFlow((db) => buyIn(db, input)); },
+      (key) => { const input = { key, asset: "PLAY", userId: pick(users), tableId: pick(tables), chips: 1 + rand(2000), chipUnit: 1n }; return runtimeFlow((db) => cashOut(db, input)); },
+      (key) => { const input = { key, asset: "PLAY", tableId: pick(tables), handUuid: key, chips: 1 + rand(30), chipUnit: 1n }; return runtimeFlow((db) => rake(db, input)); },
+      (key) => { const input = { key, asset: "PLAY", userId: pick(users), tableId: pick(tables), chips: 1 + rand(500), chipUnit: 5n }; return runtimeFlow((db) => buyIn(db, input)); },
+      (key) => { const input = { key, asset: "PLAY", userId: pick(users), tableId: pick(tables), chips: 1 + rand(500), chipUnit: 5n }; return runtimeFlow((db) => cashOut(db, input)); },
+      // Deposit credit.
+      () => {
+        const input = { ...rail(), userId: pick(users), amount: BigInt(1 + rand(100_000)) };
+        return { pool: payments, perform: async (client) => { await creditBoundDeposit(client, input); return 1; } };
       },
-      (key) => { const input = { key, asset: real(), userId: pick(users), withdrawalId: key, amount: BigInt(1 + rand(20000)) }; return (db) => holdWithdrawal(db, input); },
-      (key) => { const input = { key, asset: real(), userId: pick(users), withdrawalId: key, amount: BigInt(1 + rand(5000)), reason: "cancelled" }; return (db) => releaseWithdrawal(db, input); },
-      (key) => {
-        const amount = BigInt(2 + rand(20000));
-        const input = { key, asset: real(), userId: pick(users), withdrawalId: key, providerKey: psp(), amount, fee: BigInt(rand(Number(amount))), providerReference: key };
-        return (db) => settleWithdrawal(db, input);
+      // Reversal of a credited deposit (a fresh one when none is free); the user may no longer cover the portion asked.
+      () => {
+        const draw = rand(1_000_000);
+        const portion = rand(1_000_001);
+        const fresh = { ...rail(), userId: pick(users), amount: BigInt(1 + rand(100_000)) };
+        return {
+          pool: payments,
+          perform: async (client) => {
+            let count = 0;
+            let { rows: [target] } = await client.query(`SELECT "id"::text AS id, "userId", "providerKey", "assetCode" AS asset,
+                ("creditedMinor" - ("reversedMinor" - "recoveredMinor"))::text AS remaining
+              FROM public."Deposit" WHERE "status" IN ('CREDITED', 'PARTIALLY_REVERSED') AND "userId" = ANY($1) LIMIT 1 FOR UPDATE SKIP LOCKED`, [users]);
+            if (!target) {
+              const credited = await creditBoundDeposit(client, fresh);
+              target = { id: credited.depositId, userId: fresh.userId, providerKey: fresh.providerKey, asset: fresh.asset, remaining: fresh.amount.toString() };
+              count++;
+            }
+            const amount = 1n + BigInt(draw) % BigInt(target.remaining);
+            const userPortion = (amount * BigInt(portion)) / 1_000_000n;
+            await reverseBoundDeposit(client, {
+              depositId: target.id, userId: target.userId, providerKey: target.providerKey, asset: target.asset, amount, userPortion,
+              kind: pick(["CHARGEBACK", "PROVIDER_REFUND", "CHAIN_REORG"]),
+            });
+            return count + 1;
+          },
+        };
       },
-      (key) => { const input = { key, asset: real(), providerKey: psp(), amount: BigInt(1 + rand(500)), providerReference: key }; return (db) => providerFee(db, input); },
+      // A won dispute: recover an unrecovered reversal (lock its deposit first, then re-read).
+      () => {
+        const draw = rand(1_000_000);
+        return {
+          pool: payments,
+          perform: async (client) => {
+            const { rows: [locked] } = await client.query(`SELECT d."id"::text AS id FROM public."Deposit" d
+              WHERE d."userId" = ANY($1) AND EXISTS (SELECT 1 FROM public."DepositReversal" r WHERE r."depositId" = d."id" AND r."kind" <> 'CHARGEBACK_RECOVERY'
+                AND NOT EXISTS (SELECT 1 FROM public."DepositReversal" x WHERE x."recoversReversalId" = r."id"))
+              LIMIT 1 FOR UPDATE OF d SKIP LOCKED`, [users]);
+            if (!locked) return 0;
+            const { rows: [original] } = await client.query(`SELECT r."id"::text AS id, r."userId", r."providerKey", d."assetCode" AS asset,
+                r."amountMinor"::text AS amount, r."userPortionMinor"::text AS portion
+              FROM public."DepositReversal" r JOIN public."Deposit" d ON d."id" = r."depositId"
+              WHERE r."depositId" = $1 AND r."kind" <> 'CHARGEBACK_RECOVERY'
+                AND NOT EXISTS (SELECT 1 FROM public."DepositReversal" x WHERE x."recoversReversalId" = r."id") LIMIT 1`, [locked.id]);
+            if (!original) return 0;
+            const amount = 1n + BigInt(draw) % BigInt(original.amount);
+            const userPortion = (BigInt(original.portion) * amount) / BigInt(original.amount);
+            await recoverBoundChargeback(client, {
+              recoversReversalId: original.id, depositId: locked.id, userId: original.userId, providerKey: original.providerKey, asset: original.asset,
+              amount, userPortion,
+            });
+            return 1;
+          },
+        };
+      },
+      // Hold (a refund withdrawal against one of the user's deposits).
+      () => {
+        const draw = rand(1_000_000);
+        return { pool: payments, perform: async (client) => { await newHeld(client, draw); return 1; } };
+      },
+      // Release a held withdrawal (hold one first when none is free).
+      () => {
+        const draw = rand(1_000_000);
+        const status = pick(["CANCELLED", "REJECTED"]);
+        return {
+          pool: payments,
+          perform: async (client) => {
+            const existing = await lockHeld(client);
+            const target = existing ?? await newHeld(client, draw);
+            await releaseBoundWithdrawal(client, { withdrawalId: target.id, userId: target.userId, asset: target.asset, amount: BigInt(target.amount), status });
+            return existing ? 1 : 2;
+          },
+        };
+      },
+      // Settle a held withdrawal to the user's card (fee to the provider's fees).
+      () => {
+        const draw = rand(1_000_000);
+        const which = rand(2);
+        return {
+          pool: payments,
+          perform: async (client) => {
+            const existing = await lockHeld(client);
+            const target = existing ?? await newHeld(client, draw);
+            await settleBoundWithdrawal(client, {
+              withdrawalId: target.id, userId: target.userId, asset: target.asset, amount: BigInt(target.amount), fee: BigInt(target.fee),
+              providerKey: providersOf(target.asset)[which],
+            });
+            return existing ? 1 : 2;
+          },
+        };
+      },
+      // The rail returns (part of) a settled payout.
+      () => {
+        const draw = rand(1_000_000);
+        return {
+          pool: payments,
+          perform: async (client) => {
+            const { rows: [target] } = await client.query(`SELECT "id"::text AS id, "userId", "assetCode" AS asset, "providerKey",
+                ("amountMinor" - "feeMinor")::text AS paid
+              FROM public."Withdrawal" WHERE "status" = 'SETTLED' AND "userId" = ANY($1) LIMIT 1 FOR UPDATE SKIP LOCKED`, [users]);
+            if (!target) return 0;
+            await returnBoundWithdrawal(client, {
+              withdrawalId: target.id, userId: target.userId, asset: target.asset, providerKey: target.providerKey, amount: 1n + BigInt(draw) % BigInt(target.paid),
+            });
+            return 1;
+          },
+        };
+      },
+      // A provider fee the house absorbs (not bound to a payment row).
       (key) => {
-        const input = { key, asset: pick(["EUR", "BTC", "PLAY"]), userId: pick(users), amount: BigInt(rand(2) ? 1 + rand(1000) : -(1 + rand(1000))), reason: "random correction", createdBy: "staff:test" };
-        return (db) => adjustment(db, input);
+        const input = { key, ...rail(), amount: BigInt(1 + rand(500)), providerReference: key };
+        return { pool: payments, perform: async (client) => { await providerFee(sqlDb(client), input); return 1; } };
+      },
+      // A back-office correction (ticket, author, second approver; for money also two recorded administrator approvals).
+      (key) => {
+        const input = { key, asset: pick(["EUR", "TEST_EUR", "PLAY"]), userId: pick(users), amount: BigInt(rand(2) ? 1 + rand(1000) : -(1 + rand(1000))), reason: "random correction" };
+        return {
+          pool: backoffice,
+          perform: async (client) => {
+            if (input.asset !== "PLAY") await approveAdjustment(approvers, input);
+            await adjust(sqlDb(client), input);
+            return 1;
+          },
+        };
       },
     ];
+    // These helpers take no per-user lock and some flows post twice in one
+    // transaction (a fresh credit, then its reversal), so two concurrent flows
+    // can lock shared house accounts in opposite orders across postings; the
+    // database then aborts one with a deadlock (or a serialization failure),
+    // which moneyTx retries in production. The test retries the same way, a
+    // bounded number of times; every other error fails it (docs/money/LEDGER.md).
+    const RETRYABLE = new Set(["40P01", "40001"]);
+    const retryable = (error) => (error instanceof LedgerError && error.code === "RETRY") || RETRYABLE.has(error?.code);
     const step = async () => {
       const key = `${run}:${i++}`;
-      const perform = pick(flows)(key);
-      try {
-        await inTx((db) => perform(db));
-        posted++;
-      } catch (error) {
-        // Only a refusal for funds is an expected outcome of a random flow;
-        // anything else (deadlock, invariant, shape) fails the test.
-        if (error instanceof LedgerError && error.code === "INSUFFICIENT_FUNDS") refusedFunds++;
-        else throw error;
+      const flow = pick(flows)(key);
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const made = await inPoolTx(flow.pool, flow.perform);
+          if (made > 0) { posted++; postings += made; }
+          return;
+        } catch (error) {
+          // Only a refusal for funds is an expected outcome of a random flow.
+          if (error instanceof LedgerError && error.code === "INSUFFICIENT_FUNDS") { refusedFunds++; return; }
+          if (retryable(error) && attempt < 5) { retried++; continue; }
+          throw error;
+        }
       }
     };
     while (posted < 1000) await Promise.all(Array.from({ length: 8 }, step));
     assert.ok(posted >= 1000);
     assert.ok(refusedFunds > 0, "some random postings were correctly refused for insufficient funds");
-    const postedTx = await admin.query(`SELECT count(*)::int AS n FROM public."LedgerTransaction" WHERE "idempotencyKey" LIKE $1`, [`${run}:%`]);
-    assert.equal(postedTx.rows[0].n, posted, "exactly one transaction per successful posting");
+    assert.ok(retried < 50, `deadlock retries stay rare (${retried})`);
+    const postedTx = await admin.query(`SELECT "type"::text AS type, count(*)::int AS n FROM public."LedgerTransaction" WHERE "seq" > $1::bigint GROUP BY 1`, [seqBefore]);
+    const byType = Object.fromEntries(postedTx.rows.map((row) => [row.type, row.n]));
+    assert.equal(Object.values(byType).reduce((a, b) => a + b, 0), postings, "exactly one ledger transaction per posting of a committed flow");
+    for (const type of Object.keys(ENTRY_POINT)) assert.ok(byType[type] > 0, `${type} was posted (${JSON.stringify(byType)})`);
+
+    // Every payment posting of the run is bound to exactly its payment row (what the deferred trigger enforced at each commit).
+    const { rows: [unbound] } = await admin.query(`
+      SELECT count(*) FILTER (WHERE t."type" = 'DEPOSIT_CREDIT' AND NOT EXISTS (SELECT 1 FROM public."Deposit" d WHERE d."ledgerCreditTxId" = t."id"))::int AS credits,
+             count(*) FILTER (WHERE t."type" IN ('DEPOSIT_REVERSAL', 'CHARGEBACK_RECOVERY')
+               AND NOT EXISTS (SELECT 1 FROM public."DepositReversal" r WHERE r."ledgerTxId" = t."id"))::int AS reversals,
+             count(*) FILTER (WHERE t."type" = 'WITHDRAWAL_HOLD' AND NOT EXISTS (SELECT 1 FROM public."Withdrawal" w WHERE w."holdTxId" = t."id"))::int AS holds,
+             count(*) FILTER (WHERE t."type" = 'WITHDRAWAL_RELEASE' AND NOT EXISTS (SELECT 1 FROM public."Withdrawal" w WHERE w."releaseTxId" = t."id"))::int AS releases,
+             count(*) FILTER (WHERE t."type" = 'WITHDRAWAL_SETTLE' AND NOT EXISTS (SELECT 1 FROM public."Withdrawal" w WHERE w."settleTxId" = t."id"))::int AS settles,
+             count(*) FILTER (WHERE t."type" = 'WITHDRAWAL_RETURN' AND NOT EXISTS (SELECT 1 FROM public."Withdrawal" w WHERE w."returnTxId" = t."id"))::int AS returns
+        FROM public."LedgerTransaction" t WHERE t."seq" > $1::bigint`, [seqBefore]);
+    assert.deepEqual(unbound, { credits: 0, reversals: 0, holds: 0, releases: 0, settles: 0, returns: 0 });
+    // Each user's hold account holds exactly their open (HELD) withdrawals, per asset.
+    const { rows: holdMismatch } = await admin.query(`
+      WITH h AS (SELECT "userId", "assetCode", "balance" FROM public."LedgerAccount" WHERE "type" = 'USER_WITHDRAWAL_HOLD' AND "userId" = ANY($1)),
+           o AS (SELECT "userId", "assetCode", sum("amountMinor") AS open FROM public."Withdrawal"
+                  WHERE "status" IN ('HELD', 'UNDER_REVIEW', 'APPROVED', 'SUBMITTED') AND "userId" = ANY($1) GROUP BY 1, 2)
+      SELECT COALESCE(h."userId", o."userId") AS "userId" FROM h FULL JOIN o ON o."userId" = h."userId" AND o."assetCode" = h."assetCode"
+       WHERE COALESCE(h."balance", 0) <> COALESCE(o.open, 0)`, [users]);
+    assert.deepEqual(holdMismatch, []);
+    // Each provider's deposit clearing is minus its net credited deposits; sandbox accounts hold only TEST_EUR, real ones never.
+    const { rows: clearing } = await admin.query(`
+      SELECT a."providerKey", a."assetCode", a."balance"::text AS balance,
+             (-(SELECT COALESCE(sum(d."creditedMinor" - (d."reversedMinor" - d."recoveredMinor")), 0) FROM public."Deposit" d
+                 WHERE d."providerKey" = a."providerKey" AND d."assetCode" = a."assetCode" AND d."ledgerCreditTxId" IS NOT NULL))::text AS expected
+        FROM public."LedgerAccount" a WHERE a."type" = 'DEPOSIT_CLEARING' AND a."providerKey" = ANY($1)`, [[...realProviders, ...sandboxProviders]]);
+    assert.ok(clearing.length >= 2);
+    for (const row of clearing) {
+      assert.equal(row.balance, row.expected, `${row.providerKey} ${row.assetCode} clearing`);
+      assert.equal(row.assetCode, row.providerKey.startsWith("sandbox-") ? "TEST_EUR" : "EUR", row.providerKey);
+    }
 
     const db = sqlDb(runtime);
     const accounts = (await admin.query(`SELECT "id"::text FROM public."LedgerAccount"`)).rows;
@@ -820,7 +1155,7 @@ test("after 1,000+ random postings every account reconstructs from the journal a
       AND "type" IN ('USER_WITHDRAWAL_HOLD', 'DEPOSIT_CLEARING', 'WITHDRAWAL_CLEARING', 'PROVIDER_FEES', 'ADJUSTMENTS', 'CHARGEBACK_LOSSES')`);
     assert.equal(playOnlyRules.rowCount, 0, "PLAY never touches a redeemable account");
   } finally {
-    await admin.query(`UPDATE public."Asset" SET "enabled" = false WHERE "code" IN ('EUR', 'BTC')`);
+    await admin.query(`UPDATE public."Asset" SET "enabled" = false WHERE "code" = 'EUR'`);
   }
 });
 

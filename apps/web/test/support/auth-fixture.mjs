@@ -2,13 +2,20 @@
 // (docs/cloudflare/ARCHITECTURE.md §5.2; design-auth §7), in memory. Bodies, status codes and error
 // codes follow the edge. Passkeys are checked for the challenge and a known credential id only (no
 // signature verification: this covers the UI, the edge vitest suite covers the cryptography).
-import { randomBytes, randomUUID } from 'node:crypto';
+import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { currentStep, matchTotp, randomBase32 } from './totp.mjs';
 
 export const TERMS_VERSION = '2026-10-19';
 export const FIXED_TOTP_SECRET = 'JBSWY3DPEHPK3PXP';
 const STEP_UP_WINDOW_MS = 5 * 60_000;
 const TICKET_MS = 5 * 60_000;
+// Money step-up grants (INTEGRATION.md override 8; apps/edge/src/http/auth-step-up.ts): single use, 5 minutes, bound to a
+// session, a purpose and the bind hash of one action. The wallet fixture consumes them (consumeGrant).
+const GRANT_MS = 5 * 60_000;
+const EMAIL_CODE_MS = 10 * 60_000;
+const EMAIL_CODE_ATTEMPTS = 5;
+const STEP_UP_PURPOSES = ['withdrawal', 'payout_destination', 'admin_payments'];
+const BIND_HASH = /^[0-9a-f]{64}$/;
 const USERNAME = /^[A-Za-z0-9_]{3,24}$/;
 const BACKUP_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 /** A password the fixture treats as found in a data breach (the edge asks HIBP). */
@@ -59,6 +66,13 @@ export function createAuthFixture({ heroId, heroBankroll }) {
   const tickets = new Map();
   const challenges = new Map();
   const emailTokens = new Map();
+  /** StepUpGrant rows: id -> { userId, session, purpose, bind, method, expiresAt, consumedAt }. */
+  const grants = new Map();
+  /** StepUpEmailChallenge rows: id -> { userId, session, purpose, bind, code, attempts, expiresAt, consumed }. */
+  const emailChallenges = new Map();
+  /** The last emailed step-up code, as the test inbox (GET /__test/step-up). */
+  let lastStepUpCode = null;
+  const resetListeners = [];
 
   function addAccount(input) {
     const account = {
@@ -81,6 +95,8 @@ export function createAuthFixture({ heroId, heroBankroll }) {
       pendingEmail: null,
       events: [],
       mfaFails: 0,
+      // User.securityHoldUntil: withdrawals and payout-destination changes wait until then (ISO string or null).
+      securityHoldUntil: null,
     };
     if (input.totp) {
       account.totp = { secret: input.totpSecret ?? randomBase32(32), enabledAt: iso(now()), lastStep: 0 };
@@ -105,6 +121,10 @@ export function createAuthFixture({ heroId, heroBankroll }) {
     tickets.clear();
     challenges.clear();
     emailTokens.clear();
+    grants.clear();
+    emailChallenges.clear();
+    lastStepUpCode = null;
+    for (const listener of resetListeners) listener();
     otherSessions = [{
       id: 'session-other-1', createdAt: iso(now() - 3 * 86_400_000), lastUsedAt: iso(now() - 2 * 3_600_000),
       userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
@@ -327,9 +347,55 @@ export function createAuthFixture({ heroId, heroBankroll }) {
       },
       passkeys: account.passkeys.map(summary),
       stepUpUntil: now() - stepUp.at <= STEP_UP_WINDOW_MS ? iso(stepUp.at + STEP_UP_WINDOW_MS) : null,
-      securityHoldUntil: null,
+      securityHoldUntil: account.securityHoldUntil,
       capabilities: { email: true, passkeys: true, totp: true },
     };
+  }
+
+  // ---------------------------------------------------------------------------
+  // Money step-up (as apps/edge/src/auth/step-up-grants.ts and http/auth-step-up.ts)
+  // ---------------------------------------------------------------------------
+
+  /** methodRefusal: null when this proof kind may be used for the purpose by this account. */
+  function methodRefusal(purpose, kind, account) {
+    const method = { passkey: 'PASSKEY', totp: 'TOTP', password_email: 'PASSWORD_EMAIL' }[kind];
+    const allowed = purpose === 'admin_payments' ? ['PASSKEY'] : ['PASSKEY', 'TOTP', 'PASSWORD_EMAIL'];
+    if (!method || !allowed.includes(method)) return purpose === 'admin_payments' ? 'Admin payment decisions need a passkey.' : 'This confirmation method is not allowed here.';
+    if (kind === 'password_email' && (account.totp || account.passkeys.length > 0)) return 'Use your passkey or authenticator app to confirm.';
+    if (kind === 'totp' && !account.totp) return 'Two-step verification is not set up on this account.';
+    if (kind === 'passkey' && account.passkeys.length === 0) return 'This account has no passkeys.';
+    return null;
+  }
+
+  function holdActive(account) {
+    return account.securityHoldUntil !== null && Date.parse(account.securityHoldUntil) > now();
+  }
+  function securityHold(res, account) {
+    res.status(403).json({
+      error: 'For your security, withdrawals are paused for a while after a recent account change.',
+      code: 'SECURITY_HOLD', until: account.securityHoldUntil,
+    });
+  }
+  /** This user and session, this purpose and bind, not expired, not spent, no hold: the grant could be consumed now. */
+  function grantUsable(grantId, { purpose, bind }) {
+    const account = current();
+    const grant = typeof grantId === 'string' ? grants.get(grantId) : undefined;
+    if (!account || !grant || grant.consumedAt !== null || grant.expiresAt <= now() || flags.expireGrants) return false;
+    if (grant.userId !== account.id || grant.session !== token || grant.purpose !== purpose || grant.bind !== bind) return false;
+    return !holdActive(account);
+  }
+
+  /** Spend a grant inside the "transaction" of the wallet route. False (and nothing spent) when it is not usable. */
+  function consumeGrant(grantId, requirement) {
+    if (!grantUsable(grantId, requirement)) return false;
+    grants.get(grantId).consumedAt = now();
+    return true;
+  }
+
+  /** poker-api's half of the payments "This wasn't me" link: every session of the account ends and withdrawals are held. */
+  function lockdownSessions(account, holdMs) {
+    account.securityHoldUntil = iso(now() + holdMs);
+    if (currentId === account.id) signOutHere();
   }
 
   function install(app) {
@@ -550,8 +616,14 @@ export function createAuthFixture({ heroId, heroBankroll }) {
     app.post('/api/auth/reauth/passkey/options', (req, res) => {
       const account = authed(req, res);
       if (!account) return;
+      // Optional money binding: the assertion then only works for that grant (POST /api/auth/step-up).
+      const { purpose, bind } = req.body ?? {};
+      if ((purpose === undefined) !== (bind === undefined) || (purpose !== undefined && (!STEP_UP_PURPOSES.includes(purpose) || !BIND_HASH.test(String(bind))))) {
+        res.status(400).json({ error: 'Invalid request payload' });
+        return;
+      }
       if (account.passkeys.length === 0) { res.status(409).json({ error: 'This account has no passkeys.', code: 'NO_PASSKEYS' }); return; }
-      const { challenge, challengeToken } = newChallenge('reauth', { userId: account.id });
+      const { challenge, challengeToken } = newChallenge('reauth', { userId: account.id, binding: purpose ? { purpose, bind } : null });
       res.json({
         options: {
           challenge, rpId: rpIdOf(req), timeout: 120_000, userVerification: 'required',
@@ -564,7 +636,7 @@ export function createAuthFixture({ heroId, heroBankroll }) {
       const account = authed(req, res);
       if (!account) return;
       const taken = takeChallenge(req.body?.challengeToken, 'reauth', req.body?.credential, 'webauthn.get');
-      if (taken.error === 'challenge' || (taken.entry && taken.entry.userId !== account.id)) {
+      if (taken.error === 'challenge' || (taken.entry && (taken.entry.userId !== account.id || taken.entry.binding))) {
         res.status(400).json({ error: 'Passkey request expired. Try again.', code: 'CHALLENGE_INVALID' });
         return;
       }
@@ -572,6 +644,77 @@ export function createAuthFixture({ heroId, heroBankroll }) {
       if (!found || found.account.id !== account.id) { res.status(401).json({ error: 'Passkey not recognised', code: 'PASSKEY_INVALID' }); return; }
       found.passkey.lastUsedAt = iso(now());
       res.json(openWindow(['passkey']));
+    });
+
+    // Money step-up: a single-use grant for one action.
+    app.post('/api/auth/step-up/email-code', (req, res) => {
+      const account = authed(req, res);
+      if (!account) return;
+      const { purpose, bind } = req.body ?? {};
+      if (!STEP_UP_PURPOSES.includes(purpose) || !BIND_HASH.test(String(bind))) { res.status(400).json({ error: 'Invalid request payload' }); return; }
+      const refusal = methodRefusal(purpose, 'password_email', account);
+      if (refusal) { res.status(403).json({ error: refusal, code: 'STEP_UP_METHOD_NOT_ALLOWED' }); return; }
+      if (!account.emailVerified) { res.status(403).json({ error: 'Confirm your email address first.', code: 'EMAIL_NOT_VERIFIED' }); return; }
+      if (holdActive(account)) { securityHold(res, account); return; }
+      // One live code per session: a new one voids the old.
+      for (const entry of emailChallenges.values()) if (entry.session === token) entry.consumed = true;
+      const id = randomUUID();
+      const code = String(randomInt(0, 1_000_000)).padStart(6, '0');
+      const expiresAt = now() + EMAIL_CODE_MS;
+      emailChallenges.set(id, { userId: account.id, session: token, purpose, bind, code, attempts: 0, expiresAt, consumed: false });
+      lastStepUpCode = { code, emailChallengeToken: id, purpose, bind, to: account.email };
+      res.status(202).json({ emailChallengeToken: id, expiresAt: iso(expiresAt) });
+    });
+
+    app.post('/api/auth/step-up', (req, res) => {
+      const account = authed(req, res);
+      if (!account) return;
+      const { purpose, bind, proof } = req.body ?? {};
+      if (!STEP_UP_PURPOSES.includes(purpose) || !BIND_HASH.test(String(bind)) || typeof proof !== 'object' || proof === null) {
+        res.status(400).json({ error: 'Invalid request payload' });
+        return;
+      }
+      const refusal = methodRefusal(purpose, proof.kind, account);
+      if (refusal) { res.status(403).json({ error: refusal, code: 'STEP_UP_METHOD_NOT_ALLOWED' }); return; }
+      if (holdActive(account)) { securityHold(res, account); return; }
+      let method;
+      let challenge = null;
+      if (proof.kind === 'passkey') {
+        const taken = takeChallenge(proof.challengeToken, 'reauth', proof.credential, 'webauthn.get');
+        const binding = taken.entry?.binding;
+        if (taken.error === 'challenge' || (taken.entry && (taken.entry.userId !== account.id || !binding || binding.purpose !== purpose || binding.bind !== bind))) {
+          res.status(400).json({ error: 'Passkey request expired. Try again.', code: 'CHALLENGE_INVALID' });
+          return;
+        }
+        const found = taken.error ? null : findPasskey(proof.credential?.id);
+        if (!found || found.account.id !== account.id) { res.status(401).json({ error: 'Passkey not recognised', code: 'PASSKEY_INVALID' }); return; }
+        found.passkey.lastUsedAt = iso(now());
+        method = 'PASSKEY';
+      } else {
+        if (proof.password !== account.password) { res.status(401).json({ error: 'Invalid credentials' }); return; }
+        if (proof.kind === 'totp') {
+          const code = String(proof.code ?? '').trim();
+          if (!verifyCode(req, res, account, /^\d{6}$/.test(code) ? 'totp' : 'backup_code', code)) return;
+          method = 'TOTP';
+        } else {
+          challenge = emailChallenges.get(proof.emailChallengeToken) ?? null;
+          const live = challenge && challenge.userId === account.id && challenge.session === token && challenge.purpose === purpose
+            && challenge.bind === bind && !challenge.consumed && challenge.expiresAt > now() && challenge.attempts < EMAIL_CODE_ATTEMPTS;
+          if (!live) { res.status(400).json({ error: 'This confirmation expired. Request a new code.', code: 'CHALLENGE_INVALID' }); return; }
+          challenge.attempts++;
+          if (String(proof.emailCode) !== challenge.code) {
+            res.status(401).json({ error: 'That code is not right.', code: 'EMAIL_CODE_INVALID', attemptsRemaining: Math.max(0, EMAIL_CODE_ATTEMPTS - challenge.attempts) });
+            return;
+          }
+          challenge.consumed = true;
+          method = 'PASSWORD_EMAIL';
+        }
+      }
+      const id = `grant-${randomUUID()}`;
+      const expiresAt = now() + GRANT_MS;
+      grants.set(id, { userId: account.id, session: token, purpose, bind, method, expiresAt, consumedAt: null });
+      event(account, 'STEP_UP', req, { purpose, method, grantId: id });
+      res.json({ stepUpGrantId: id, expiresAt: iso(expiresAt) });
     });
 
     // Sessions (existing edge routes).
@@ -776,9 +919,11 @@ export function createAuthFixture({ heroId, heroBankroll }) {
       if (body.reset) reset({ signedOut: body.signedOut === true });
       else if (typeof body.signedOut === 'boolean') currentId = body.signedOut ? null : heroId;
       if (typeof body.as === 'string' && accounts.has(body.as)) { currentId = body.as; token = `browser-fixture-token-as-${body.as}`; }
-      for (const key of ['reauthRequired', 'noHint', 'expireTickets', 'randomTotp', 'turnstileFail', 'passkeysOff', 'expireTotpSetup']) {
+      for (const key of ['reauthRequired', 'noHint', 'expireTickets', 'randomTotp', 'turnstileFail', 'passkeysOff', 'expireTotpSetup',
+        'expireGrants']) {
         if (typeof body[key] === 'boolean') flags[key] = body[key];
       }
+      if (body.securityHoldUntil !== undefined && current()) current().securityHoldUntil = body.securityHoldUntil;
       if (body.nextError) flags.nextError = body.nextError;
       if (body.emailVerified !== undefined && current()) current().emailVerified = body.emailVerified;
       res.json({ ok: true, currentId });
@@ -814,6 +959,11 @@ export function createAuthFixture({ heroId, heroBankroll }) {
       res.json({ token: value });
     });
     app.get('/__test/requests', (_req, res) => res.json({ requests }));
+    // The test inbox for money step-up codes, and the grants as the database holds them.
+    app.get('/__test/step-up', (_req, res) => res.json({
+      lastCode: lastStepUpCode,
+      grants: [...grants.entries()].map(([id, g]) => ({ id, purpose: g.purpose, bind: g.bind, method: g.method, consumed: g.consumedAt !== null })),
+    }));
   }
 
   return {
@@ -828,5 +978,14 @@ export function createAuthFixture({ heroId, heroBankroll }) {
     /** Called after every sign-in (the game fixture resets its refresh-cookie rotation then). */
     onSignIn(listener) { onSignIn = listener; },
     stepNow: () => currentStep(now()),
+    // For the wallet fixture (wallet-fixture.mjs).
+    authed,
+    consumeGrant,
+    grantUsable,
+    lockdownSessions,
+    recordEvent: event,
+    accountById: (id) => accounts.get(id) ?? null,
+    accountByName: byName,
+    onReset(listener) { resetListeners.push(listener); },
   };
 }

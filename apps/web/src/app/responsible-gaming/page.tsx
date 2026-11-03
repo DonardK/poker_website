@@ -58,7 +58,7 @@ const sections: LegalSection[] = [
           <><strong>Time-out:</strong> a break from play for 24 hours, 7 days, 30 days or 6 weeks. {REAL_MONEY}</>,
           <><strong>Self-exclusion:</strong> for 6 months, 1 year, 5 years or permanently, applied to you as a verified person, so new accounts are blocked too. {REAL_MONEY}</>,
         ]} />
-        <p>Lowering a limit will take effect immediately. Raising or removing a limit will take effect only after a 24-hour cooling-off period. A time-out or self-exclusion cannot be cancelled early.</p>
+        <p>Lowering a limit will take effect immediately. Raising or removing a limit will take effect only after a 24-hour cooling-off period. A time-out or self-exclusion cannot be cancelled early, and it does not end by itself: once it has run its course, you ask to come back on your limits page, and deposits reopen 24 hours later. An indefinite self-exclusion needs our team to accept the request, and deposits reopen 7 days after that.</p>
       </>
     ),
   },

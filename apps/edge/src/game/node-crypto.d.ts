@@ -16,6 +16,13 @@ declare module "node:crypto" {
     update(data: Uint8Array): Bytes;
     final(): Bytes;
   }
+  interface Hash {
+    update(data: string | Uint8Array, encoding?: "utf8"): Hash;
+    digest(encoding: "hex"): string;
+    digest(): Bytes;
+  }
+  export function createHash(algorithm: "sha256"): Hash;
+  export function createHmac(algorithm: "sha256", key: string | Uint8Array): Hash;
   export function createCipheriv(algorithm: string, key: Uint8Array, iv: Uint8Array): Cipher;
   export function createDecipheriv(algorithm: string, key: Uint8Array, iv: Uint8Array): Decipher;
   export function randomBytes(size: number): Bytes;

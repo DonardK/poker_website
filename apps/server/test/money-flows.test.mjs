@@ -9,10 +9,15 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { AmountError } from "../src/money/amounts.ts";
 import {
-  assertBalanced, expectedEscrowMinor, planAdjustment, planBuyIn, planCashOut, planCreditDeposit, planGrantPlay,
-  planHoldWithdrawal, planProviderFee, planRake, planReleaseWithdrawal, planReverseDeposit, planSettleWithdrawal, sumByAsset,
+  LEDGER_TRANSACTION_TYPES, assertBalanced, expectedEscrowMinor, planAdjustment, planBuyIn, planCashOut, planCreditDeposit, planGrantPlay,
+  planHoldWithdrawal, planProviderFee, planRake, planRecoverChargeback, planReleaseWithdrawal, planReturnWithdrawal, planReverseDeposit,
+  planSettleWithdrawal, sumByAsset,
 } from "../src/money/flows.ts";
-import { LEDGER_SQLSTATES, LedgerError, accountSortKey, ensureAccounts, execute, post, toLedgerError } from "../src/money/ledger.ts";
+import {
+  ENTRY_POINT, LEDGER_SQLSTATES, LedgerError, accountSortKey, ensureAccounts, execute, getAccountBalance, post, toLedgerError,
+} from "../src/money/ledger.ts";
+
+const migrationText = (name) => readFileSync(new URL(`../prisma/migrations/${name}/migration.sql`, import.meta.url), "utf8");
 
 const shape = (plan) => plan.legs.map((leg) => `${leg.account.type}${leg.amount > 0n ? "+" : "-"}`).sort().join(",");
 
@@ -22,21 +27,26 @@ const flows = {
   buyInEur: () => planBuyIn({ key: "buy-in:t2:c1", asset: "EUR", userId: "u1", tableId: "t2", chips: 400, chipUnit: 5n }),
   cashOut: () => planCashOut({ key: "cash-out:t1:u1:c2", asset: "PLAY", userId: "u1", tableId: "t1", chips: 523, chipUnit: 1n }),
   rake: () => planRake({ key: "rake:h1", asset: "EUR", tableId: "t2", handUuid: "h1", chips: 3, chipUnit: 5n }),
-  creditDeposit: () => planCreditDeposit({ key: "deposit:psp:p1", asset: "EUR", userId: "u1", providerKey: "psp", amount: 5000n, providerReference: "p1" }),
-  reverseDepositFull: () => planReverseDeposit({ key: "chargeback:psp:p1", asset: "EUR", userId: "u1", providerKey: "psp", amount: 5000n, userPortion: 5000n, providerReference: "p1" }),
-  reverseDepositPartial: () => planReverseDeposit({ key: "chargeback:psp:p2", asset: "EUR", userId: "u1", providerKey: "psp", amount: 5000n, userPortion: 1200n, providerReference: "p2" }),
-  reverseDepositLoss: () => planReverseDeposit({ key: "chargeback:psp:p3", asset: "EUR", userId: "u1", providerKey: "psp", amount: 5000n, userPortion: 0n, providerReference: "p3" }),
+  creditDeposit: () => planCreditDeposit({ key: "deposit:psp:p1", asset: "EUR", userId: "u1", providerKey: "psp", amount: 5000n, providerReference: "p1", depositId: "d1" }),
+  creditDepositSandbox: () => planCreditDeposit({ key: "deposit:sandbox:p1", asset: "TEST_EUR", userId: "u1", providerKey: "sandbox-card", amount: 5000n, providerReference: "p1", depositId: "d2" }),
+  reverseDepositFull: () => planReverseDeposit({ key: "chargeback:psp:p1", asset: "EUR", userId: "u1", providerKey: "psp", amount: 5000n, userPortion: 5000n, providerReference: "p1", depositId: "d1", reversalId: "r1", kind: "CHARGEBACK" }),
+  reverseDepositPartial: () => planReverseDeposit({ key: "chargeback:psp:p2", asset: "EUR", userId: "u1", providerKey: "psp", amount: 5000n, userPortion: 1200n, providerReference: "p2", depositId: "d1", reversalId: "r2", kind: "PROVIDER_REFUND" }),
+  reverseDepositLoss: () => planReverseDeposit({ key: "chargeback:psp:p3", asset: "EUR", userId: "u1", providerKey: "psp", amount: 5000n, userPortion: 0n, providerReference: "p3", depositId: "d1", reversalId: "r3", kind: "CHAIN_REORG" }),
+  recoverFull: () => planRecoverChargeback({ key: "chargeback-recovery:psp:p1", asset: "EUR", userId: "u1", providerKey: "psp", amount: 5000n, userPortion: 5000n, providerReference: "p1", depositId: "d1", reversalId: "r4", recoversReversalId: "r1" }),
+  recoverPartial: () => planRecoverChargeback({ key: "chargeback-recovery:psp:p2", asset: "EUR", userId: "u1", providerKey: "psp", amount: 5000n, userPortion: 1200n, providerReference: "p2", depositId: "d1", reversalId: "r5", recoversReversalId: "r2" }),
+  recoverLoss: () => planRecoverChargeback({ key: "chargeback-recovery:psp:p3", asset: "EUR", userId: "u1", providerKey: "psp", amount: 5000n, userPortion: 0n, providerReference: "p3", depositId: "d1", reversalId: "r6", recoversReversalId: "r3" }),
   holdWithdrawal: () => planHoldWithdrawal({ key: "withdrawal-hold:w1", asset: "BTC", userId: "u1", withdrawalId: "w1", amount: 150_000n }),
   releaseWithdrawal: () => planReleaseWithdrawal({ key: "withdrawal-release:w1", asset: "BTC", userId: "u1", withdrawalId: "w1", amount: 150_000n, reason: "rejected" }),
   settleWithdrawal: () => planSettleWithdrawal({ key: "withdrawal-settle:w1", asset: "BTC", userId: "u1", withdrawalId: "w1", providerKey: "node-1", amount: 150_000n, fee: 2_000n, providerReference: "txid" }),
   settleWithdrawalNoFee: () => planSettleWithdrawal({ key: "withdrawal-settle:w2", asset: "BTC", userId: "u1", withdrawalId: "w2", providerKey: "node-1", amount: 150_000n, fee: 0n, providerReference: "txid2" }),
+  returnWithdrawal: () => planReturnWithdrawal({ key: "withdrawal-return:w1", asset: "EUR", userId: "u1", withdrawalId: "w1", providerKey: "psp", amount: 4_900n, providerReference: "ret-1" }),
   providerFee: () => planProviderFee({ key: "fee:psp:f1", asset: "EUR", providerKey: "psp", amount: 35n, providerReference: "f1" }),
-  adjustmentCredit: () => planAdjustment({ key: "adjust:a1", asset: "EUR", userId: "u1", amount: 250n, reason: "goodwill", createdBy: "staff:s1" }),
-  adjustmentDebit: () => planAdjustment({ key: "adjust:a2", asset: "EUR", userId: "u1", amount: -250n, reason: "correction", createdBy: "staff:s1" }),
-  adjustmentPlay: () => planAdjustment({ key: "adjust:a3", asset: "PLAY", userId: "u1", amount: -100n, reason: "abuse", createdBy: "staff:s1" }),
+  adjustmentCredit: () => planAdjustment({ key: "adjust:a1", asset: "EUR", userId: "u1", amount: 250n, reason: "goodwill", createdBy: "staff:s1", ticket: "OPS-1", approvedBy: "staff:s2" }),
+  adjustmentDebit: () => planAdjustment({ key: "adjust:a2", asset: "EUR", userId: "u1", amount: -250n, reason: "correction", createdBy: "staff:s1", ticket: "OPS-2", approvedBy: "staff:s2" }),
+  adjustmentPlay: () => planAdjustment({ key: "adjust:a3", asset: "PLAY", userId: "u1", amount: -100n, reason: "abuse", createdBy: "staff:s1", ticket: "OPS-3", approvedBy: "staff:s2" }),
 };
 
-// Must match the shapes ledger_post accepts (migration 20261002200000_ledger_foundation).
+// Must match the shapes ledger_post_core accepts (migrations 20261002200000_ledger_foundation and 20261019120000_payments_wallet).
 const expectedShapes = {
   grantPlay: ["PLAY_GRANT", "PLAY_ISSUANCE-,USER_AVAILABLE+"],
   buyIn: ["BUY_IN", "TABLE_ESCROW+,USER_AVAILABLE-"],
@@ -44,13 +54,18 @@ const expectedShapes = {
   cashOut: ["CASH_OUT", "TABLE_ESCROW-,USER_AVAILABLE+"],
   rake: ["RAKE", "RAKE_REVENUE+,TABLE_ESCROW-"],
   creditDeposit: ["DEPOSIT_CREDIT", "DEPOSIT_CLEARING-,USER_AVAILABLE+"],
+  creditDepositSandbox: ["DEPOSIT_CREDIT", "DEPOSIT_CLEARING-,USER_AVAILABLE+"],
   reverseDepositFull: ["DEPOSIT_REVERSAL", "DEPOSIT_CLEARING+,USER_AVAILABLE-"],
   reverseDepositPartial: ["DEPOSIT_REVERSAL", "CHARGEBACK_LOSSES-,DEPOSIT_CLEARING+,USER_AVAILABLE-"],
   reverseDepositLoss: ["DEPOSIT_REVERSAL", "CHARGEBACK_LOSSES-,DEPOSIT_CLEARING+"],
+  recoverFull: ["CHARGEBACK_RECOVERY", "DEPOSIT_CLEARING-,USER_AVAILABLE+"],
+  recoverPartial: ["CHARGEBACK_RECOVERY", "CHARGEBACK_LOSSES+,DEPOSIT_CLEARING-,USER_AVAILABLE+"],
+  recoverLoss: ["CHARGEBACK_RECOVERY", "CHARGEBACK_LOSSES+,DEPOSIT_CLEARING-"],
   holdWithdrawal: ["WITHDRAWAL_HOLD", "USER_AVAILABLE-,USER_WITHDRAWAL_HOLD+"],
   releaseWithdrawal: ["WITHDRAWAL_RELEASE", "USER_AVAILABLE+,USER_WITHDRAWAL_HOLD-"],
   settleWithdrawal: ["WITHDRAWAL_SETTLE", "PROVIDER_FEES+,USER_WITHDRAWAL_HOLD-,WITHDRAWAL_CLEARING+"],
   settleWithdrawalNoFee: ["WITHDRAWAL_SETTLE", "USER_WITHDRAWAL_HOLD-,WITHDRAWAL_CLEARING+"],
+  returnWithdrawal: ["WITHDRAWAL_RETURN", "USER_AVAILABLE+,WITHDRAWAL_CLEARING-"],
   providerFee: ["PROVIDER_FEE", "ADJUSTMENTS-,PROVIDER_FEES+"],
   adjustmentCredit: ["ADJUSTMENT", "ADJUSTMENTS-,USER_AVAILABLE+"],
   adjustmentDebit: ["ADJUSTMENT", "ADJUSTMENTS+,USER_AVAILABLE-"],
@@ -80,6 +95,34 @@ test("every flow has the transaction type and shape the database accepts", () =>
     assert.equal(plan.type, type, name);
     assert.equal(shape(plan), expected, name);
   }
+  // Every shape named here is one the SQL shape CASE lists for that type.
+  const sql = migrationText("20261019120000_payments_wallet");
+  const core = sql.slice(sql.indexOf("CREATE FUNCTION public.ledger_post_core("), sql.indexOf("-- The runtime entry point keeps"));
+  for (const [type, expected] of Object.values(expectedShapes)) {
+    const clause = new RegExp(`WHEN '${type}' THEN v_shape (?:= '([^']+)'|IN \\(([^)]*)\\))`).exec(core);
+    assert.ok(clause, `${type} has a shape clause in ledger_post_core`);
+    const allowed = clause[1] ? [clause[1]] : [...clause[2].matchAll(/'([^']+)'/g)].map((m) => m[1]);
+    assert.ok(allowed.includes(expected), `${type}: ${expected} is one of ${allowed.join(" | ")}`);
+  }
+});
+
+test("ENTRY_POINT names one entry point per transaction type, exactly the migration's allow-lists", () => {
+  assert.deepEqual(Object.keys(ENTRY_POINT).sort(), [...LEDGER_TRANSACTION_TYPES].sort());
+  const sql = migrationText("20261019120000_payments_wallet");
+  const allowList = (fn) => {
+    const body = sql.slice(sql.indexOf(`FUNCTION public.${fn}(\n`));
+    const match = /ledger_post_core\(ARRAY\[([^\]]*)\]/.exec(body);
+    assert.ok(match, `${fn} calls ledger_post_core with an allow-list`);
+    return [...match[1].matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]).sort();
+  };
+  const byEntryPoint = (point) => Object.entries(ENTRY_POINT).filter(([, p]) => p === point).map(([type]) => type).sort();
+  assert.deepEqual(allowList("ledger_post"), byEntryPoint("runtime"));
+  assert.deepEqual(allowList("ledger_post_payments"), byEntryPoint("payments"));
+  assert.deepEqual(allowList("ledger_post_backoffice"), byEntryPoint("backoffice"));
+  // The enum in the migrations has exactly these values, in this order.
+  const created = /CREATE TYPE "LedgerTransactionType" AS ENUM \(([^)]*)\)/.exec(migrationText("20261002200000_ledger_foundation"));
+  const added = [...migrationText("20261019110000_ledger_payment_types").matchAll(/ALTER TYPE "LedgerTransactionType" ADD VALUE IF NOT EXISTS '([A-Z_]+)'/g)].map((m) => m[1]);
+  assert.deepEqual([...[...created[1].matchAll(/'([A-Z_]+)'/g)].map((m) => m[1]), ...added], [...LEDGER_TRANSACTION_TYPES]);
 });
 
 test("flows compute amounts exactly from chips x chipUnit", () => {
@@ -97,9 +140,14 @@ test("flows compute amounts exactly from chips x chipUnit", () => {
 });
 
 test("PLAY chips have no deposit, withdrawal, fee or chargeback flow", () => {
-  const common = { userId: "u1", providerKey: "psp", amount: 1n, providerReference: "x", withdrawalId: "w", reason: "r", fee: 0n, userPortion: 1n };
+  const common = {
+    userId: "u1", providerKey: "psp", amount: 1n, providerReference: "x", withdrawalId: "w", reason: "r", fee: 0n, userPortion: 1n,
+    depositId: "d", reversalId: "r", recoversReversalId: "o", kind: "CHARGEBACK",
+  };
   assert.throws(() => planCreditDeposit({ ...common, key: "k1", asset: "PLAY" }), AmountError);
   assert.throws(() => planReverseDeposit({ ...common, key: "k2", asset: "PLAY" }), AmountError);
+  assert.throws(() => planRecoverChargeback({ ...common, key: "k7", asset: "PLAY" }), AmountError);
+  assert.throws(() => planReturnWithdrawal({ ...common, key: "k8", asset: "PLAY" }), AmountError);
   assert.throws(() => planHoldWithdrawal({ ...common, key: "k3", asset: "PLAY" }), AmountError);
   assert.throws(() => planReleaseWithdrawal({ ...common, key: "k4", asset: "PLAY" }), AmountError);
   assert.throws(() => planSettleWithdrawal({ ...common, key: "k5", asset: "PLAY", amount: 2n }), AmountError);
@@ -120,14 +168,24 @@ test("flows refuse invalid amounts, keys and owners", () => {
   assert.throws(() => planGrantPlay({ key: "g", userId: "u1", amount: 0n, reason: "r" }), AmountError);
   assert.throws(() => planGrantPlay({ key: "g", userId: "u1", amount: 5, reason: "r" }), AmountError);
   assert.throws(() => planGrantPlay({ key: "g", userId: "u1", amount: 9_223_372_036_854_775_808n, reason: "r" }), AmountError);
-  assert.throws(() => planAdjustment({ key: "a", asset: "EUR", userId: "u1", amount: 0n, reason: "r", createdBy: "s" }), AmountError);
-  assert.throws(() => planAdjustment({ key: "a", asset: "EUR", userId: "u1", amount: 5n, reason: "  ", createdBy: "s" }), AmountError);
-  assert.throws(() => planAdjustment({ key: "a", asset: "EUR", userId: "u1", amount: 5n, reason: "r", createdBy: "" }), AmountError);
-  assert.throws(() => planAdjustment({ key: "a", asset: "EUR", userId: "u1", amount: -9_223_372_036_854_775_808n, reason: "r", createdBy: "s" }), AmountError);
-  const deposit = { key: "r", asset: "EUR", userId: "u1", providerKey: "psp", amount: 100n, providerReference: "p" };
+  const adjust = { key: "a", asset: "EUR", userId: "u1", amount: 5n, reason: "r", createdBy: "s", ticket: "OPS-9", approvedBy: "s2" };
+  assert.doesNotThrow(() => planAdjustment(adjust));
+  assert.throws(() => planAdjustment({ ...adjust, amount: 0n }), AmountError);
+  assert.throws(() => planAdjustment({ ...adjust, reason: "  " }), AmountError);
+  assert.throws(() => planAdjustment({ ...adjust, createdBy: "" }), AmountError);
+  assert.throws(() => planAdjustment({ ...adjust, amount: -9_223_372_036_854_775_808n }), AmountError);
+  assert.throws(() => planAdjustment({ ...adjust, ticket: " " }), AmountError);
+  assert.throws(() => planAdjustment({ ...adjust, approvedBy: undefined }), AmountError);
+  assert.throws(() => planAdjustment({ ...adjust, approvedBy: " s " }), AmountError, "the author cannot approve their own adjustment");
+  const deposit = { key: "r", asset: "EUR", userId: "u1", providerKey: "psp", amount: 100n, providerReference: "p", depositId: "d", reversalId: "x", kind: "CHARGEBACK" };
   assert.throws(() => planReverseDeposit({ ...deposit, userPortion: 101n }), AmountError);
   assert.throws(() => planReverseDeposit({ ...deposit, userPortion: -1n }), AmountError);
+  assert.throws(() => planReverseDeposit({ ...deposit, userPortion: 1n, kind: "CHARGEBACK_RECOVERY" }), AmountError);
+  assert.throws(() => planReverseDeposit({ ...deposit, userPortion: 1n, reversalId: "" }), AmountError);
   assert.throws(() => planCreditDeposit({ ...deposit, providerKey: "Bad Key" }), AmountError);
+  assert.throws(() => planCreditDeposit({ ...deposit, depositId: undefined }), AmountError);
+  assert.throws(() => planRecoverChargeback({ ...deposit, recoversReversalId: "o", userPortion: 101n }), AmountError);
+  assert.throws(() => planRecoverChargeback({ ...deposit, userPortion: 1n }), AmountError, "a recovery names the reversal it recovers");
   const withdrawal = { key: "s", asset: "BTC", userId: "u1", withdrawalId: "w", providerKey: "node", amount: 100n, providerReference: "t" };
   assert.throws(() => planSettleWithdrawal({ ...withdrawal, fee: 100n }), AmountError);
   assert.throws(() => planSettleWithdrawal({ ...withdrawal, fee: -1n }), AmountError);
@@ -179,6 +237,31 @@ test("post sends amounts and ids as decimal strings, never JSON numbers", async 
   assert.equal(values[2], '{"tableId":"t1"}');
   assert.equal(values[3], '[{"accountId":"9007199254740993","asset":"PLAY","amount":"-9007199254740993"},{"accountId":"2","asset":"PLAY","amount":"9007199254740993"}]');
   assert.equal(values[4], null);
+});
+
+test("post calls the entry point of the transaction type, with the same parameters", async () => {
+  const entries = [{ accountId: 1n, asset: "EUR", amount: -5n }, { accountId: 2n, asset: "EUR", amount: 5n }];
+  for (const [type, fn] of [["BUY_IN", "ledger_post"], ["RAKE", "ledger_post"], ["DEPOSIT_CREDIT", "ledger_post_payments"],
+    ["WITHDRAWAL_RETURN", "ledger_post_payments"], ["CHARGEBACK_RECOVERY", "ledger_post_payments"], ["PROVIDER_FEE", "ledger_post_payments"],
+    ["ADJUSTMENT", "ledger_post_backoffice"]]) {
+    const db = fakeDb(() => [{ id: "tx" }]);
+    await post(db, { key: `k:${type}`, type, reference: { a: 1 }, entries, createdBy: "who" });
+    assert.equal(db.calls.length, 1);
+    const called = [...db.calls[0].sql.matchAll(/public\.(ledger_post[a-z_]*)\(/g)].map((m) => m[1]);
+    assert.deepEqual(called, [fn], type);
+    assert.deepEqual(db.calls[0].values, [`k:${type}`, type, '{"a":1}', '[{"accountId":"1","asset":"EUR","amount":"-5"},{"accountId":"2","asset":"EUR","amount":"5"}]', "who"]);
+  }
+  const db = fakeDb(() => [{ id: "tx" }]);
+  await assert.rejects(post(db, { key: "k", type: "MINT", reference: {}, entries }), (error) => error instanceof LedgerError && error.code === "INVARIANT");
+  await assert.rejects(post(db, { key: "k", type: "toString", reference: {}, entries }), (error) => error instanceof LedgerError && error.code === "INVARIANT");
+  assert.equal(db.calls.length, 0);
+});
+
+test("getAccountBalance reads the cached balance as a bigint", async () => {
+  const db = fakeDb(() => [{ balance: "-9223372036854775808" }]);
+  assert.equal(await getAccountBalance(db, 42n), -9_223_372_036_854_775_808n);
+  assert.deepEqual(db.calls[0].values, ["42"]);
+  await assert.rejects(getAccountBalance(fakeDb(() => []), 1n), (error) => error instanceof LedgerError && error.dbCode === "LEDGER_UNKNOWN_ACCOUNT");
 });
 
 test("post refuses an unbalanced request before it reaches the database", async () => {
@@ -259,14 +342,19 @@ test("database refusals map to LedgerError codes; other errors propagate", async
 
   // Every refusal the SQL can raise (one SQLSTATE per LEDGER_* prefix), both
   // as Prisma P2010 (meta.code) and as node-postgres (code) report it.
-  const migration = readFileSync(new URL("../prisma/migrations/20261002200000_ledger_foundation/migration.sql", import.meta.url), "utf8");
+  const migration = migrationText("20261002200000_ledger_foundation") + migrationText("20261019120000_payments_wallet");
   const raised = new Map();
   for (const match of migration.matchAll(/ERRCODE = '([0-9A-Z]{5})',\s*MESSAGE = (?:format\()?'(LEDGER_[A-Z_]+):/g)) {
     assert.ok(!raised.has(match[2]) || raised.get(match[2]) === match[1], `${match[2]} has one SQLSTATE`);
     raised.set(match[2], match[1]);
   }
-  assert.ok(raised.size >= 19, `found ${raised.size} refusals in the migration`);
-  const special = { LEDGER_INSUFFICIENT_FUNDS: "INSUFFICIENT_FUNDS", LEDGER_IDEMPOTENCY_CONFLICT: "IDEMPOTENCY_CONFLICT", LEDGER_ASSET_DISABLED: "ASSET_DISABLED", LEDGER_RETRY: "RETRY" };
+  assert.ok(raised.size >= 21, `found ${raised.size} refusals in the migrations`);
+  assert.equal(raised.get("LEDGER_TYPE_FORBIDDEN"), "LG022");
+  assert.equal(raised.get("LEDGER_UNBOUND_PAYMENT"), "LG023");
+  const special = {
+    LEDGER_INSUFFICIENT_FUNDS: "INSUFFICIENT_FUNDS", LEDGER_IDEMPOTENCY_CONFLICT: "IDEMPOTENCY_CONFLICT", LEDGER_ASSET_DISABLED: "ASSET_DISABLED", LEDGER_RETRY: "RETRY",
+    LEDGER_TYPE_FORBIDDEN: "FORBIDDEN", LEDGER_UNBOUND_PAYMENT: "UNBOUND",
+  };
   for (const [dbCode, sqlstate] of raised) {
     if (sqlstate !== "40001") assert.equal(LEDGER_SQLSTATES[sqlstate], dbCode, `${sqlstate} is mapped to ${dbCode}`);
     const message = `${dbCode}: detail`;
@@ -284,6 +372,12 @@ test("database refusals map to LedgerError codes; other errors propagate", async
       assert.ok(mapped instanceof LedgerError, message);
       assert.deepEqual([mapped.code, mapped.dbCode], ["RETRY", dbCode]);
     }
+  }
+  // A role calling another role's entry point is refused before any lookup.
+  for (const error of [prismaError("42501", "permission denied for function ledger_post_payments"),
+    Object.assign(new Error("permission denied for function ledger_post_payments"), { code: "42501" })]) {
+    const mapped = toLedgerError(error);
+    assert.deepEqual([mapped?.code, mapped?.dbCode], ["FORBIDDEN", "PERMISSION_DENIED"]);
   }
   // The SQLSTATE wins over text: a non-ledger error that merely mentions a
   // prefix, or an unrelated SQLSTATE, is not a refusal.

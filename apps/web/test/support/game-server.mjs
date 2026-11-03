@@ -9,6 +9,7 @@ import {
 } from '@poker/engine';
 import { SOCKET_EVENTS as E, TABLE_IDLE_WARNING_MS } from '@poker/shared';
 import { createAuthFixture } from './auth-fixture.mjs';
+import { createWalletFixture } from './wallet-fixture.mjs';
 
 const app = express();
 // localhost:3107 too: WebAuthn refuses an IP address as the relying party, so the passkey specs use that host.
@@ -23,6 +24,8 @@ const hero = 'fixture-player-0';
 /** Accounts, sign-in, recovery and the security page (auth-fixture.mjs). Player-0 is signed in until a test says otherwise. */
 const auth = createAuthFixture({ heroId: hero, heroBankroll: () => bankroll });
 auth.install(app);
+/** The wallet routes and the sandbox payment and identity pages (wallet-fixture.mjs). PAYMENTS_MODE is "off" until a test says otherwise. */
+createWalletFixture({ auth, origins: ORIGINS, fixtureOrigin: 'http://127.0.0.1:4107' }).install(app);
 let table;
 let bankroll;
 let rejectNext = false;

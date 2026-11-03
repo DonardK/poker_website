@@ -2,7 +2,8 @@ import type {
   AccountSecurity, AuthClientConfig, AuthResponse, BackupCodesResponse, ChangeEmailResponse, ChangePasswordResponse,
   EmailChangedResponse, EmailVerifiedResponse, KnownDevicesResponse, LockdownResponse, LoginResponse, MfaChallenge,
   PasskeyOptionsResponse, PasskeySummary, PasskeysResponse, PublicUser, SecondFactorMethod, SecurityEventsResponse,
-  StepUpResult, TotpSetupResponse,
+  StepUpEmailCodeRequest, StepUpEmailCodeResponse, StepUpGrantRequest, StepUpGrantResponse, StepUpPurpose, StepUpResult,
+  TotpSetupResponse,
 } from "@poker/shared";
 import { api, ApiError, authedApi } from "@/lib/api";
 import type { TermsAcceptance } from "@/lib/legal";
@@ -101,8 +102,22 @@ export function reauthMfa(body: { mfaTicket: string; method: SecondFactorMethod;
   return authedApi<StepUpResult>("/api/auth/reauth/mfa", json(body));
 }
 
-export function reauthPasskeyOptions(): Promise<PasskeyOptionsResponse> {
-  return authedApi<PasskeyOptionsResponse>("/api/auth/reauth/passkey/options", json({}));
+/** With `binding`, the assertion is tied to one money step-up (purpose and bind) and only POST /api/auth/step-up accepts it. */
+export function reauthPasskeyOptions(binding?: { purpose: StepUpPurpose; bind: string }): Promise<PasskeyOptionsResponse> {
+  return authedApi<PasskeyOptionsResponse>("/api/auth/reauth/passkey/options", json(binding ?? {}));
+}
+
+/**
+ * A single-use grant for one money action (INTEGRATION.md override 8): the
+ * wallet route that needs it consumes it with the bind it was issued for.
+ */
+export function requestStepUpGrant(body: StepUpGrantRequest): Promise<StepUpGrantResponse> {
+  return authedApi<StepUpGrantResponse>("/api/auth/step-up", json(body));
+}
+
+/** Emails a 6-digit code for this session, purpose and bind (accounts with neither TOTP nor a passkey). */
+export function requestStepUpEmailCode(body: StepUpEmailCodeRequest): Promise<StepUpEmailCodeResponse> {
+  return authedApi<StepUpEmailCodeResponse>("/api/auth/step-up/email-code", json(body));
 }
 
 export function reauthPasskey(body: { challengeToken: string; credential: unknown }): Promise<StepUpResult> {

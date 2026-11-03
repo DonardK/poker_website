@@ -39,7 +39,19 @@ export type LedgerTransactionType =
   | "WITHDRAWAL_RELEASE"
   | "WITHDRAWAL_SETTLE"
   | "PROVIDER_FEE"
-  | "ADJUSTMENT";
+  | "ADJUSTMENT"
+  | "CHARGEBACK_RECOVERY"
+  | "WITHDRAWAL_RETURN";
+
+/** Every transaction type, in the order of the LedgerTransactionType enum. */
+export const LEDGER_TRANSACTION_TYPES: readonly LedgerTransactionType[] = Object.freeze([
+  "PLAY_GRANT", "BUY_IN", "CASH_OUT", "RAKE", "DEPOSIT_CREDIT", "DEPOSIT_REVERSAL", "WITHDRAWAL_HOLD",
+  "WITHDRAWAL_RELEASE", "WITHDRAWAL_SETTLE", "PROVIDER_FEE", "ADJUSTMENT", "CHARGEBACK_RECOVERY", "WITHDRAWAL_RETURN",
+]);
+
+/** What a deposit reversal records (DepositReversal.kind; CHARGEBACK_RECOVERY is planRecoverChargeback). */
+export type DepositReversalKind = "CHARGEBACK" | "PROVIDER_REFUND" | "CHAIN_REORG";
+const REVERSAL_KINDS: ReadonlySet<string> = new Set(["CHARGEBACK", "PROVIDER_REFUND", "CHAIN_REORG"]);
 
 /** Identifies an account by owner; the database creates it on first use. */
 export interface AccountSpec {
@@ -220,37 +232,78 @@ interface ProviderInput {
   createdBy?: string | null;
 }
 
-/** Provider-confirmed deposit: deposit clearing -> user. Real assets only. */
-export function planCreditDeposit(input: ProviderInput): PostingPlan {
+/**
+ * Provider-confirmed deposit: deposit clearing -> user. Real assets only.
+ * depositId is the Deposit row this credit is bound to (the database refuses
+ * a DEPOSIT_CREDIT without exactly one matching Deposit at commit).
+ */
+export function planCreditDeposit(input: ProviderInput & { depositId: string }): PostingPlan {
   const asset = assertRealAsset(input.asset);
   const userId = assertId(input.userId, "userId");
   const providerKey = assertProvider(input.providerKey);
   const amount = assertPositive(input.amount);
-  return plan(input.key, "DEPOSIT_CREDIT", { userId, providerKey, providerReference: assertId(input.providerReference, "providerReference") }, [
+  return plan(input.key, "DEPOSIT_CREDIT", {
+    depositId: assertId(input.depositId, "depositId"), userId, providerKey,
+    providerReference: assertId(input.providerReference, "providerReference"),
+  }, [
     { account: provider(asset, "DEPOSIT_CLEARING", providerKey), amount: -amount },
     { account: user(asset, userId), amount },
   ], input.createdBy);
 }
 
 /**
- * Refund/chargeback of a deposit. `userPortion` is the part still covered by
- * the user's available balance (the caller reads it under the same lock); the
- * rest is a loss the house absorbs. Either leg is dropped when zero.
+ * Refund/chargeback/reorg of a deposit. `userPortion` is the part still
+ * covered by the user's available balance (the caller reads it in the same
+ * transaction); the rest is a loss the house absorbs. Either leg is dropped
+ * when zero. reversalId is the DepositReversal row inserted with this
+ * transaction's id (the binding check matches the two at commit).
  */
-export function planReverseDeposit(input: ProviderInput & { userPortion: bigint }): PostingPlan {
+export function planReverseDeposit(input: ProviderInput & {
+  userPortion: bigint; depositId: string; reversalId: string; kind: DepositReversalKind;
+}): PostingPlan {
   const asset = assertRealAsset(input.asset);
   const userId = assertId(input.userId, "userId");
   const providerKey = assertProvider(input.providerKey);
   const amount = assertPositive(input.amount);
   const userPortion = assertNonNegative(input.userPortion, "userPortion");
   if (userPortion > amount) throw new AmountError("userPortion cannot exceed the reversed amount");
+  if (!REVERSAL_KINDS.has(input.kind)) throw new AmountError("kind must be CHARGEBACK, PROVIDER_REFUND or CHAIN_REORG");
   return plan(input.key, "DEPOSIT_REVERSAL", {
+    depositId: assertId(input.depositId, "depositId"), reversalId: assertId(input.reversalId, "reversalId"), kind: input.kind,
     userId, providerKey, providerReference: assertId(input.providerReference, "providerReference"),
     amount: amount.toString(), userPortion: userPortion.toString(),
   }, [
     { account: provider(asset, "DEPOSIT_CLEARING", providerKey), amount },
     { account: user(asset, userId), amount: -userPortion },
     { account: system(asset, "CHARGEBACK_LOSSES"), amount: -(amount - userPortion) },
+  ], input.createdBy);
+}
+
+/**
+ * A won dispute: the exact inverse of a DEPOSIT_REVERSAL (at most its amount
+ * and user portion; the caller computes the proportional user portion with
+ * the remainder going to the house). The money comes back from the provider
+ * (clearing), the user gets userPortion back, and the rest reduces the
+ * chargeback loss. Bound to the recovery DepositReversal row (recoversReversalId).
+ */
+export function planRecoverChargeback(input: ProviderInput & {
+  userPortion: bigint; depositId: string; reversalId: string; recoversReversalId: string;
+}): PostingPlan {
+  const asset = assertRealAsset(input.asset);
+  const userId = assertId(input.userId, "userId");
+  const providerKey = assertProvider(input.providerKey);
+  const amount = assertPositive(input.amount);
+  const userPortion = assertNonNegative(input.userPortion, "userPortion");
+  if (userPortion > amount) throw new AmountError("userPortion cannot exceed the recovered amount");
+  return plan(input.key, "CHARGEBACK_RECOVERY", {
+    depositId: assertId(input.depositId, "depositId"), reversalId: assertId(input.reversalId, "reversalId"),
+    recoversReversalId: assertId(input.recoversReversalId, "recoversReversalId"),
+    userId, providerKey, providerReference: assertId(input.providerReference, "providerReference"),
+    amount: amount.toString(), userPortion: userPortion.toString(),
+  }, [
+    { account: provider(asset, "DEPOSIT_CLEARING", providerKey), amount: -amount },
+    { account: user(asset, userId), amount: userPortion },
+    { account: system(asset, "CHARGEBACK_LOSSES"), amount: amount - userPortion },
   ], input.createdBy);
 }
 
@@ -305,6 +358,25 @@ export function planSettleWithdrawal(input: WithdrawalInput & { providerKey: str
   ], input.createdBy);
 }
 
+/**
+ * A settled payout that the rail sent back: the provider returns the money
+ * to us (withdrawal clearing) and the user's available balance gets it.
+ * amount is what came back, at most the settled amount minus the fee.
+ */
+export function planReturnWithdrawal(input: WithdrawalInput & { providerKey: string; providerReference: string }): PostingPlan {
+  const asset = assertRealAsset(input.asset);
+  const userId = assertId(input.userId, "userId");
+  const providerKey = assertProvider(input.providerKey);
+  const amount = assertPositive(input.amount);
+  return plan(input.key, "WITHDRAWAL_RETURN", {
+    userId, withdrawalId: assertId(input.withdrawalId, "withdrawalId"), providerKey,
+    providerReference: assertId(input.providerReference, "providerReference"),
+  }, [
+    { account: provider(asset, "WITHDRAWAL_CLEARING", providerKey), amount: -amount },
+    { account: user(asset, userId), amount },
+  ], input.createdBy);
+}
+
 /** A provider fee the house absorbs (house equity -> provider fees). */
 export function planProviderFee(input: { key: string; asset: string; providerKey: string; amount: bigint; providerReference: string; createdBy?: string | null }): PostingPlan {
   const asset = assertRealAsset(input.asset);
@@ -320,17 +392,26 @@ export function planProviderFee(input: { key: string; asset: string; providerKey
  * Staff correction of a user's available balance (signed). The counterparty is
  * house equity (ADJUSTMENTS) for real assets and PLAY_ISSUANCE for PLAY (play
  * chips are minted/burned, never booked against real equity). The database
- * requires createdBy and a non-empty reason for this type.
+ * requires createdBy and a non-empty reason for this type, and its only entry
+ * point (ledger_post_backoffice) a support ticket and a second approver
+ * (approvedBy) who is not createdBy.
  */
-export function planAdjustment(input: { key: string; asset: string; userId: string; amount: bigint; reason: string; createdBy: string }): PostingPlan {
+export function planAdjustment(input: {
+  key: string; asset: string; userId: string; amount: bigint; reason: string; createdBy: string; ticket: string; approvedBy: string;
+}): PostingPlan {
   const asset = assertAsset(input.asset);
   const userId = assertId(input.userId, "userId");
   if (typeof input.amount !== "bigint" || input.amount === 0n) throw new AmountError("adjustment amount must be a non-zero bigint");
   // -BIGINT_MIN does not fit a BIGINT; bound by +/- BIGINT_MAX.
   if (input.amount > BIGINT_MAX || input.amount < -BIGINT_MAX) throw new AmountError("adjustment amount is outside the BIGINT range");
   const createdBy = assertId(input.createdBy, "createdBy");
+  const ticket = assertId(typeof input.ticket === "string" ? input.ticket.trim() : "", "ticket");
+  const approvedBy = assertId(typeof input.approvedBy === "string" ? input.approvedBy.trim() : "", "approvedBy");
+  if (approvedBy === createdBy.trim()) throw new AmountError("an adjustment needs a second approver (approvedBy must differ from createdBy)");
   const counterparty = asset === PLAY_ASSET ? system(asset, "PLAY_ISSUANCE") : system(asset, "ADJUSTMENTS");
-  return plan(input.key, "ADJUSTMENT", { userId, reason: assertId(typeof input.reason === "string" ? input.reason.trim() : "", "reason") }, [
+  return plan(input.key, "ADJUSTMENT", {
+    userId, reason: assertId(typeof input.reason === "string" ? input.reason.trim() : "", "reason"), ticket, approvedBy,
+  }, [
     { account: user(asset, userId), amount: input.amount },
     { account: counterparty, amount: -input.amount },
   ], createdBy);

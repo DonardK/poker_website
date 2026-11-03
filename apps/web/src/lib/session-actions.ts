@@ -7,6 +7,7 @@ import { resetAccountCache } from "@/lib/account-cache";
 import { api, broadcastSignedOut, forgetSharedSession, shareSession } from "@/lib/api";
 import { clearPendingLogout, retryPendingLogout, writePendingLogout } from "@/lib/pending-logout";
 import { rememberAccount, touchRememberedAccount } from "@/lib/remembered-accounts";
+import { resetWalletCache } from "@/lib/wallet-store";
 import { disconnectSocket } from "@/lib/socket";
 import { useAuthStore, useTableStore } from "@/stores/session";
 
@@ -21,7 +22,7 @@ export interface AppRouter {
 /**
  * SECURITY: the one place that wipes per-account state in this tab: the
  * socket, live hand evidence, another tab's shared token, the session, the
- * table and the account caches. Synchronous and idempotent, so nothing of
+ * table, the account and wallet caches. Synchronous and idempotent, so nothing of
  * account A is left when account B signs in.
  */
 export function resetClientState(): void {
@@ -31,6 +32,7 @@ export function resetClientState(): void {
   useAuthStore.getState().clearSession();
   useTableStore.getState().resetTable();
   resetAccountCache();
+  resetWalletCache();
 }
 
 /**

@@ -19,7 +19,9 @@ import { logError, logInfo, logWarn } from "../http/log";
 export type MailKind =
   | "VERIFY_EMAIL" | "PASSWORD_RESET" | "EMAIL_CHANGE_CONFIRM" | "EMAIL_CHANGE_NOTICE" | "EMAIL_IN_USE"
   | "NEW_SIGN_IN" | "PASSWORD_CHANGED" | "TOTP_ENABLED" | "TOTP_DISABLED" | "BACKUP_CODES_REGENERATED"
-  | "BACKUP_CODE_USED" | "PASSKEY_ADDED" | "PASSKEY_REMOVED" | "STEP_UP_CODE";
+  | "BACKUP_CODE_USED" | "PASSKEY_ADDED" | "PASSKEY_REMOVED" | "STEP_UP_CODE"
+  /** Payments Worker: a deposit, withdrawal or payout-destination notice drained from EmailOutbox (src/payments/notify.ts). */
+  | "PAYMENT_NOTICE";
 
 export interface MailMessage {
   kind: MailKind;
@@ -125,6 +127,19 @@ export async function deliverMail(mail: MailConfig, msg: MailMessage): Promise<M
     logWarn({ mail: "DISABLED", kind: msg.kind, userId: msg.userId, toDomain: toDomain(msg.to) }, "email not sent: RESEND_API_KEY is not set");
   }
   return { ok: false };
+}
+
+/**
+ * Deliver through `mail`, or into the test mailbox attached to `env`. For
+ * senders without an EdgeConfig (the payments Worker's EmailOutbox drain).
+ */
+export async function deliverOrCollect(env: object, mail: MailConfig, msg: MailMessage): Promise<MailResult> {
+  const mailbox = testMailbox(env);
+  if (mailbox) {
+    mailbox.push(msg);
+    return { ok: true, id: `test-${mailbox.length}` };
+  }
+  return deliverMail(mail, msg);
 }
 
 async function send(env: Env, config: EdgeConfig, msg: MailMessage): Promise<MailResult> {

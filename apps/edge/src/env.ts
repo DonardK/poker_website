@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { AUTH_KEY_RING_NAMES, jwtSecretProblem, keyRingProblem, minDistinctCharacters, parseKeyRing, PLACEHOLDER_SECRET, type KeyRing } from "./game/key-ring";
 import { logError } from "./http/log";
+import type { PaymentsService } from "./payments/contract";
 
 /** Bindings and vars from wrangler.jsonc. Secrets arrive from wrangler secret / .dev.vars. */
 export interface Env {
@@ -15,6 +16,19 @@ export interface Env {
   RL_WS: RateLimit;
   /** Routes that send email (forgot password, email change, resend verification, step-up code). */
   RL_EMAIL: RateLimit;
+  /**
+   * The poker-payments Worker (typed RPC, src/payments/contract.ts). Optional:
+   * absent until the operator deploys poker-payments (docs/money/WALLET.md section 15.2),
+   * and absent means PAYMENTS_MODE=off for the wallet routes.
+   */
+  PAYMENTS?: PaymentsService;
+  /**
+   * The same value as poker-payments' NOTIFY_LINK_SECRET. Optional: with it
+   * /api/wallet/not-me secures the account from a payments email link even
+   * while poker-payments is down; without it payments has to answer who the
+   * link names. It only ever proves a "This wasn't me" report.
+   */
+  NOTIFY_LINK_SECRET?: string;
   CLIENT_ORIGIN: string;
   TERMS_VERSION: string;
   JWT_ACCESS_TTL: string;

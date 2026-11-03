@@ -7,8 +7,11 @@
   "scripts": {
     "prisma:generate": "node scripts/prisma-generate.mjs",
     "check:schema": "node scripts/check-schema-parity.mjs",
+    "check:money": "node scripts/check-money-parity.mjs",
     "typecheck": "npm run prisma:generate && tsc -p tsconfig.json --noEmit && tsc -p test/tsconfig.json --noEmit",
-    "test": "vitest run",
+    "test": "node scripts/test-all.mjs",
+    "test:payments-worker": "vitest run -c vitest.payments.config.ts",
+    "deploy:payments:dry": "wrangler deploy --dry-run -c wrangler.payments.jsonc --env=\"\"",
     "dev": "wrangler dev",
     "deploy:dry": "wrangler deploy --dry-run",
     "cf-typegen": "wrangler types"

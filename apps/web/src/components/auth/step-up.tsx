@@ -1,7 +1,8 @@
 "use client";
 
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from "react";
-import type { MfaChallenge, ReauthMethod, SecondFactorMethod, StepUpResult } from "@poker/shared";
+import type { MfaChallenge, ReauthMethod, SecondFactorMethod, StepUpGrantResponse, StepUpResult } from "@poker/shared";
+import { MoneyStepUpDialog, type MoneyStepUpRequest } from "@/components/auth/money-step-up-dialog";
 import { PasswordField } from "@/components/auth/password-field";
 import { Button } from "@/components/ui/button";
 import { ModalDialog } from "@/components/ui/modal-dialog";
@@ -21,6 +22,10 @@ import { getPasskeyAssertion, passkeyFailure, passkeyFailureMessage, passkeySupp
  * dialog proves it again with the password (then the second factor when the
  * account has TOTP), or a passkey, and the original request is retried once.
  * Cancelling rejects with StepUpCancelled, which callers ignore silently.
+ *
+ * Money is different (INTEGRATION.md override 8): `confirmMoney` asks for a
+ * single-use grant bound to one action (money-step-up-dialog.tsx), which the
+ * wallet route consumes. The session window never authorises money alone.
  */
 export class StepUpCancelled extends Error {
   constructor() {
@@ -61,6 +66,14 @@ interface StepUpApi {
    * server checks it now, and the dialog opens only for the second factor.
    */
   stepUpWithPassword: (password: string, opts: { action: string }) => Promise<void>;
+  /** A single-use money grant for exactly this purpose and bind; rejects with StepUpCancelled when the user cancels. */
+  confirmMoney: (request: MoneyStepUpRequest) => Promise<StepUpGrantResponse>;
+}
+
+interface MoneyPending {
+  request: MoneyStepUpRequest;
+  resolve: (grant: StepUpGrantResponse) => void;
+  reject: (err: unknown) => void;
 }
 
 const StepUpContext = createContext<StepUpApi | null>(null);
@@ -73,6 +86,7 @@ export function useStepUp(): StepUpApi {
 
 export function StepUpProvider({ children }: { children: React.ReactNode }) {
   const [request, setRequest] = useState<Request | null>(null);
+  const [money, setMoney] = useState<MoneyPending | null>(null);
 
   const ask = useCallback((input: Omit<Request, "resolve" | "reject">) => new Promise<void>((resolve, reject) => {
     setRequest({ ...input, resolve, reject });
@@ -97,6 +111,17 @@ export function StepUpProvider({ children }: { children: React.ReactNode }) {
     if (needsSecondFactor(result)) await ask({ action: opts.action, methods: ["password"], needs: "password", challenge: result });
   }, [ask]);
 
+  const confirmMoney = useCallback((input: MoneyStepUpRequest) => new Promise<StepUpGrantResponse>((resolve, reject) => {
+    setMoney({ request: input, resolve, reject });
+  }), []);
+
+  const finishMoney = (grant: StepUpGrantResponse | null) => {
+    const current = money;
+    setMoney(null);
+    if (!current) return;
+    if (grant) current.resolve(grant); else current.reject(new StepUpCancelled());
+  };
+
   const finish = (outcome: "done" | "cancel") => {
     const current = request;
     setRequest(null);
@@ -105,8 +130,9 @@ export function StepUpProvider({ children }: { children: React.ReactNode }) {
   };
 
   return (
-    <StepUpContext.Provider value={{ withStepUp, stepUpWithPassword }}>
+    <StepUpContext.Provider value={{ withStepUp, stepUpWithPassword, confirmMoney }}>
       {children}
+      {money ? <MoneyStepUpDialog request={money.request} onGranted={(grant) => finishMoney(grant)} onCancel={() => finishMoney(null)} /> : null}
       {request ? <ReauthDialog request={request} onDone={() => finish("done")} onCancel={() => finish("cancel")} /> : null}
     </StepUpContext.Provider>
   );

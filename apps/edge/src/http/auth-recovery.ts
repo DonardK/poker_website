@@ -209,7 +209,7 @@ export function registerAuthRecovery(app: Hono<{ Bindings: Env }>): void {
       return applyLockdown(tx, { token, user, now, holdMs: config.securityHoldMs, facts });
     });
     await fanoutRevoke(c.env, outcome.userId, outcome.revokedSessionIds, "SECURITY_LOCKDOWN");
-    await defer(c, onAccountLockdown(c.env, outcome.userId));
+    await defer(c, onAccountLockdown(c.env, outcome.userId, outcome.report));
     logWarn({
       security: "ACCOUNT_LOCKDOWN",
       userId: outcome.userId,

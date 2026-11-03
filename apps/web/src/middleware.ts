@@ -1,6 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { SESSION_HINT_COOKIE_NAME } from "@poker/shared";
-import { isProtectedPath } from "@/lib/routes";
+import { isKycSdkPath, isProtectedPath, KYC_SDK_FRAME_ORIGINS, KYC_SDK_SCRIPT_ORIGIN } from "@/lib/routes";
 import { safeNext } from "@/lib/safe-next";
 
 /**
@@ -23,6 +23,11 @@ import { safeNext } from "@/lib/safe-next";
  *   style attributes; styles cannot execute code.
  * - Development only: React Refresh needs eval ('unsafe-eval'). Production
  *   adds upgrade-insecure-requests instead.
+ * - The identity-verification page (/wallet/verify) only: the KYC provider's
+ *   WebSDK. script-src lists its script host (the fallback for browsers
+ *   without 'strict-dynamic'; the page loads it with the nonce) and frame-src
+ *   the origins its verification frame comes from. No other page allows them
+ *   (routes.ts KYC_SDK_PATH).
  *
  * Also the sign-in gate's fast path (below) and the request's path for the
  * root layout (x-pathname: the Turnstile script tag is rendered only on the
@@ -59,7 +64,8 @@ function socketWss(raw: string | undefined): string[] {
   }
 }
 
-export function contentSecurityPolicy(nonce: string, dev = DEV): string {
+export function contentSecurityPolicy(nonce: string, dev = DEV, pathname?: string): string {
+  const kyc = isKycSdkPath(pathname);
   // Empty public URLs call this origin. 'self' allows that, including wss.
   const connect = new Set(["'self'",
     ...connectSources(process.env.NEXT_PUBLIC_API_URL),
@@ -68,12 +74,12 @@ export function contentSecurityPolicy(nonce: string, dev = DEV): string {
     TURNSTILE_ORIGIN]);
   const directives = [
     "default-src 'self'",
-    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' ${TURNSTILE_ORIGIN}${dev ? " 'unsafe-eval'" : ""}`,
+    `script-src 'self' 'nonce-${nonce}' 'strict-dynamic' ${TURNSTILE_ORIGIN}${kyc ? ` ${KYC_SDK_SCRIPT_ORIGIN}` : ""}${dev ? " 'unsafe-eval'" : ""}`,
     "style-src 'self' 'unsafe-inline'",
     `connect-src ${[...connect].join(" ")}`,
     "img-src 'self' data: blob:",
     "font-src 'self'",
-    `frame-src ${TURNSTILE_ORIGIN}`,
+    `frame-src ${TURNSTILE_ORIGIN}${kyc ? ` ${KYC_SDK_FRAME_ORIGINS.join(" ")}` : ""}`,
     "frame-ancestors 'none'",
     "object-src 'none'",
     "base-uri 'none'",
@@ -143,7 +149,7 @@ export function middleware(request: NextRequest) {
   const redirect = signInRedirect(request);
   if (redirect) return redirect;
   const nonce = newNonce();
-  const csp = contentSecurityPolicy(nonce);
+  const csp = contentSecurityPolicy(nonce, DEV, request.nextUrl.pathname);
   const requestHeaders = new Headers(request.headers);
   requestHeaders.set("x-nonce", nonce);
   // Overwrites anything the browser sent under this name.

@@ -1,5 +1,5 @@
-import type { StepUpEmailCodeResponse, StepUpGrantResponse, StepUpPurpose } from "@poker/shared";
-import { STEP_UP_EMAIL_CODE_MAX_ATTEMPTS, STEP_UP_EMAIL_CODE_TTL_MS, STEP_UP_PURPOSES } from "@poker/shared";
+import type { StepUpEmailCodeResponse, StepUpGrantResponse } from "@poker/shared";
+import { adminPaymentsAction, isAdminSafetyAction, STEP_UP_EMAIL_CODE_MAX_ATTEMPTS, STEP_UP_EMAIL_CODE_TTL_MS, STEP_UP_PURPOSES, stepUpBind } from "@poker/shared";
 import type { Hono } from "hono";
 import { z } from "zod";
 import type { Env } from "../env";
@@ -35,6 +35,8 @@ const target = {
 
 const grantBody = z.object({
   ...target,
+  /** What an admin_payments bind stands for, sent only for an action that can only stop money (see stopsMoneyOnly). */
+  safetyAction: z.object({ subject: z.string().max(140), decision: z.string().max(40) }).strict().optional(),
   proof: z.discriminatedUnion("kind", [
     z.object({ kind: z.literal("passkey"), challengeToken: z.string().min(1).max(2048), credential: z.unknown() }),
     z.object({ kind: z.literal("totp"), password: presentedPasswordSchema, code: z.string().min(1).max(16) }),
@@ -47,13 +49,18 @@ const grantBody = z.object({
   ]),
 });
 
-function methodNotAllowed(c: Ctx, message: string): Response {
-  return c.json({ error: message, code: "STEP_UP_METHOD_NOT_ALLOWED" }, 403);
+/**
+ * May this grant be issued during the caller's security hold? Only for an
+ * admin action that can only stop money, and only when the bind really is that
+ * action: the hash is recomputed here, so the claim cannot be pinned to another bind.
+ */
+async function stopsMoneyOnly(purpose: string, bind: string, action: { subject: string; decision: string } | undefined): Promise<boolean> {
+  if (purpose !== "admin_payments" || !action || !isAdminSafetyAction(action)) return false;
+  return await stepUpBind(adminPaymentsAction(action)) === bind;
 }
 
-/** Withdrawals and payout-destination changes stay held after a credential change; admin decisions are not held. */
-function holdFor(c: Ctx, purpose: StepUpPurpose, user: { securityHoldUntil: Date | string | null }): Response | null {
-  return purpose === "admin_payments" ? null : assertNoSecurityHold(c, user);
+function methodNotAllowed(c: Ctx, message: string): Response {
+  return c.json({ error: message, code: "STEP_UP_METHOD_NOT_ALLOWED" }, 403);
 }
 
 interface ChallengeRow {
@@ -84,7 +91,7 @@ export function registerStepUp(app: Hono<{ Bindings: Env }>): void {
     const user = gate.user;
     if (!user.email) return c.json({ error: "Add an email address first.", code: "EMAIL_MISSING" }, 409);
     if (user.emailVerifiedAt == null) return c.json({ error: "Confirm your email address first.", code: "EMAIL_NOT_VERIFIED" }, 403);
-    const held = holdFor(c, purpose, user);
+    const held = assertNoSecurityHold(c, user);
     if (held) return held;
     if (mailUnavailable(c.env, config)) return c.json({ error: "Email is not available right now.", code: "MAIL_UNAVAILABLE", retryable: false }, 503);
     const now = new Date();
@@ -140,8 +147,11 @@ export function registerStepUp(app: Hono<{ Bindings: Env }>): void {
     const kind: ProofKind = proof.kind;
     const refusal = methodRefusal(purpose, kind, await readFactors(db, gate.userId));
     if (refusal) return methodNotAllowed(c, refusal);
-    const held = holdFor(c, purpose, gate.user);
-    if (held) return held;
+    // Every money grant waits out the hold, administrators' too: a passkey just enrolled on a taken-over
+    // admin account must not sign payment decisions (a colleague can act meanwhile). Turning a switch off
+    // or freezing an account adds no risk, and must work when it is needed most.
+    const held = assertNoSecurityHold(c, gate.user);
+    if (held && !await stopsMoneyOnly(purpose, bind, parsed.data.safetyAction)) return held;
     let notice: MailMessage | null = null;
     let challenge: ChallengeRow | null = null;
 

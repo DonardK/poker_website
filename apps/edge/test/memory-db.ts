@@ -101,6 +101,8 @@ export type Row = Record<string, any> & { id: string };
 export const SECURITY_TABLES = [
   "knownDevice", "userTotp", "userBackupCode", "webAuthnCredential", "emailToken", "authNonce",
   "accountSecurityEvent", "stepUpGrant", "stepUpEmailChallenge",
+  // Responsible gaming (wallet routes): the database's timing triggers are not simulated (effectiveFrom = insert time).
+  "responsibleGamingLimit", "selfExclusion",
 ] as const;
 export type SecurityTable = (typeof SECURITY_TABLES)[number];
 
@@ -115,6 +117,8 @@ const TABLE_DEFAULTS: Record<SecurityTable, (now: Date) => Record<string, unknow
   accountSecurityEvent: (now) => ({ sessionId: null, ip: null, userAgent: null, country: null, data: {}, createdAt: now }),
   stepUpGrant: () => ({ consumedAt: null }),
   stepUpEmailChallenge: () => ({ attempts: 0, consumedAt: null }),
+  responsibleGamingLimit: (now) => ({ assetCode: "EUR", source: "PLAYER", requestedAt: now, effectiveFrom: now, cancelledAt: null }),
+  selfExclusion: (now) => ({ source: "PLAYER", reason: null, startsAt: now, endsAt: null, reactivationRequestedAt: null, reactivationAcceptedAt: null, reactivationAcceptedBy: null, accessRestoredAt: null, createdAt: now }),
 };
 
 /** Unique keys per table (single columns or composites), as in the migration. */
@@ -128,6 +132,8 @@ const TABLE_UNIQUE: Record<SecurityTable, string[][]> = {
   accountSecurityEvent: [["id"]],
   stepUpGrant: [["id"]],
   stepUpEmailChallenge: [["id"]],
+  responsibleGamingLimit: [["id"]],
+  selfExclusion: [["id"]],
 };
 
 interface SeatRow {

@@ -9,8 +9,10 @@
  *                                 server modules connect exactly as in production;
  * - POKER_TEST_ADMIN_DATABASE_URL the cluster superuser, for fixtures that the
  *                                 runtime role may not write and for inspecting
- *                                 privileges.
- * requireTestDatabase() refuses to run anywhere else (both URLs must be on
+ *                                 privileges;
+ * - POKER_TEST_PAYMENTS_DATABASE_URL   the payments Worker's login (poker_payments_app);
+ * - POKER_TEST_BACKOFFICE_DATABASE_URL the back-office login (poker_backoffice_app).
+ * requireTestDatabase() refuses to run anywhere else (every URL must be on
  * 127.0.0.1 and DATABASE_URL must be the runtime URL), so a suite started by
  * hand can never touch the live database configured in `.env`.
  */
@@ -21,11 +23,17 @@ import { assertLoopbackUrl } from "../support/pg.mjs";
 export function requireTestDatabase() {
   const runtimeUrl = process.env.POKER_TEST_DATABASE_URL;
   const adminUrl = process.env.POKER_TEST_ADMIN_DATABASE_URL;
-  if (!runtimeUrl || !adminUrl) throw new Error("Real-database suites run only via `npm run test:db -w @poker/server` (embedded PostgreSQL); POKER_TEST_DATABASE_URL / POKER_TEST_ADMIN_DATABASE_URL are not set");
+  const paymentsUrl = process.env.POKER_TEST_PAYMENTS_DATABASE_URL;
+  const backofficeUrl = process.env.POKER_TEST_BACKOFFICE_DATABASE_URL;
+  if (!runtimeUrl || !adminUrl || !paymentsUrl || !backofficeUrl) {
+    throw new Error("Real-database suites run only via `npm run test:db -w @poker/server` (embedded PostgreSQL); POKER_TEST_DATABASE_URL / POKER_TEST_ADMIN_DATABASE_URL / POKER_TEST_PAYMENTS_DATABASE_URL / POKER_TEST_BACKOFFICE_DATABASE_URL are not set");
+  }
   assertLoopbackUrl(runtimeUrl, "POKER_TEST_DATABASE_URL");
   assertLoopbackUrl(adminUrl, "POKER_TEST_ADMIN_DATABASE_URL");
+  assertLoopbackUrl(paymentsUrl, "POKER_TEST_PAYMENTS_DATABASE_URL");
+  assertLoopbackUrl(backofficeUrl, "POKER_TEST_BACKOFFICE_DATABASE_URL");
   if (process.env.DATABASE_URL !== runtimeUrl) throw new Error("DATABASE_URL is not the test runtime URL; run through test/support/run-tests.mjs");
-  return { runtimeUrl, adminUrl };
+  return { runtimeUrl, adminUrl, paymentsUrl, backofficeUrl };
 }
 
 /** A connected node-postgres client; closed by the test's `after`. */

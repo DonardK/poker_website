@@ -1,6 +1,7 @@
 import type { Env } from "../env";
 import type { AppDb } from "../http/db";
 import { logWarn } from "../http/log";
+import type { LockdownReportInput } from "../payments/contract";
 import { issueEmailToken, tokenData, voidEmailTokens, type EmailTokenRow, type IssuedEmailToken } from "./email-tokens";
 import { recordSecurityEvent, type RequestFacts } from "./security-events";
 import { revokeUserSessions } from "./sessions";
@@ -44,6 +45,8 @@ export interface LockdownOutcome {
   passkeysRestored: number;
   totp: "removed" | "restored" | null;
   emailReverted: boolean;
+  /** The NOT_ME_REPORTED event, for payments: a report is applied once. */
+  report: LockdownReportInput;
 }
 
 interface LockdownUser {
@@ -148,7 +151,7 @@ export async function applyLockdown(tx: AppDb, input: {
   if (!reset) throw new Error("lockdown reset token was not issued");
 
   if (totp) await recordSecurityEvent(tx, { userId: user.id, type: "TOTP_CHANGED", facts: input.facts, data: { change: totp, by: "lockdown" } });
-  await recordSecurityEvent(tx, {
+  const reportId = await recordSecurityEvent(tx, {
     userId: user.id,
     type: "NOT_ME_REPORTED",
     facts: input.facts,
@@ -162,17 +165,34 @@ export async function applyLockdown(tx: AppDb, input: {
       ...(emailReverted ? { emailReverted: true } : {}),
     },
   });
-  return { userId: user.id, kind, revokedSessionIds, reset, passkeysRemoved: removed.count, passkeysRestored: restored.count, totp, emailReverted };
+  return {
+    userId: user.id, kind, revokedSessionIds, reset, passkeysRemoved: removed.count, passkeysRestored: restored.count, totp, emailReverted,
+    report: { id: reportId, at: now.toISOString(), notice: null },
+  };
 }
 
 /**
- * Wallet hook: called after every lockdown commits. A no-op until the
- * payments phase wires it to `env.PAYMENTS?.securityLockdown(userId)` (freeze
- * pending withdrawals, invalidate unconsumed step-up grants on their side).
- * Runs after the response; it must not throw and must not use the request's
- * database client.
+ * Wallet hook: called after every lockdown commits. Asks poker-payments to
+ * lock the account's money down (docs/money/WALLET.md section 10.11):
+ * withdrawals become manual, payout destinations added in the 72 hours before
+ * the report are revoked, undispatched withdrawals are cancelled with their
+ * releases and unconsumed step-up grants are voided. Without the PAYMENTS
+ * binding (production today) there is no money to lock. Runs after the
+ * response; it never throws and never uses the request's database client. This
+ * call is the fast path: the NOT_ME_REPORTED event committed before it is the
+ * durable record, and the payments dispatcher applies any report with no
+ * lockdown recorded for it (applyPendingLockdowns), so a failure here only
+ * delays it, and a report that arrives both ways is applied once. Meanwhile the
+ * security hold blocks new withdrawals, destination changes and the dispatcher
+ * itself.
  */
-export async function onAccountLockdown(env: Env, userId: string): Promise<void> {
-  void env;
-  void userId;
+export async function onAccountLockdown(env: Env, userId: string, report: LockdownReportInput): Promise<void> {
+  const payments = env.PAYMENTS;
+  if (!payments) return;
+  try {
+    const result = await payments.securityLockdown({ userId, requestId: crypto.randomUUID() }, "NOT_ME", report) as { ok: boolean; code?: string };
+    if (!result.ok) logWarn({ security: "PAYMENTS_LOCKDOWN_FAILED", userId, code: result.code ?? "UNKNOWN" }, "payments lockdown refused after an account lockdown");
+  } catch (err) {
+    logWarn({ security: "PAYMENTS_LOCKDOWN_FAILED", userId, errName: err instanceof Error ? err.name : "Unknown" }, "payments lockdown failed after an account lockdown");
+  }
 }

@@ -10,9 +10,9 @@
  *   their defaults;
  * - StepUpGrant: a money grant needs a second factor or the email code (never
  *   PASSWORD alone), admin payments need a passkey, the lifetime is at most 5
- *   minutes, and a consumer holding only SELECT + UPDATE ("consumedAt") (what
- *   the wallet migration grants poker_payments) consumes a grant exactly once,
- *   never after expiry, and can change nothing else;
+ *   minutes, and the consumer, poker_payments (which the wallet migration
+ *   20261019120000_payments_wallet gives only SELECT + UPDATE ("consumedAt")),
+ *   consumes a grant exactly once, never after expiry, and can change nothing else;
  * - StepUpEmailChallenge: 5 attempts, 10 minutes, money purposes only;
  * - AccountSecurityEvent is append-only for every role and keeps its user;
  * - the CHECKs on secrets, hashes and auth methods, and the foreign-key
@@ -32,7 +32,8 @@ import { requireTestDatabase, tag } from "./support.mjs";
 const { adminUrl, runtimeUrl } = requireTestDatabase();
 const MIGRATION = "20261019100000_account_security";
 const database = `poker_acctsec_${tag()}`;
-const probeRole = `stepup_consumer_${tag()}`;
+/** The grant consumer: the payments group role (the wallet migration, applied below with every later one). */
+const consumerRole = "poker_payments";
 const HASH = "a".repeat(64);
 const OTHER_HASH = "b".repeat(64);
 const MINUTE = 60_000;
@@ -91,18 +92,20 @@ function grant(overrides = {}) {
   };
 }
 
+/** UTC wall-clock instants, as the API writes them (the driver would send this machine's local time for a Date). */
 async function insertGrant(client, row) {
   await client.query(`INSERT INTO public."StepUpGrant" (id, "userId", "sessionId", purpose, "bindHash", method, "createdAt", "expiresAt")
     VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-  [row.id, row.userId, row.sessionId, row.purpose, row.bindHash, row.method, row.createdAt, row.expiresAt]);
+  [row.id, row.userId, row.sessionId, row.purpose, row.bindHash, row.method, row.createdAt.toISOString(), row.expiresAt.toISOString()]);
   return row.id;
 }
 
-/** The consume statement of design-wallet §10.5, run as the probe role that holds exactly the wallet's planned grants. */
+/** The consume statement of design-wallet §10.5, run as poker_payments (exactly the wallet migration's grants) in UTC, as moneyTx does. */
 async function consume(row) {
   await admin.query("BEGIN");
   try {
-    await admin.query(`SET LOCAL ROLE ${probeRole}`);
+    await admin.query(`SET LOCAL ROLE ${consumerRole}`);
+    await admin.query("SET LOCAL TIME ZONE 'UTC'");
     const result = await admin.query(`UPDATE public."StepUpGrant" SET "consumedAt" = CURRENT_TIMESTAMP
       WHERE id = $1 AND "userId" = $2 AND "sessionId" = $3 AND purpose = $4 AND "bindHash" = $5
         AND "consumedAt" IS NULL AND "expiresAt" > CURRENT_TIMESTAMP
@@ -119,7 +122,8 @@ async function consume(row) {
 async function asProbe(statement, params = [], { breakGlass = false } = {}) {
   await admin.query("BEGIN");
   try {
-    await admin.query(`SET LOCAL ROLE ${probeRole}`);
+    await admin.query(`SET LOCAL ROLE ${consumerRole}`);
+    await admin.query("SET LOCAL TIME ZONE 'UTC'");
     if (breakGlass) await admin.query("SELECT set_config('poker.break_glass', 'on', true)");
     return await admin.query(statement, params);
   } finally { await admin.query("ROLLBACK"); }
@@ -155,12 +159,14 @@ before(async () => {
   runtime = new pg.Client({ connectionString: withDatabase(runtimeUrl, database) });
   await runtime.connect();
 
-  // Exactly what the wallet migration plans for poker_payments on StepUpGrant.
-  await admin.query(`CREATE ROLE ${probeRole} NOLOGIN NOSUPERUSER NOBYPASSRLS`);
-  await admin.query(`GRANT USAGE ON SCHEMA public TO ${probeRole}`);
-  await admin.query(`GRANT SELECT ON TABLE public."StepUpGrant" TO ${probeRole}`);
-  await admin.query(`GRANT UPDATE ("consumedAt") ON TABLE public."StepUpGrant" TO ${probeRole}`);
-  await admin.query(`CREATE POLICY payments_consume ON public."StepUpGrant" TO ${probeRole} USING (true) WITH CHECK (true)`);
+  // The wallet migration gave the consumer exactly this on StepUpGrant: no INSERT, no DELETE, one column.
+  const { rows: privileges } = await admin.query(`SELECT
+      has_table_privilege($1, 'public."StepUpGrant"', 'SELECT') AS "select",
+      has_table_privilege($1, 'public."StepUpGrant"', 'INSERT') AS "insert",
+      has_table_privilege($1, 'public."StepUpGrant"', 'DELETE') AS "delete",
+      has_column_privilege($1, 'public."StepUpGrant"', 'consumedAt', 'UPDATE') AS "consume",
+      has_column_privilege($1, 'public."StepUpGrant"', 'bindHash', 'UPDATE') AS "rebind"`, [consumerRole]);
+  assert.deepEqual(privileges[0], { select: true, insert: false, delete: false, consume: true, rebind: false });
 });
 
 after(async () => {
@@ -170,7 +176,6 @@ after(async () => {
   await maintenance.connect();
   try {
     await maintenance.query(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
-    await maintenance.query(`DROP ROLE IF EXISTS ${probeRole}`);
   } finally { await maintenance.end(); }
 });
 

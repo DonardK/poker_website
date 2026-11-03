@@ -1,6 +1,6 @@
 # Runtime login
 
-Two shapes. The migration `20261010120000_runtime_hardening` picks from the role that already exists. Nothing in a migration sets a password.
+Two shapes for the runtime. The migration `20261010120000_runtime_hardening` picks from the role that already exists. Nothing in a migration sets a password. The payments and back-office logins are below.
 
 ## Supabase demo
 
@@ -33,6 +33,28 @@ node -e "console.log(require('node:crypto').randomBytes(24).toString('hex'))"
 ```
 
 If `CREATE ROLE poker_app` failed because the migration role cannot create roles, create `poker_app` in the Neon console (`LOGIN`, `NOSUPERUSER`, `NOBYPASSRLS`, `INHERIT`, no password in git) and apply migrations again. The migration sees the role and only grants `poker_server` to it. Then run the `ALTER ROLE` above.
+
+## Payments and back-office logins (`20261019120000_payments_wallet`)
+
+The wallet adds two more database identities. Unlike the runtime there is one shape everywhere (Supabase, Neon, local docker, the embedded test cluster):
+
+| Group (NOLOGIN, holds grants and policies) | Login (LOGIN, INHERIT, no password in git) | Used by | Ledger entry point |
+|---|---|---|---|
+| `poker_payments` | `poker_payments_app` | the `poker-payments` Worker only, through its own Hyperdrive config | `ledger_post_payments` (deposit and withdrawal types) |
+| `poker_backoffice` | `poker_backoffice_app` | the operator's machine only (adjustments with a ticket and a second approver); never a Worker | `ledger_post_backoffice` (`ADJUSTMENT`) |
+
+The migration creates the four roles when they are missing (`NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION`), grants each group to its login, and sets `timezone = UTC` on both logins (the payment triggers compare `TIMESTAMP(3)` columns with `CURRENT_TIMESTAMP`). A role that already exists is checked, never altered: on Supabase the migration role is not a superuser, and PostgreSQL 16+ refuses `ALTER ROLE ... NOSUPERUSER` from it. The migration fails if any login belongs to more than one of `poker_server`, `poker_payments` and `poker_backoffice`. `apps/server/test/db/supabase-shape.test.mjs` applies every migration as a non-superuser `CREATEROLE` migration role with the Supabase roles and default privileges in place.
+
+Until the operator sets a password, neither login can connect, and nothing needs one: production runs with `PAYMENTS_MODE=off` and no `poker-payments` Worker. When the operator enables the wallet (`docs/money/WALLET.md` section 15.2), as the administrator that applies migrations:
+
+```sql
+ALTER ROLE poker_payments_app PASSWORD 'choose-a-long-random-password';
+ALTER ROLE poker_backoffice_app PASSWORD 'choose-another-long-random-password';
+```
+
+On Supabase the payments Hyperdrive config uses the session pooler user `poker_payments_app.<ref>` on port 5432, with caching disabled; it is a second Hyperdrive config, bound only to `poker-payments`, never to `poker-api`. The back-office login is used from the operator's machine over the session pooler (`poker_backoffice_app.<ref>`). Do not reuse the runtime's password, and never put either password in a Worker that serves players.
+
+Tests: `apps/server/test/support/pg.mjs` gives both logins a random password and exports `POKER_TEST_PAYMENTS_DATABASE_URL`, `POKER_TEST_BACKOFFICE_DATABASE_URL` and `CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE_PAYMENTS` (the edge suite's test-only `HYPERDRIVE_PAYMENTS` binding).
 
 ## Connection strings
 

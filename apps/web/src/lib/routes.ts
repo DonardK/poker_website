@@ -28,6 +28,19 @@ export const PUBLIC_PREFIXES = ["/.well-known/"] as const;
  */
 export const TURNSTILE_PATHS = ["/login", "/signup"] as const;
 
+/**
+ * The identity-verification page that may embed the KYC provider's WebSDK
+ * (Sumsub). Only this page's Content-Security-Policy and Permissions-Policy
+ * allow that provider's script, frame and camera (middleware.ts,
+ * next.config.ts). A document's policy is fixed when it loads, so the page is
+ * always opened, and left, with a full page load (kyc-screen.tsx).
+ */
+export const KYC_SDK_PATH = "/wallet/verify";
+
+/** The Sumsub WebSDK builder script and the origins its iframe loads from (docs.sumsub.com, verified 2026-10-29). */
+export const KYC_SDK_SCRIPT_ORIGIN = "https://static.sumsub.com";
+export const KYC_SDK_FRAME_ORIGINS = ["https://in.sumsub.com", "https://api.sumsub.com"] as const;
+
 const PUBLIC_EXACT: ReadonlySet<string> = new Set<string>([
   ...LEGAL_PATHS, ...AUTH_ENTRY_PATHS, ...AUTH_TOKEN_PATHS, ...STATIC_PUBLIC,
 ]);
@@ -60,4 +73,8 @@ export function isAuthTokenPath(path: string): boolean {
 
 export function isTurnstilePath(path: string | null | undefined): boolean {
   return typeof path === "string" && (TURNSTILE_PATHS as readonly string[]).includes(trimmed(path));
+}
+
+export function isKycSdkPath(path: string | null | undefined): boolean {
+  return typeof path === "string" && trimmed(path) === KYC_SDK_PATH;
 }

@@ -7,16 +7,18 @@ import { hashRefresh } from "../auth/sessions";
 import { verifyAccessToken, verifyRefreshToken } from "../auth/tokens";
 import { readCookie } from "./cookies";
 import type { AppDb } from "./db";
-import { clientIp, pathname, serviceUnavailable, type Ctx } from "./guard";
+import { apiPath, clientIp, pathname, serviceUnavailable, type Ctx } from "./guard";
 import { errBrief, logError, logInfo, logWarn } from "./log";
 import { registerAccount } from "./account";
 import { registerAdmin } from "./admin";
+import { registerAdminPayments } from "./admin-payments";
 import { registerAuth } from "./auth";
 import { registerPasskeyAuth } from "./auth-passkey";
 import { registerReauth } from "./auth-reauth";
 import { registerAuthRecovery } from "./auth-recovery";
 import { registerStepUp } from "./auth-step-up";
 import { registerTables } from "./tables";
+import { registerWallet } from "./wallet";
 import { registerWsTicket } from "./ws-ticket";
 import { testDatabase } from "./request-db";
 
@@ -69,7 +71,7 @@ function isProbe(method: string, path: string): boolean {
 }
 
 function isLobbyList(method: string, path: string): boolean {
-  return method === "GET" && (path === "/api/tables" || path === "/api/tables/");
+  return method === "GET" && path === "/api/tables";
 }
 
 function mediaType(header: string | undefined): string {
@@ -114,7 +116,7 @@ function reflectCors(c: Ctx): void {
   if (new URL(c.req.url).origin === config.clientOrigin) return;
   c.res.headers.set("Access-Control-Allow-Origin", config.clientOrigin);
   c.res.headers.set("Access-Control-Allow-Credentials", "true");
-  c.res.headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type");
+  c.res.headers.set("Access-Control-Allow-Headers", "Authorization, Content-Type, Idempotency-Key");
   c.res.headers.set("Access-Control-Allow-Methods", "GET, POST, DELETE, OPTIONS");
   c.res.headers.append("Vary", "Origin");
 }
@@ -146,8 +148,11 @@ async function readLimited(request: Request): Promise<Uint8Array | null> {
 }
 
 async function outer(c: Ctx, next: Next): Promise<Response | void> {
-  const path = pathname(c);
-  if (!isApi(path)) {
+  const path = apiPath(c);
+  // Hono routes on the decoded path while every check here reads the URL as sent, so /api/%77allet/...
+  // would reach the wallet handlers past their limits and the access log. No API route needs an escape.
+  const encoded = pathname(c).includes("%") && isApi(c.req.path.toLowerCase());
+  if (!isApi(path) && !encoded) {
     await next();
     return;
   }
@@ -155,6 +160,10 @@ async function outer(c: Ctx, next: Next): Promise<Response | void> {
   c.set("requestId", crypto.randomUUID());
   applySecurityHeaders(c);
   applyCache(c, c.req.method, path);
+  if (encoded) {
+    logWarn({ security: "ENCODED_PATH_REFUSED", method: c.req.method, path: pathname(c).slice(0, 200) }, "refused a percent-encoded API path");
+    return c.json({ error: "Bad request" }, 400);
+  }
   if (isProbe(c.req.method, path)) {
     await next();
     return;
@@ -220,7 +229,7 @@ function writeAdminLog(c: Ctx, method: string, path: string, started: number, st
 }
 
 async function adminAccessLog(c: Ctx, next: Next): Promise<void> {
-  const path = pathname(c);
+  const path = apiPath(c);
   if (!path.startsWith("/api/admin")) {
     await next();
     return;
@@ -245,6 +254,11 @@ async function enforceLimit(c: Ctx, binding: RateLimit, key: string): Promise<Re
   }
   c.header("Retry-After", "60");
   return c.json({ error: "Too many requests, please try again later." }, 429);
+}
+
+/** Every state-changing wallet route (POST or DELETE under /api/wallet). Reads are under RL_GENERAL only. */
+function isWalletMoney(method: string, path: string): boolean {
+  return (method === "POST" || method === "DELETE") && path.startsWith("/api/wallet/");
 }
 
 function ipKey(c: Ctx): string {
@@ -279,7 +293,7 @@ async function refreshKey(c: Ctx): Promise<string> {
 }
 
 async function rateLimit(c: Ctx, next: Next): Promise<Response | void> {
-  const path = pathname(c);
+  const path = apiPath(c);
   const method = c.req.method;
   if (!isApi(path) || isProbe(method, path)) {
     await next();
@@ -299,6 +313,13 @@ async function rateLimit(c: Ctx, next: Next): Promise<Response | void> {
     const email = await enforceLimit(c, c.env.RL_EMAIL, await generalKey(c));
     if (email) return email;
   }
+  if (isWalletMoney(method, path)) {
+    // A player's money actions (deposits, payout destinations, quotes, withdrawals, limits, KYC)
+    // share RL_CREDENTIALS by account; the "This wasn't me" link of a payments email by IP.
+    const key = path === "/api/wallet/not-me" ? ipKey(c) : `wallet:${await generalKey(c)}`;
+    const wallet = await enforceLimit(c, c.env.RL_CREDENTIALS, key);
+    if (wallet) return wallet;
+  }
   if (method === "POST" && path === "/api/auth/refresh") {
     const refresh = await enforceLimit(c, c.env.RL_REFRESH, await refreshKey(c));
     if (refresh) return refresh;
@@ -307,7 +328,7 @@ async function rateLimit(c: Ctx, next: Next): Promise<Response | void> {
 }
 
 async function originAndBody(c: Ctx, next: Next): Promise<Response | void> {
-  const path = pathname(c);
+  const path = apiPath(c);
   const method = c.req.method;
   if (!isApi(path) || isProbe(method, path)) {
     await next();
@@ -396,6 +417,8 @@ export function mountHttp(app: Hono<{ Bindings: Env }>): void {
   registerAccount(app);
   registerTables(app);
   registerAdmin(app);
+  registerWallet(app);
+  registerAdminPayments(app);
   registerWsTicket(app);
   app.onError(onError);
 }

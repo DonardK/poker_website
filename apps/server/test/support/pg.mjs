@@ -6,14 +6,20 @@
  * `embedded-postgres` binaries, no Docker) in a fresh temporary data directory
  * on a free 127.0.0.1 port, creates `poker_test`, applies EVERY migration in
  * prisma/migrations with the project's own Prisma CLI (`prisma migrate deploy`,
- * exactly as production is migrated), then gives the runtime login the
- * migrations create (`poker_app`, member of NOLOGIN `poker_server`) a random
- * password so tests connect as the least-privileged application role.
- * poker_server stays NOLOGIN.
- * It returns { adminUrl, runtimeUrl, stop() }:
- * - adminUrl:   the cluster superuser (fixtures, privilege inspection, migrations);
- * - runtimeUrl: poker_app, the role the game server runs as in production;
- * - stop():     stops the cluster and deletes its data directory (idempotent).
+ * exactly as production is migrated), then gives the logins the migrations
+ * create a random password each, so tests connect as the least-privileged
+ * application roles: `poker_app` (member of NOLOGIN `poker_server`, the game
+ * runtime), `poker_payments_app` (member of NOLOGIN `poker_payments`, the
+ * payments Worker) and `poker_backoffice_app` (member of NOLOGIN
+ * `poker_backoffice`, the operator's adjustment tool). The group roles stay NOLOGIN.
+ * It returns { adminUrl, runtimeUrl, paymentsUrl, backofficeUrl, stop() }:
+ * - adminUrl:      the cluster superuser (fixtures, privilege inspection, migrations);
+ * - runtimeUrl:    poker_app, the role the game server runs as in production;
+ * - paymentsUrl:   poker_payments_app, the payments Worker's login;
+ * - backofficeUrl: poker_backoffice_app, the back-office login;
+ * - stop():        stops the cluster and deletes its data directory (idempotent).
+ * startEmptyCluster() starts the same kind of cluster with nothing applied
+ * (for suites that need their own role layout, e.g. the Supabase shape).
  * The data directory is also removed on SIGINT/SIGTERM, an uncaught error and
  * plain process exit, so an interrupted run leaves no cluster or files behind.
  *
@@ -27,10 +33,15 @@
  *
  * CLI: node test/support/pg.mjs --exec "<command>"
  *   runs <command> (through the shell) with POKER_TEST_DATABASE_URL (runtime
- *   role) and POKER_TEST_ADMIN_DATABASE_URL (superuser) set, DATABASE_URL /
+ *   role), POKER_TEST_PAYMENTS_DATABASE_URL (payments role),
+ *   POKER_TEST_BACKOFFICE_DATABASE_URL (back-office role) and
+ *   POKER_TEST_ADMIN_DATABASE_URL (superuser) set, DATABASE_URL /
  *   DIRECT_URL pointed at the test cluster too (so even a command that loads
- *   `.env` cannot reach the live database), fresh random test-only secrets,
- *   then stops the cluster and exits with the command's exit code.
+ *   `.env` cannot reach the live database), the Miniflare Hyperdrive overrides
+ *   CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE (runtime) and
+ *   CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE_PAYMENTS
+ *   (payments), fresh random test-only secrets, then stops the cluster and
+ *   exits with the command's exit code.
  */
 import { spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
@@ -50,6 +61,10 @@ const LOOPBACK = "127.0.0.1";
 const DATABASE = "poker_test";
 const SUPERUSER = "postgres";
 const RUNTIME_ROLE = "poker_app";
+/** The payments Worker's login (inherits NOLOGIN poker_payments; migration 20261019120000_payments_wallet). */
+const PAYMENTS_ROLE = "poker_payments_app";
+/** The back-office login (inherits NOLOGIN poker_backoffice). */
+const BACKOFFICE_ROLE = "poker_backoffice_app";
 
 /** Migration directory names in the order Prisma applies them (lexicographic). */
 export function migrationNames() {
@@ -207,16 +222,15 @@ function installCleanupHooks() {
 }
 
 /**
- * Start a disposable cluster with every migration applied.
+ * Start a disposable, empty cluster on 127.0.0.1 (no database created, no
+ * migration applied). Returns { baseUrl, port, stop() }: baseUrl is the
+ * superuser URL without a database path (append "/<db>?sslmode=disable").
  * @param {{ log?: (line: string) => void }} [options] log: progress lines (never secrets).
  */
-export async function startTestDatabase({ log = () => {} } = {}) {
+export async function startEmptyCluster({ log = () => {} } = {}) {
   installCleanupHooks();
   const { default: EmbeddedPostgres } = await import("embedded-postgres");
-  const { default: pg } = await import("pg");
-  const started = Date.now();
   const superPassword = randomBytes(24).toString("hex");
-  const runtimePassword = randomBytes(24).toString("hex");
   const serverLog = [];
   let instance;
   for (let attempt = 1; ; attempt++) {
@@ -254,8 +268,30 @@ export async function startTestDatabase({ log = () => {} } = {}) {
       log(`[pg] start attempt ${attempt} failed (${err?.message ?? err}); retrying on another port`);
     }
   }
+  return { baseUrl: `postgresql://${SUPERUSER}:${superPassword}@${LOOPBACK}:${instance.port}`, port: instance.port, stop: instance.stop };
+}
+
+/** A login URL on the same cluster and database as `adminUrl`. */
+function loginUrl(adminUrl, role, password) {
+  const url = new URL(adminUrl);
+  url.username = role;
+  url.password = password;
+  return url.toString();
+}
+
+/**
+ * Start a disposable cluster with every migration applied.
+ * @param {{ log?: (line: string) => void }} [options] log: progress lines (never secrets).
+ */
+export async function startTestDatabase({ log = () => {} } = {}) {
+  const { default: pg } = await import("pg");
+  const started = Date.now();
+  const runtimePassword = randomBytes(24).toString("hex");
+  const paymentsPassword = randomBytes(24).toString("hex");
+  const backofficePassword = randomBytes(24).toString("hex");
+  const instance = await startEmptyCluster({ log });
   try {
-    const base = `postgresql://${SUPERUSER}:${superPassword}@${LOOPBACK}:${instance.port}`;
+    const base = instance.baseUrl;
     const maintenance = new pg.Client({ connectionString: `${base}/postgres?sslmode=disable` });
     await maintenance.connect();
     try { await maintenance.query(`CREATE DATABASE ${DATABASE}`); } finally { await maintenance.end(); }
@@ -265,14 +301,19 @@ export async function startTestDatabase({ log = () => {} } = {}) {
     await admin.connect();
     let version;
     try {
-      // Migrations create poker_app LOGIN with no password, and leave
-      // poker_server NOLOGIN. A random password lets tests connect as poker_app.
+      // Migrations create poker_app, poker_payments_app and poker_backoffice_app
+      // LOGIN with no password, and leave their group roles NOLOGIN. A random
+      // password each lets tests connect as exactly those logins.
       await admin.query(`ALTER ROLE ${RUNTIME_ROLE} WITH PASSWORD ${admin.escapeLiteral(runtimePassword)}`);
+      await admin.query(`ALTER ROLE ${PAYMENTS_ROLE} WITH PASSWORD ${admin.escapeLiteral(paymentsPassword)}`);
+      await admin.query(`ALTER ROLE ${BACKOFFICE_ROLE} WITH PASSWORD ${admin.escapeLiteral(backofficePassword)}`);
       version = (await admin.query("SHOW server_version")).rows[0].server_version;
     } finally { await admin.end(); }
-    const runtimeUrl = `postgresql://${RUNTIME_ROLE}:${runtimePassword}@${LOOPBACK}:${instance.port}/${DATABASE}?sslmode=disable`;
+    const runtimeUrl = loginUrl(adminUrl, RUNTIME_ROLE, runtimePassword);
+    const paymentsUrl = loginUrl(adminUrl, PAYMENTS_ROLE, paymentsPassword);
+    const backofficeUrl = loginUrl(adminUrl, BACKOFFICE_ROLE, backofficePassword);
     log(`[pg] PostgreSQL ${version} on ${LOOPBACK}:${instance.port}, ${migrationNames().length} migrations applied, ready in ${Date.now() - started} ms`);
-    return { adminUrl, runtimeUrl, port: instance.port, stop: instance.stop };
+    return { adminUrl, runtimeUrl, paymentsUrl, backofficeUrl, port: instance.port, stop: instance.stop };
   } catch (err) {
     await instance.stop();
     throw err;
@@ -302,8 +343,11 @@ async function main(argv) {
   const env = {
     ...process.env, ...testSecrets(),
     POKER_TEST_DATABASE_URL: db.runtimeUrl, POKER_TEST_ADMIN_DATABASE_URL: db.adminUrl,
+    POKER_TEST_PAYMENTS_DATABASE_URL: db.paymentsUrl, POKER_TEST_BACKOFFICE_DATABASE_URL: db.backofficeUrl,
     DATABASE_URL: db.runtimeUrl, DIRECT_URL: db.adminUrl,
     CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE: db.runtimeUrl,
+    // The payments Worker's Hyperdrive (wrangler.payments.jsonc) and the edge suite's test-only payments binding.
+    CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE_PAYMENTS: db.paymentsUrl,
   };
   const code = await new Promise((resolveCode) => {
     const child = spawn(command, { stdio: "inherit", env, shell: true, cwd: process.cwd() });

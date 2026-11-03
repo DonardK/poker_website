@@ -27,8 +27,9 @@ export interface SecurityEventInput {
   data?: Record<string, unknown>;
 }
 
-export async function recordSecurityEvent(db: AppDb, input: SecurityEventInput): Promise<void> {
-  await db.accountSecurityEvent.create({
+/** Returns the event's id (a "This wasn't me" report is known to payments by it). */
+export async function recordSecurityEvent(db: AppDb, input: SecurityEventInput): Promise<string> {
+  const row = await db.accountSecurityEvent.create({
     data: {
       userId: input.userId,
       type: input.type,
@@ -38,5 +39,7 @@ export async function recordSecurityEvent(db: AppDb, input: SecurityEventInput):
       country: normalizeCountry(input.facts?.country),
       data: input.data ?? {},
     },
-  });
+    select: { id: true },
+  }) as { id: string };
+  return row.id;
 }

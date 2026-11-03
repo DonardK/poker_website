@@ -1,19 +1,26 @@
 /**
- * Server side of the money ledger (docs/money/LEDGER.md).
+ * Client of the money ledger (docs/money/LEDGER.md). The same file is
+ * apps/server/src/money/ledger.ts and apps/edge/src/money/ledger.ts
+ * (apps/edge/scripts/check-money-parity.mjs keeps them byte-identical).
  *
- * Every balance change goes through the database function public.ledger_post
- * (SECURITY DEFINER), which re-validates everything: balance per asset,
- * account/asset match, enabled assets, per-entry cap, transaction shape,
- * overdraft, idempotency. This module only builds requests, resolves account
- * ids and maps the database's refusals to LedgerError. The runtime role has
- * no write privilege on the ledger tables, so there is no other path.
+ * Every balance change goes through a SECURITY DEFINER entry point, which
+ * re-validates everything: balance per asset, account/asset match, enabled
+ * assets, per-entry cap, transaction shape, overdraft, idempotency. Each
+ * database role has its own entry point and may post only its own types
+ * (ENTRY_POINT; LEDGER.md section 10): public.ledger_post for the runtime
+ * (poker_server), public.ledger_post_payments for the payments Worker
+ * (poker_payments), public.ledger_post_backoffice for the operator
+ * (poker_backoffice). This module only builds requests, resolves account ids
+ * and maps the database's refusals to LedgerError. No role has a write
+ * privilege on the ledger tables, so there is no other path.
  *
  * All functions take the caller's Prisma client or interactive-transaction
  * client: call them inside the same transaction as the game/payment state
  * change they account for (after locking that state's rows), so both commit
- * or neither does. A refusal raises, which aborts that transaction.
+ * or neither does. A refusal raises, which aborts that transaction. A deposit
+ * or withdrawal posting must be bound to its payment row in the same
+ * transaction, or the database refuses the commit (LEDGER_UNBOUND_PAYMENT).
  */
-import type { Prisma } from "@prisma/client";
 import { AmountError, assertBigintRange } from "./amounts.js";
 import {
   assertBalanced,
@@ -26,7 +33,9 @@ import {
   planHoldWithdrawal,
   planProviderFee,
   planRake,
+  planRecoverChargeback,
   planReleaseWithdrawal,
+  planReturnWithdrawal,
   planReverseDeposit,
   planSettleWithdrawal,
   type AccountSpec,
@@ -36,10 +45,44 @@ import {
   type PostingPlan,
 } from "./flows.js";
 
-/** PrismaClient or Prisma.TransactionClient (only raw queries are used). */
-export type LedgerDb = Pick<Prisma.TransactionClient, "$queryRaw">;
+/**
+ * PrismaClient or an interactive-transaction client (only tagged-template raw
+ * queries are used). Structural, so this file needs no generated Prisma types
+ * and compiles in both workspaces (NodeNext and bundler resolution).
+ */
+export interface LedgerDb {
+  $queryRaw<T = unknown>(query: TemplateStringsArray, ...values: unknown[]): Promise<T>;
+}
 
-export type LedgerErrorCode = "INSUFFICIENT_FUNDS" | "IDEMPOTENCY_CONFLICT" | "INVARIANT" | "ASSET_DISABLED" | "RETRY";
+export type LedgerErrorCode =
+  | "INSUFFICIENT_FUNDS"
+  | "IDEMPOTENCY_CONFLICT"
+  | "INVARIANT"
+  | "ASSET_DISABLED"
+  | "RETRY"
+  /** LG022 LEDGER_TYPE_FORBIDDEN (the entry point refuses the type), or Postgres 42501 (the role may not call it). */
+  | "FORBIDDEN"
+  /** LG023 LEDGER_UNBOUND_PAYMENT: a payment-type posting without exactly one matching payment row, at commit. */
+  | "UNBOUND";
+
+/** The database entry point (and so the database role) allowed to post each type. */
+export type LedgerEntryPoint = "runtime" | "payments" | "backoffice";
+
+export const ENTRY_POINT: Readonly<Record<LedgerTransactionType, LedgerEntryPoint>> = Object.freeze({
+  PLAY_GRANT: "runtime",
+  BUY_IN: "runtime",
+  CASH_OUT: "runtime",
+  RAKE: "runtime",
+  DEPOSIT_CREDIT: "payments",
+  DEPOSIT_REVERSAL: "payments",
+  CHARGEBACK_RECOVERY: "payments",
+  WITHDRAWAL_HOLD: "payments",
+  WITHDRAWAL_RELEASE: "payments",
+  WITHDRAWAL_SETTLE: "payments",
+  WITHDRAWAL_RETURN: "payments",
+  PROVIDER_FEE: "payments",
+  ADJUSTMENT: "backoffice",
+});
 
 /**
  * A refusal by the ledger. `code` is what callers branch on; `dbCode` is the
@@ -83,23 +126,54 @@ export const LEDGER_SQLSTATES: Readonly<Record<string, string>> = Object.freeze(
   LG017: "LEDGER_ZERO_AMOUNT",
   LG018: "LEDGER_BAD_SHAPE",
   LG019: "LEDGER_UNKNOWN_OWNER",
+  LG022: "LEDGER_TYPE_FORBIDDEN",
+  LG023: "LEDGER_UNBOUND_PAYMENT",
 });
 const KNOWN_DB_CODES: ReadonlySet<string> = new Set([...Object.values(LEDGER_SQLSTATES), "LEDGER_RETRY"]);
 const LEDGER_MESSAGE = /\b(LEDGER_[A-Z_]+)\b/;
-/** The SQLSTATEs this module maps: the ledger's own (LGnnn) and Postgres' retry conditions. */
-const MAPPED_SQLSTATE = /^(?:LG\d{3}|40001|40P01)$/;
+/**
+ * The SQLSTATEs this module maps: the ledger's own (LGnnn), Postgres' retry
+ * conditions, and 42501 (insufficient_privilege: this role may not execute
+ * that entry point; refused before any lookup).
+ */
+const MAPPED_SQLSTATE = /^(?:LG\d{3}|40001|40P01|42501)$/;
+
+/** Where a driver error keeps the database's own SQLSTATE and message. */
+interface DriverErrorShape {
+  code?: unknown;
+  message?: unknown;
+  meta?: { code?: unknown; message?: unknown; driverAdapterError?: { cause?: { originalCode?: unknown; originalMessage?: unknown } } };
+  cause?: { originalCode?: unknown; originalMessage?: unknown };
+}
+
+const isSqlstate = (value: unknown): value is string => typeof value === "string" && /^[0-9A-Z]{5}$/.test(value);
 
 /**
- * The Postgres SQLSTATE of a driver error, if it carries one: Prisma puts it
- * in meta.code (its own `code` is P1000..P6999); node-postgres in `code`.
+ * The Postgres SQLSTATE of a driver error, if it carries one. Prisma's own
+ * `code` is P1000..P6999 and never a SQLSTATE. The places, in order:
+ * - Prisma's library engine (apps/server): meta.code;
+ * - Prisma with a driver adapter (apps/edge, @prisma/adapter-pg 6.19): a raw
+ *   query or a mapped constraint error (P2010, P2002, ...) carries it in
+ *   meta.driverAdapterError.cause.originalCode, and a model query that a
+ *   trigger refuses throws the DriverAdapterError itself, with cause.originalCode;
+ * - node-postgres: code.
  */
-function sqlstateOf(error: { code?: unknown; meta?: { code?: unknown } }): string | undefined {
-  const isSqlstate = (value: unknown): value is string => typeof value === "string" && /^[0-9A-Z]{5}$/.test(value);
-  const metaCode = error.meta?.code;
-  if (isSqlstate(metaCode)) return metaCode;
-  const code = error.code;
+export function sqlstateOf(error: unknown): string | undefined {
+  if (!error || typeof error !== "object") return undefined;
+  const candidate = error as DriverErrorShape;
+  for (const value of [candidate.meta?.code, candidate.meta?.driverAdapterError?.cause?.originalCode, candidate.cause?.originalCode]) {
+    if (isSqlstate(value)) return value;
+  }
+  const code = candidate.code;
   if (isSqlstate(code) && !/^P[1-9][0-9]{3}$/.test(code)) return code;
   return undefined;
+}
+
+/** Every message a driver error carries (the database's own first), one per line. */
+function messagesOf(candidate: DriverErrorShape): string {
+  return [candidate.meta?.driverAdapterError?.cause?.originalMessage, candidate.cause?.originalMessage, candidate.meta?.message, candidate.message]
+    .filter((part): part is string => typeof part === "string")
+    .join("\n");
 }
 
 function codeFor(dbCode: string): LedgerErrorCode {
@@ -110,6 +184,9 @@ function codeFor(dbCode: string): LedgerErrorCode {
     case "LEDGER_RETRY":
     case "SERIALIZATION_FAILURE":
     case "DEADLOCK_DETECTED": return "RETRY";
+    case "LEDGER_TYPE_FORBIDDEN":
+    case "PERMISSION_DENIED": return "FORBIDDEN";
+    case "LEDGER_UNBOUND_PAYMENT": return "UNBOUND";
     default: return "INVARIANT";
   }
 }
@@ -119,23 +196,25 @@ function codeFor(dbCode: string): LedgerErrorCode {
  * returns null for anything else (connection loss, timeouts, ...), which the
  * caller must propagate unchanged: an infrastructure failure is not a refusal.
  *
- * The SQLSTATE decides whenever the driver exposes it (node-postgres: `code`;
- * Prisma raw-query failure P2010: `meta.code`): LG001..LG019 are the ledger's
+ * The SQLSTATE decides whenever the driver exposes it (sqlstateOf):
+ * LG001..LG023 are the ledger's
  * refusals (table in docs/money/LEDGER.md section 11); 40001 (serialization
  * failure, including LEDGER_RETRY) and 40P01 (deadlock detected) both mean
- * "roll back and retry the whole transaction" and map to RETRY. Without a
+ * "roll back and retry the whole transaction" and map to RETRY; 42501 (the
+ * role may not execute that entry point) maps to FORBIDDEN. Without a
  * SQLSTATE, a known LEDGER_* message prefix is matched instead.
  */
 export function toLedgerError(error: unknown): LedgerError | null {
   if (error instanceof LedgerError) return error;
   if (!error || typeof error !== "object") return null;
-  const candidate = error as { code?: unknown; message?: unknown; meta?: { code?: unknown; message?: unknown } };
-  const text = `${typeof candidate.meta?.message === "string" ? candidate.meta.message : ""}\n${typeof candidate.message === "string" ? candidate.message : ""}`;
+  const candidate = error as DriverErrorShape;
+  const text = messagesOf(candidate);
   const sqlstate = sqlstateOf(candidate);
   const prefix = LEDGER_MESSAGE.exec(text)?.[1];
   let dbCode: string | undefined;
   if (sqlstate === "40001") dbCode = prefix === "LEDGER_RETRY" ? prefix : "SERIALIZATION_FAILURE";
   else if (sqlstate === "40P01") dbCode = "DEADLOCK_DETECTED";
+  else if (sqlstate === "42501") dbCode = "PERMISSION_DENIED";
   else if (sqlstate) dbCode = MAPPED_SQLSTATE.test(sqlstate) ? LEDGER_SQLSTATES[sqlstate] : undefined;
   else if (prefix && KNOWN_DB_CODES.has(prefix)) dbCode = prefix;
   if (!dbCode) return null;
@@ -178,13 +257,17 @@ export interface PostInput {
 }
 
 /**
- * Posts one balanced transaction and returns its id. Replaying the same key
- * with the same payload returns the original id without posting again; the
- * same key with a different payload is IDEMPOTENCY_CONFLICT. Amounts and ids
- * travel as decimal strings (the database refuses JSON numbers).
+ * Posts one balanced transaction through the entry point of its type
+ * (ENTRY_POINT) and returns its id. Replaying the same key with the same
+ * payload returns the original id without posting again; the same key with a
+ * different payload is IDEMPOTENCY_CONFLICT. Amounts and ids travel as
+ * decimal strings (the database refuses JSON numbers). The connection's role
+ * must own that entry point: anything else is FORBIDDEN.
  */
 export async function post(db: LedgerDb, input: PostInput): Promise<string> {
   assertIdempotencyKey(input.key);
+  const entryPoint = Object.prototype.hasOwnProperty.call(ENTRY_POINT, input.type) ? ENTRY_POINT[input.type] : undefined;
+  if (!entryPoint) throw new LedgerError("INVARIANT", "LEDGER_BAD_REQUEST", "unknown transaction type");
   // Fail fast on an obviously invalid request; the database checks it again.
   try {
     assertBalanced(input.entries);
@@ -199,11 +282,26 @@ export async function post(db: LedgerDb, input: PostInput): Promise<string> {
     amount: entry.amount.toString(),
   })));
   const reference = JSON.stringify(input.reference ?? {});
-  const rows = await guarded(() => db.$queryRaw<Array<{ id: string }>>`
-    SELECT public.ledger_post(${input.key}::text, ${input.type}::text, ${reference}::jsonb, ${entries}::jsonb,
-      ${input.createdBy ?? null}::text)::text AS id`);
+  const createdBy = input.createdBy ?? null;
+  // Three literal statements (no SQL built from strings): the function name is never a parameter.
+  const rows = await guarded(() => {
+    switch (entryPoint) {
+      case "runtime":
+        return db.$queryRaw<Array<{ id: string }>>`
+          SELECT public.ledger_post(${input.key}::text, ${input.type}::text, ${reference}::jsonb, ${entries}::jsonb,
+            ${createdBy}::text)::text AS id`;
+      case "payments":
+        return db.$queryRaw<Array<{ id: string }>>`
+          SELECT public.ledger_post_payments(${input.key}::text, ${input.type}::text, ${reference}::jsonb, ${entries}::jsonb,
+            ${createdBy}::text)::text AS id`;
+      case "backoffice":
+        return db.$queryRaw<Array<{ id: string }>>`
+          SELECT public.ledger_post_backoffice(${input.key}::text, ${input.type}::text, ${reference}::jsonb, ${entries}::jsonb,
+            ${createdBy}::text)::text AS id`;
+    }
+  });
   const id = rows[0]?.id;
-  if (!id) throw new LedgerError("INVARIANT", "LEDGER_BAD_REQUEST", "ledger_post returned no id");
+  if (!id) throw new LedgerError("INVARIANT", "LEDGER_BAD_REQUEST", "the ledger entry point returned no id");
   return id;
 }
 
@@ -251,6 +349,20 @@ export const releaseWithdrawal = (db: LedgerDb, input: Parameters<typeof planRel
 export const settleWithdrawal = (db: LedgerDb, input: Parameters<typeof planSettleWithdrawal>[0]) => execute(db, planSettleWithdrawal(input));
 export const providerFee = (db: LedgerDb, input: Parameters<typeof planProviderFee>[0]) => execute(db, planProviderFee(input));
 export const adjustment = (db: LedgerDb, input: Parameters<typeof planAdjustment>[0]) => execute(db, planAdjustment(input));
+export const recoverChargeback = (db: LedgerDb, input: Parameters<typeof planRecoverChargeback>[0]) => execute(db, planRecoverChargeback(input));
+export const returnWithdrawal = (db: LedgerDb, input: Parameters<typeof planReturnWithdrawal>[0]) => execute(db, planReturnWithdrawal(input));
+
+/**
+ * The cached balance of one account (read inside the posting transaction,
+ * e.g. to size a chargeback's user portion; ledger_post re-checks it).
+ */
+export async function getAccountBalance(db: LedgerDb, accountId: bigint): Promise<bigint> {
+  const rows = await db.$queryRaw<Array<{ balance: string }>>`
+    SELECT "balance"::text AS balance FROM public."LedgerAccount" WHERE "id" = ${accountId.toString()}::bigint`;
+  const balance = rows[0]?.balance;
+  if (balance === undefined) throw new LedgerError("INVARIANT", "LEDGER_UNKNOWN_ACCOUNT", `account ${accountId} does not exist`);
+  return BigInt(balance);
+}
 
 export interface AccountBalance {
   accountId: bigint;

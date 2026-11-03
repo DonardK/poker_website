@@ -25,6 +25,17 @@ function securityHeaders(phase: string): { key: string; value: string }[] {
   return headers;
 }
 
+/**
+ * SECURITY: the identity-verification page (src/lib/routes.ts KYC_SDK_PATH)
+ * embeds the KYC provider's frame, which needs the camera and microphone for
+ * document and liveness capture. Only that page delegates them, and only to
+ * the provider's origins (Sumsub's documented policy); every other page
+ * keeps camera=() and microphone=(). Next.js applies the last matching header
+ * of the same name, so this rule comes after the global one.
+ */
+const KYC_PERMISSIONS_POLICY =
+  'camera=(self "https://in.sumsub.com" "https://api.sumsub.com"), microphone=(self "https://in.sumsub.com" "https://api.sumsub.com"), geolocation=(), payment=()';
+
 const nextConfig = (phase: string): NextConfig => ({
   outputFileTracingRoot: repoRoot,
   transpilePackages: ["@poker/shared"],
@@ -35,7 +46,10 @@ const nextConfig = (phase: string): NextConfig => ({
   // "localhost" in the middleware's sign-in redirect. Real hosts are never loopback addresses.
   skipMiddlewareUrlNormalize: process.env.POKER_SKIP_MIDDLEWARE_URL_NORMALIZE === "1",
   async headers() {
-    return [{ source: "/:path*", headers: securityHeaders(phase) }];
+    return [
+      { source: "/:path*", headers: securityHeaders(phase) },
+      { source: "/wallet/verify", headers: [{ key: "Permissions-Policy", value: KYC_PERMISSIONS_POLICY }] },
+    ];
   },
   /**
    * Local `next dev` only. Production is one workers.dev origin: worker.ts

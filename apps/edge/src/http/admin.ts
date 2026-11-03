@@ -26,12 +26,12 @@ export function registerAdmin(app: Hono<{ Bindings: Env }>): void {
 }
 
 /** ADMIN_REQUIRE_PASSKEY: the session signed in with a passkey, or stepped up with one in the last 5 minutes. */
-function signedInWithPasskey(gate: GateOk): boolean {
+export function signedInWithPasskey(gate: GateOk): boolean {
   if (gate.session.authMethods.includes("passkey")) return true;
   return stepUpUntil(gate.session) !== null && gate.session.reauthMethods.includes("passkey");
 }
 
-async function requireAccess(c: Ctx): Promise<Response | null> {
+export async function requireAccess(c: Ctx): Promise<Response | null> {
   let settings: ReturnType<typeof accessSettings>;
   try {
     settings = accessSettings(c.env);

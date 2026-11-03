@@ -22,7 +22,13 @@
  * - poker_server cannot CREATE in schema public, is not a superuser, cannot
  *   bypass RLS, create roles or databases, and is a member of no other role;
  * - poker_server may execute only the two ledger entry points among the
- *   SECURITY DEFINER functions.
+ *   SECURITY DEFINER functions;
+ * - the payments wallet (20261019120000_payments_wallet): the logins
+ *   poker_payments_app and poker_backoffice_app inherit exactly one NOLOGIN
+ *   group each (poker_payments, poker_backoffice), no login holds two of the
+ *   three application groups, and the payments and back-office privileges
+ *   are exactly their matrices (tables, columns, functions); each role may
+ *   execute only its own ledger entry point and nobody ledger_post_core.
  *
  * Run: npm run test:db -w @poker/server
  */
@@ -31,7 +37,7 @@ import assert from "node:assert/strict";
 import pg from "pg";
 import { requireTestDatabase } from "./support.mjs";
 
-const { adminUrl, runtimeUrl } = requireTestDatabase();
+const { adminUrl, runtimeUrl, paymentsUrl, backofficeUrl } = requireTestDatabase();
 const LOGIN_ROLE = "poker_app";
 const GRANTED_ROLE = "poker_server";
 const HISTORY = ["Hand", "HandPlayer", "HandAction", "HandPot"];
@@ -72,6 +78,26 @@ const EXPECTED = {
   // The API mints money step-up grants; only the payments role consumes them.
   StepUpGrant: ["SELECT", "INSERT"],
   StepUpEmailChallenge: ["SELECT", "INSERT", "DELETE"],
+  // Payments wallet: the runtime writes deposit limits and self-exclusions
+  // (whose timing the database decides) and nothing else; KYC identities
+  // (PlayerCompliance), the switches and every other wallet table belong to
+  // the payments role.
+  PlayerCompliance: [],
+  ResponsibleGamingLimit: ["SELECT", "INSERT"],
+  SelfExclusion: ["SELECT", "INSERT"],
+  PaymentSwitch: [],
+  PaymentInstrument: [],
+  Deposit: [],
+  DepositReversal: [],
+  WithdrawalQuote: [],
+  Withdrawal: [],
+  PayoutDispatch: [],
+  PayoutAttempt: [],
+  PaymentEvent: [],
+  PaymentReviewAction: [],
+  ReconciliationRun: [],
+  ReconciliationIssue: [],
+  EmailOutbox: [],
   _prisma_migrations: [],
 };
 /** Column-level grants beyond the table matrix, exactly: table -> privilege -> columns. */
@@ -83,6 +109,78 @@ const EXPECTED_COLUMNS = {
   WebAuthnCredential: { UPDATE: ["counter", "lastUsedAt", "name", "backedUp", "deviceType", "removedAt"] },
   EmailToken: { UPDATE: ["consumedAt"] },
   StepUpEmailChallenge: { UPDATE: ["attempts", "consumedAt"] },
+  ResponsibleGamingLimit: { UPDATE: ["cancelledAt"] },
+  SelfExclusion: { UPDATE: ["reactivationRequestedAt"] },
+};
+
+const WALLET_TABLES = ["PlayerCompliance", "ResponsibleGamingLimit", "SelfExclusion", "PaymentInstrument", "Deposit", "DepositReversal",
+  "WithdrawalQuote", "Withdrawal", "PayoutDispatch", "PayoutAttempt", "PaymentEvent", "PaymentReviewAction", "PaymentSwitch",
+  "ReconciliationRun", "ReconciliationIssue", "EmailOutbox"];
+const SIR = ["SELECT", "INSERT", "UPDATE"];
+/**
+ * poker_payments (inherited by poker_payments_app): table-level privileges on
+ * every public table. The trigger guards narrow every UPDATE further; no
+ * DELETE anywhere; the ledger is read-only (postings go through
+ * ledger_post_payments only).
+ */
+const EXPECTED_PAYMENTS = {
+  ...Object.fromEntries(Object.keys(EXPECTED).map((name) => [name, []])),
+  Asset: ["SELECT"], LedgerAccount: ["SELECT"], LedgerTransaction: ["SELECT"], LedgerEntry: ["SELECT"],
+  StepUpGrant: ["SELECT"],
+  PlayerCompliance: SIR,
+  ResponsibleGamingLimit: ["SELECT", "INSERT"],
+  SelfExclusion: ["SELECT"],
+  PaymentInstrument: ["SELECT", "INSERT"],
+  Deposit: SIR,
+  DepositReversal: ["SELECT", "INSERT"],
+  WithdrawalQuote: ["SELECT", "INSERT"],
+  Withdrawal: SIR,
+  PayoutDispatch: SIR,
+  PayoutAttempt: ["SELECT", "INSERT"],
+  PaymentEvent: ["SELECT", "INSERT"],
+  PaymentReviewAction: ["SELECT", "INSERT"],
+  PaymentSwitch: ["SELECT"],
+  ReconciliationRun: SIR,
+  ReconciliationIssue: SIR,
+  EmailOutbox: ["SELECT", "INSERT"],
+};
+/** Column-level grants of poker_payments where it has no table-level grant: table -> privilege -> columns. */
+const EXPECTED_PAYMENTS_COLUMNS = {
+  User: { SELECT: ["id", "username", "email", "emailVerifiedAt", "role", "kind", "isGuest", "securityHoldUntil", "createdAt"] },
+  Session: { SELECT: ["id", "userId", "expiresAt", "absoluteExpiresAt", "revokedAt"] },
+  AccountSecurityEvent: { SELECT: ["id", "userId", "type", "createdAt", "data"] },
+  StepUpGrant: { UPDATE: ["consumedAt"] },
+  ResponsibleGamingLimit: { UPDATE: ["cancelledAt"] },
+  SelfExclusion: { UPDATE: ["reactivationAcceptedAt", "reactivationAcceptedBy"] },
+  PaymentInstrument: {
+    UPDATE: ["status", "depositEnabled", "payoutEnabled", "label", "ownershipMethod", "ownershipProof", "ownershipVerifiedAt", "usableAfter",
+      "lastUsedAt", "successfulPayouts", "revokedAt", "revokedReason", "revokedBy", "cardExpMonth", "cardExpYear", "updatedAt"],
+  },
+  WithdrawalQuote: { UPDATE: ["consumedAt"] },
+  PaymentEvent: { UPDATE: ["processedAt", "outcome", "attempts", "nextAttemptAt", "lastError"] },
+  PaymentSwitch: { UPDATE: ["enabled", "updatedBy", "reason", "updatedAt"] },
+  EmailOutbox: { UPDATE: ["status", "attempts", "nextAttemptAt", "leaseUntil", "lastError", "sentAt"] },
+};
+/** poker_backoffice (inherited by poker_backoffice_app): reads money and review history, accepts a reactivation; writes no review action. */
+const EXPECTED_BACKOFFICE = {
+  ...Object.fromEntries(Object.keys(EXPECTED).map((name) => [name, []])),
+  Asset: ["SELECT"], LedgerAccount: ["SELECT"], LedgerTransaction: ["SELECT"], LedgerEntry: ["SELECT"],
+  PlayerCompliance: ["SELECT"],
+  Deposit: ["SELECT"],
+  DepositReversal: ["SELECT"],
+  Withdrawal: ["SELECT"],
+  PaymentReviewAction: ["SELECT"],
+  SelfExclusion: ["SELECT"],
+};
+const EXPECTED_BACKOFFICE_COLUMNS = {
+  User: { SELECT: ["id", "username", "email", "role", "kind", "isGuest", "createdAt"] },
+  SelfExclusion: { UPDATE: ["reactivationAcceptedAt", "reactivationAcceptedBy"] },
+};
+/** SECURITY DEFINER functions each login may execute (exactly). */
+const EXPECTED_DEFINER_EXECUTE = {
+  poker_app: ["ledger_ensure_account", "ledger_post"],
+  poker_payments_app: ["ledger_ensure_account", "ledger_post_payments"],
+  poker_backoffice_app: ["ledger_ensure_account", "ledger_post_backoffice"],
 };
 /** Columns of each account-security table the runtime role must never UPDATE (the complement of EXPECTED_COLUMNS). */
 const FROZEN_COLUMNS = {
@@ -99,14 +197,20 @@ const FROZEN_COLUMNS = {
 
 let admin;
 let runtime;
+let payments;
+let backoffice;
 
 before(async () => {
   admin = new pg.Client({ connectionString: adminUrl });
   runtime = new pg.Client({ connectionString: runtimeUrl });
+  payments = new pg.Client({ connectionString: paymentsUrl });
+  backoffice = new pg.Client({ connectionString: backofficeUrl });
   await admin.connect();
   await runtime.connect();
+  await payments.connect();
+  await backoffice.connect();
 });
-after(async () => { await runtime?.end(); await admin?.end(); });
+after(async () => { await backoffice?.end(); await payments?.end(); await runtime?.end(); await admin?.end(); });
 
 async function publicTables() {
   const { rows } = await admin.query(`SELECT c.relname AS name, c.relrowsecurity AS enabled, c.relforcerowsecurity AS forced
@@ -126,6 +230,51 @@ async function refusedAsRuntime(sql, params = []) {
   assert.ok(error, `runtime login was allowed: ${sql}`);
   assert.equal(error.code, "42501", `expected permission denied (42501) for ${sql}, got ${error.code}: ${error.message}`);
 }
+
+/** Runs `sql` on `client` inside a transaction that is always rolled back; resolves to the error (or null). */
+async function attempt(client, sql, params = []) {
+  await client.query("BEGIN");
+  try { await client.query(sql, params); return null; } catch (error) { return error; } finally { await client.query("ROLLBACK"); }
+}
+
+async function refusedAs(client, sql, params = []) {
+  const error = await attempt(client, sql, params);
+  assert.ok(error, `allowed: ${sql}`);
+  assert.equal(error.code, "42501", `expected permission denied (42501) for ${sql}, got ${error.code}: ${error.message}`);
+}
+
+/** Table-level privileges of `role` on every table in EXPECTED. */
+async function tableMatrix(role) {
+  const matrix = {};
+  for (const name of Object.keys(EXPECTED)) {
+    matrix[name] = [];
+    for (const privilege of PRIVILEGES) {
+      const { rows: [row] } = await admin.query(`SELECT has_table_privilege($1, format('public.%I', $2::text), $3) AS ok`, [role, name, privilege]);
+      if (row.ok) matrix[name].push(privilege);
+    }
+  }
+  return matrix;
+}
+
+/** Column privileges `role` holds without the table-level privilege: table -> privilege -> sorted columns. */
+async function columnGrants(role) {
+  const { rows } = await admin.query(`
+    SELECT c.relname AS "table", a.attname AS "column", p.privilege
+      FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+      JOIN pg_attribute a ON a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped
+      CROSS JOIN unnest(ARRAY['SELECT', 'INSERT', 'UPDATE', 'REFERENCES']) AS p(privilege)
+     WHERE n.nspname = 'public' AND c.relkind = 'r'
+       AND has_column_privilege($1, c.oid, a.attnum, p.privilege)
+       AND NOT has_table_privilege($1, c.oid, p.privilege)
+     ORDER BY 1, 3, 2`, [role]);
+  const out = {};
+  for (const row of rows) ((out[row.table] ??= {})[row.privilege] ??= []).push(row.column);
+  for (const byPrivilege of Object.values(out)) for (const list of Object.values(byPrivilege)) list.sort();
+  return out;
+}
+
+const sortedColumns = (expected) => Object.fromEntries(Object.entries(expected).map(([table, byPrivilege]) =>
+  [table, Object.fromEntries(Object.entries(byPrivilege).map(([privilege, columns]) => [privilege, [...columns].sort()]))]));
 
 test("the runtime connection is poker_app, inheriting NOLOGIN poker_server", async () => {
   const { rows: [who] } = await runtime.query("SELECT current_user AS name, session_user AS session");
@@ -233,11 +382,14 @@ test("poker_server can mint a StepUpGrant but never consume, change or delete on
   await refusedAsRuntime(`DELETE FROM public."StepUpGrant" WHERE false`);
   await refusedAsRuntime(`UPDATE public."AccountSecurityEvent" SET type = type WHERE false`);
   await refusedAsRuntime(`DELETE FROM public."AccountSecurityEvent" WHERE false`);
-  // Nothing is granted to a payments role by the auth migration (the wallet migration creates it).
+  // Beyond poker_server, only the payments role holds anything on these
+  // tables (the wallet migration): SELECT on StepUpGrant here, plus the
+  // column grants checked in the payments matrix test (consumedAt, and the
+  // security events' id, userId, type and createdAt).
   const { rows } = await admin.query(`SELECT grantee, table_name, privilege_type FROM information_schema.table_privileges
     WHERE table_schema = 'public' AND table_name = ANY($1) AND grantee NOT IN ('poker_server', current_user)`,
     [Object.keys(FROZEN_COLUMNS)]);
-  assert.deepEqual(rows, [], "account-security tables are granted to poker_server only");
+  assert.deepEqual(rows, [{ grantee: "poker_payments", table_name: "StepUpGrant", privilege_type: "SELECT" }]);
 });
 
 test("poker_server cannot UPDATE or DELETE hand history (Hand, HandPlayer, HandAction, HandPot)", async () => {
@@ -295,4 +447,118 @@ test("among SECURITY DEFINER functions the runtime login may execute only ledger
   const { rows } = await admin.query(`SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
     WHERE n.nspname = 'public' AND p.prosecdef AND has_function_privilege($1, p.oid, 'EXECUTE') ORDER BY p.proname`, [LOGIN_ROLE]);
   assert.deepEqual(rows.map((row) => row.proname), ["ledger_ensure_account", "ledger_post"]);
+});
+
+test("payments roles: two NOLOGIN groups, one LOGIN per group, and no login holds two application groups", async () => {
+  const attributes = `SELECT rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolinherit, rolcanlogin, rolreplication FROM pg_roles WHERE rolname = $1`;
+  const login = { rolsuper: false, rolbypassrls: false, rolcreaterole: false, rolcreatedb: false, rolinherit: true, rolcanlogin: true, rolreplication: false };
+  const group = { ...login, rolinherit: false, rolcanlogin: false };
+  for (const [role, expected] of [["poker_payments", group], ["poker_backoffice", group], ["poker_payments_app", login], ["poker_backoffice_app", login]]) {
+    const { rows } = await admin.query(attributes, [role]);
+    assert.deepEqual(rows, [expected], role);
+  }
+  const memberships = async (role) => (await admin.query(`SELECT r.rolname, m.inherit_option, m.set_option FROM pg_auth_members m
+    JOIN pg_roles r ON r.oid = m.roleid JOIN pg_roles u ON u.oid = m.member WHERE u.rolname = $1 ORDER BY r.rolname`, [role])).rows;
+  assert.deepEqual(await memberships("poker_payments_app"), [{ rolname: "poker_payments", inherit_option: true, set_option: true }]);
+  assert.deepEqual(await memberships("poker_backoffice_app"), [{ rolname: "poker_backoffice", inherit_option: true, set_option: true }]);
+  assert.deepEqual(await memberships("poker_payments"), [], "the payments group is a member of no other role");
+  assert.deepEqual(await memberships("poker_backoffice"), [], "the back-office group is a member of no other role");
+  // Exactly one of the three groups for every application login (and group).
+  const { rows: holders } = await admin.query(`SELECT r.rolname,
+      pg_has_role(r.oid, 'poker_server', 'MEMBER')::int + pg_has_role(r.oid, 'poker_payments', 'MEMBER')::int
+        + pg_has_role(r.oid, 'poker_backoffice', 'MEMBER')::int AS groups
+      FROM pg_roles r WHERE NOT r.rolsuper AND r.rolname LIKE 'poker\\_%' ORDER BY r.rolname`);
+  assert.deepEqual(holders.filter((row) => row.groups !== 1), [], "every poker_* role holds exactly one application group");
+  for (const role of ["poker_app", "poker_payments_app", "poker_backoffice_app"]) {
+    assert.ok(holders.some((row) => row.rolname === role), `${role} exists`);
+  }
+  // The connections really are those logins.
+  for (const [client, role] of [[payments, "poker_payments_app"], [backoffice, "poker_backoffice_app"]]) {
+    const { rows: [who] } = await client.query("SELECT current_user AS name, session_user AS session");
+    assert.deepEqual(who, { name: role, session: role });
+  }
+  // The logins read and write timestamps in UTC whatever the server default is (the triggers use the database clock).
+  for (const client of [payments, backoffice]) {
+    assert.equal((await client.query("SHOW timezone")).rows[0].TimeZone, "UTC");
+  }
+});
+
+test("payments and back-office table privileges are exactly their matrices (and the logins inherit them)", async () => {
+  for (const [group, loginRole, expected] of [
+    ["poker_payments", "poker_payments_app", EXPECTED_PAYMENTS], ["poker_backoffice", "poker_backoffice_app", EXPECTED_BACKOFFICE]]) {
+    assert.deepEqual(await tableMatrix(group), expected, `${group} holds its matrix`);
+    assert.deepEqual(await tableMatrix(loginRole), expected, `${loginRole} inherits it`);
+  }
+  // The runtime's table matrix covers the wallet tables too (EXPECTED, checked above); here it holds no wallet column grant beyond EXPECTED_COLUMNS.
+  const runtimeColumns = await columnGrants("poker_server");
+  for (const table of WALLET_TABLES) {
+    assert.deepEqual(runtimeColumns[table] ?? {}, sortedColumns(EXPECTED_COLUMNS)[table] ?? {}, `poker_server columns of ${table}`);
+  }
+});
+
+test("payments and back-office column grants are exactly the listed columns (never a password hash or a full session)", async () => {
+  assert.deepEqual(await columnGrants("poker_payments"), sortedColumns(EXPECTED_PAYMENTS_COLUMNS));
+  assert.deepEqual(await columnGrants("poker_payments_app"), sortedColumns(EXPECTED_PAYMENTS_COLUMNS));
+  assert.deepEqual(await columnGrants("poker_backoffice"), sortedColumns(EXPECTED_BACKOFFICE_COLUMNS));
+  assert.deepEqual(await columnGrants("poker_backoffice_app"), sortedColumns(EXPECTED_BACKOFFICE_COLUMNS));
+  // And by attempting the statements as the logins (privileges are checked when a statement is planned, so WHERE false needs no rows).
+  await refusedAs(payments, `SELECT "passwordHash" FROM public."User" WHERE false`);
+  await refusedAs(payments, `SELECT * FROM public."User" WHERE false`);
+  await refusedAs(payments, `SELECT "refreshToken" FROM public."Session" WHERE false`);
+  await refusedAs(payments, `SELECT ip FROM public."AccountSecurityEvent" WHERE false`);
+  await refusedAs(payments, `SELECT "userAgent" FROM public."AccountSecurityEvent" WHERE false`);
+  await refusedAs(payments, `UPDATE public."SelfExclusion" SET "endsAt" = now() WHERE false`);
+  await refusedAs(payments, `SELECT "secretCiphertext" FROM public."UserTotp" WHERE false`);
+  assert.equal(await attempt(payments, `SELECT id, email, "securityHoldUntil", role FROM public."User" WHERE false`), null);
+  // data: what a "This wasn't me" report named, for the sweep that applies a report payments never heard about.
+  assert.equal(await attempt(payments, `SELECT id, type, "createdAt", data FROM public."AccountSecurityEvent" WHERE false`), null);
+  assert.equal(await attempt(payments, `UPDATE public."StepUpGrant" SET "consumedAt" = now() WHERE false`), null);
+  await refusedAs(payments, `UPDATE public."StepUpGrant" SET "bindHash" = "bindHash" WHERE false`);
+  await refusedAs(payments, `INSERT INTO public."StepUpGrant" (id, "userId", "sessionId", purpose, "bindHash", method, "createdAt", "expiresAt")
+    SELECT 'g', 'u', 's', 'withdrawal', repeat('a', 64), 'TOTP', now(), now() WHERE false`);
+  for (const table of WALLET_TABLES) {
+    await refusedAs(payments, `DELETE FROM public."${table}" WHERE false`);
+    await refusedAs(payments, `TRUNCATE public."${table}"`);
+    await refusedAs(backoffice, `DELETE FROM public."${table}" WHERE false`);
+    await refusedAs(runtime, `DELETE FROM public."${table}" WHERE false`);
+  }
+  // The game API's login never sees KYC identities, the switches or any payment row.
+  for (const table of ["PlayerCompliance", "PaymentSwitch", "PaymentInstrument", "Deposit", "Withdrawal", "PaymentEvent", "PaymentReviewAction", "EmailOutbox"]) {
+    await refusedAs(runtime, `SELECT 1 FROM public."${table}" WHERE false`);
+  }
+  // Approvals count towards four-eyes rules: the back-office login cannot write one (only poker_payments can).
+  await refusedAs(backoffice, `INSERT INTO public."PaymentReviewAction" ("subjectType", "subjectId", "subjectUserId", "actorKind", "actorUserId", "verb")
+    SELECT 'USER', 'u', 'u', 'ADMIN', 'u', 'APPROVE' WHERE false`);
+  assert.equal(await attempt(backoffice, `SELECT 1 FROM public."PaymentReviewAction" WHERE false`), null, "the back office reads review history");
+  for (const table of ["Asset", "LedgerAccount", "LedgerTransaction", "LedgerEntry"]) {
+    await refusedAs(payments, `UPDATE public."${table}" SET "createdAt" = "createdAt" WHERE false`);
+    await refusedAs(payments, `DELETE FROM public."${table}" WHERE false`);
+    await refusedAs(backoffice, `UPDATE public."${table}" SET "createdAt" = "createdAt" WHERE false`);
+    assert.equal(await attempt(payments, `SELECT 1 FROM public."${table}" LIMIT 1`), null, `payments reads ${table}`);
+  }
+  await refusedAs(payments, `INSERT INTO public."LedgerTransaction" ("idempotencyKey", "type", "payloadHash") SELECT 'forged', 'DEPOSIT_CREDIT', repeat('a', 64) WHERE false`);
+  await refusedAs(payments, `SELECT nextval('public."LedgerTransaction_seq_seq"')`);
+  await refusedAs(backoffice, `SELECT 1 FROM public."PaymentInstrument" WHERE false`);
+  await refusedAs(backoffice, `UPDATE public."Withdrawal" SET status = status WHERE false`);
+});
+
+test("each login may execute only its own ledger entry point (and ledger_ensure_account); nobody may execute ledger_post_core", async () => {
+  for (const [role, expected] of Object.entries(EXPECTED_DEFINER_EXECUTE)) {
+    const { rows } = await admin.query(`SELECT p.proname FROM pg_proc p JOIN pg_namespace n ON n.oid = p.pronamespace
+      WHERE n.nspname = 'public' AND p.prosecdef AND has_function_privilege($1, p.oid, 'EXECUTE') ORDER BY p.proname`, [role]);
+    assert.deepEqual(rows.map((row) => row.proname), expected, role);
+  }
+  const { rows: core } = await admin.query(`SELECT r.rolname FROM pg_roles r
+    WHERE NOT r.rolsuper AND has_function_privilege(r.oid, 'public.ledger_post_core(text[], text[], text, text, jsonb, jsonb, text)', 'EXECUTE')`);
+  const owner = (await admin.query(`SELECT r.rolname FROM pg_proc p JOIN pg_roles r ON r.oid = p.proowner WHERE p.proname = 'ledger_post_core'`)).rows[0].rolname;
+  assert.deepEqual(core.map((row) => row.rolname).filter((name) => name !== owner), [], "only the owner can run ledger_post_core");
+  // By attempting the calls: a foreign entry point is refused before any argument is looked at.
+  const call = (fn) => `SELECT public.${fn}('k', 'PLAY_GRANT', '{}'::jsonb, '[]'::jsonb, NULL)`;
+  const coreCall = `SELECT public.ledger_post_core(ARRAY['PLAY_GRANT'], ARRAY['PLAY'], 'k', 'PLAY_GRANT', '{}'::jsonb, '[]'::jsonb, NULL)`;
+  for (const [client, own] of [[runtime, "ledger_post"], [payments, "ledger_post_payments"], [backoffice, "ledger_post_backoffice"]]) {
+    for (const fn of ["ledger_post", "ledger_post_payments", "ledger_post_backoffice"]) {
+      if (fn !== own) await refusedAs(client, call(fn));
+    }
+    await refusedAs(client, coreCall);
+  }
 });

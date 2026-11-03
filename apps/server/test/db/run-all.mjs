@@ -29,6 +29,14 @@ for (const name of ["POKER_TEST_DATABASE_URL", "POKER_TEST_ADMIN_DATABASE_URL"])
 const args = process.argv.slice(2);
 const options = args.filter((arg) => arg.startsWith("-"));
 const only = args.filter((arg) => !arg.startsWith("-"));
+// One suite at a time unless asked otherwise: the suites share one cluster and
+// some flip cluster-wide state (Asset EUR enabled, the money switches) while
+// others assert it, and on a 2-vCPU CI runner parallel suites only add lock
+// and connection contention (timeouts that are not real failures). A whole
+// sequential run takes about two minutes. Each test still gets a generous
+// ceiling so a hang fails the job instead of burning its timeout.
+if (!options.some((option) => option.startsWith("--test-concurrency"))) options.push("--test-concurrency=1");
+if (!options.some((option) => option.startsWith("--test-timeout"))) options.push("--test-timeout=600000");
 const files = readdirSync(here).filter((name) => name.endsWith(".test.mjs")).sort()
   .filter((name) => only.length === 0 || only.some((part) => name.includes(part)))
   .map((name) => relative(serverDir, join(here, name)).split("\\").join("/"));

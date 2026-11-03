@@ -126,6 +126,19 @@ model User {
   securityEvents        AccountSecurityEvent[]
   stepUpGrants          StepUpGrant[]
   stepUpEmailChallenges StepUpEmailChallenge[]
+  /// Real-money wallet (migration 20261019120000_payments_wallet).
+  compliance            PlayerCompliance?
+  rgLimits              ResponsibleGamingLimit[]
+  selfExclusions        SelfExclusion[]
+  paymentInstruments    PaymentInstrument[]
+  deposits              Deposit[]
+  depositReversals      DepositReversal[]
+  withdrawalQuotes      WithdrawalQuote[]
+  withdrawals           Withdrawal[]
+  payoutDispatches      PayoutDispatch[]
+  reviewsAsSubject      PaymentReviewAction[] @relation("PaymentReviewSubjectUser")
+  reviewsAsActor        PaymentReviewAction[] @relation("PaymentReviewActor")
+  emailOutbox           EmailOutbox[]
 }
 
 model Session {
@@ -585,6 +598,9 @@ enum AssetKind {
   PLAY
   FIAT
   CRYPTO
+  /// Sandbox money (TEST_EUR, migration 20261019110000_ledger_payment_types): only
+  /// the sandbox provider's accounts and payment rows may hold it, and they hold nothing else.
+  TEST
 }
 
 enum LedgerAccountType {
@@ -612,6 +628,10 @@ enum LedgerTransactionType {
   WITHDRAWAL_SETTLE
   PROVIDER_FEE
   ADJUSTMENT
+  /// Exact inverse of a DEPOSIT_REVERSAL after a won dispute (payments wallet).
+  CHARGEBACK_RECOVERY
+  /// A settled payout that the rail sent back (payments wallet).
+  WITHDRAWAL_RETURN
 }
 
 model Asset {
@@ -630,6 +650,12 @@ model Asset {
   updatedAt     DateTime  @default(now()) @updatedAt
 
   accounts LedgerAccount[]
+  /// Real-money wallet (migration 20261019120000_payments_wallet).
+  rgLimits           ResponsibleGamingLimit[]
+  paymentInstruments PaymentInstrument[]
+  deposits           Deposit[]
+  withdrawalQuotes   WithdrawalQuote[]
+  withdrawals        Withdrawal[]
 }
 
 model LedgerAccount {
@@ -672,6 +698,13 @@ model LedgerTransaction {
   createdAt      DateTime              @default(now())
 
   entries LedgerEntry[]
+  /// The payment row each payment-type transaction is bound to (deferred trigger LedgerTransaction_payment_binding).
+  depositCredit     Deposit?         @relation("DepositCreditTx")
+  depositReversal   DepositReversal? @relation("DepositReversalTx")
+  withdrawalHold    Withdrawal?      @relation("WithdrawalHoldTx")
+  withdrawalRelease Withdrawal?      @relation("WithdrawalReleaseTx")
+  withdrawalSettle  Withdrawal?      @relation("WithdrawalSettleTx")
+  withdrawalReturn  Withdrawal?      @relation("WithdrawalReturnTx")
 }
 
 model LedgerEntry {
@@ -690,4 +723,695 @@ model LedgerEntry {
 
   @@unique([accountId, accountVersion])
   @@index([transactionId])
+}
+
+// ---------------------------------------------------------------------------
+// Real-money wallet (migrations 20261019110000_ledger_payment_types and
+// 20261019120000_payments_wallet, docs/money/WALLET.md). Written by the
+// payments Worker (database role poker_payments, login poker_payments_app);
+// the API Worker (poker_server) only inserts ResponsibleGamingLimit and
+// SelfExclusion rows and reads PlayerCompliance and PaymentSwitch. Not
+// expressible here (declared in the migration): the CHECKs, the state-machine,
+// append-only, step-up and sandbox-isolation triggers, the deferred
+// payment-binding constraint trigger on LedgerTransaction and the ledger entry
+// points ledger_post / ledger_post_payments / ledger_post_backoffice. Every
+// trigger sets createdAt (and updatedAt) from the database clock. Amount
+// columns are minor units of assetCode (EUR or the sandbox TEST_EUR, 2
+// decimals); never JSON-serialise these models directly (BigInt).
+// ---------------------------------------------------------------------------
+
+enum KycStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum ScreeningStatus {
+  NOT_SCREENED
+  CLEAR
+  POTENTIAL_MATCH
+  CONFIRMED_MATCH
+}
+
+enum RiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+}
+
+enum SourceOfFundsStatus {
+  NOT_REQUIRED
+  REQUESTED
+  SUBMITTED
+  APPROVED
+  REJECTED
+}
+
+enum PaymentsRestriction {
+  NONE
+  DEPOSITS_BLOCKED
+  WITHDRAWALS_MANUAL
+  FROZEN
+}
+
+enum RgLimitKind {
+  DEPOSIT
+}
+
+enum RgLimitPeriod {
+  DAY
+  WEEK
+  MONTH
+}
+
+enum RgSource {
+  PLAYER
+  OPERATOR
+}
+
+enum SelfExclusionKind {
+  DEFINITE
+  INDEFINITE
+}
+
+enum PaymentMethodKind {
+  CARD
+  CRYPTO
+}
+
+enum InstrumentKind {
+  CARD_TOKEN
+  CRYPTO_ADDRESS
+}
+
+enum InstrumentStatus {
+  ACTIVE
+  REVOKED
+  BLOCKED
+}
+
+enum InstrumentOrigin {
+  DEPOSIT
+  PLAYER
+  OPERATOR
+}
+
+enum DepositStatus {
+  CREATED
+  PENDING
+  CONFIRMED
+  CREDITED
+  NEEDS_REVIEW
+  FAILED
+  EXPIRED
+  CANCELLED
+  PARTIALLY_REVERSED
+  REVERSED
+}
+
+enum DepositReversalKind {
+  CHARGEBACK
+  PROVIDER_REFUND
+  CHAIN_REORG
+  CHARGEBACK_RECOVERY
+}
+
+enum WithdrawalKind {
+  PLAYER
+  REFUND
+}
+
+enum WithdrawalStatus {
+  REQUESTED
+  HELD
+  UNDER_REVIEW
+  APPROVED
+  SUBMITTED
+  SETTLED
+  FAILED
+  REJECTED
+  CANCELLED
+  RETURNED
+}
+
+enum PayoutOperation {
+  PAYOUT
+  REFUND
+}
+
+enum PayoutDispatchStatus {
+  PENDING
+  IN_FLIGHT
+  SENT
+  UNCERTAIN
+  RETRY_WAIT
+  COMPLETED
+  FAILED
+  MANUAL
+  CANCELLED
+}
+
+enum PayoutAttemptOutcome {
+  ACCEPTED
+  COMPLETED
+  REJECTED_FINAL
+  REJECTED_RETRYABLE
+  UNCERTAIN
+  NOT_FOUND
+}
+
+enum PaymentObjectType {
+  PAYMENT
+  PAYOUT
+  REFUND
+  DISPUTE
+  KYC
+}
+
+enum PaymentEventOutcome {
+  APPLIED
+  DUPLICATE
+  STALE
+  UNKNOWN_OBJECT
+  NEEDS_REVIEW
+  DEAD
+}
+
+enum PaymentReviewSubject {
+  DEPOSIT
+  WITHDRAWAL
+  INSTRUMENT
+  USER
+  SWITCH
+}
+
+enum PaymentReviewVerb {
+  APPROVE
+  REJECT
+  NOTE
+  RESTRICT
+  UNRESTRICT
+  RESOLVE
+  SWITCH_ON
+  SWITCH_OFF
+}
+
+enum ReconciliationStatus {
+  RUNNING
+  OK
+  ISSUES
+  FAILED
+}
+
+enum ReconciliationIssueStatus {
+  OPEN
+  ACKNOWLEDGED
+  RESOLVED
+}
+
+enum EmailOutboxStatus {
+  PENDING
+  SENDING
+  SENT
+  FAILED
+  CANCELLED
+}
+
+/// Per-user KYC/AML/payments state. Also the per-user lock row of every payments flow.
+model PlayerCompliance {
+  userId                   String              @id
+  user                     User                @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  kycStatus                KycStatus           @default(UNVERIFIED)
+  kycProvider              String?
+  kycApplicantRef          String?
+  kycLevel                 String?
+  kycSubmittedAt           DateTime?
+  kycVerifiedAt            DateTime?
+  kycRejectedAt            DateTime?
+  kycRejectReason          String?
+  kycReviewDueAt           DateTime?
+  legalFirstName           String?
+  legalLastName            String?
+  birthDate                DateTime?           @db.Date
+  residenceCountry         String?
+  screeningStatus          ScreeningStatus     @default(NOT_SCREENED)
+  screenedAt               DateTime?
+  riskLevel                RiskLevel           @default(MEDIUM)
+  sourceOfFundsStatus      SourceOfFundsStatus @default(NOT_REQUIRED)
+  restriction              PaymentsRestriction @default(NONE)
+  restrictionReason        String?
+  restrictedAt             DateTime?
+  restrictedBy             String?
+  /// Set once the deposit-limit setup was shown (LIMITS_SETUP_REQUIRED before the first deposit).
+  rgLimitsPromptedAt       DateTime?
+  lifetimeDepositedMinor   BigInt              @default(0)
+  firstDepositAt           DateTime?
+  chargebackCount          Int                 @default(0)
+  chargebackShortfallMinor BigInt              @default(0)
+  createdAt                DateTime            @default(now())
+  updatedAt                DateTime            @default(now()) @updatedAt
+
+  @@index([kycApplicantRef])
+}
+
+/// Append-only limit requests; the active limit is the newest uncancelled row with effectiveFrom <= now.
+model ResponsibleGamingLimit {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId        String
+  user          User          @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  kind          RgLimitKind
+  period        RgLimitPeriod
+  assetCode     String        @default("EUR")
+  asset         Asset         @relation(fields: [assetCode], references: [code], onDelete: Restrict, onUpdate: Restrict)
+  /// Null = no limit (a removal; takes effect after 24 h).
+  amountMinor   BigInt?
+  source        RgSource      @default(PLAYER)
+  createdBy     String
+  requestedAt   DateTime      @default(now())
+  /// Set by the database: now for a stricter limit, now + 24 h for a looser one or a removal.
+  effectiveFrom DateTime      @default(now())
+  /// Only a pending (not yet effective) change can be cancelled; a new request cancels it.
+  cancelledAt   DateTime?
+
+  @@index([userId, kind, period, effectiveFrom])
+}
+
+/// Active while startsAt <= now and (accessRestoredAt is null or in the future).
+model SelfExclusion {
+  id                      String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId                  String
+  user                    User              @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  kind                    SelfExclusionKind
+  source                  RgSource          @default(PLAYER)
+  reason                  String?
+  createdBy               String
+  startsAt                DateTime          @default(now())
+  /// Required for DEFINITE (at least 24 h after startsAt), null for INDEFINITE.
+  endsAt                  DateTime?
+  reactivationRequestedAt DateTime?
+  reactivationAcceptedAt  DateTime?
+  reactivationAcceptedBy  String?
+  /// Set by the database: request + 24 h (DEFINITE, no operator needed), acceptance + 7 days (INDEFINITE).
+  accessRestoredAt        DateTime?
+  createdAt               DateTime          @default(now())
+
+  @@index([userId, startsAt])
+}
+
+/// A PSP card token (deposits and payouts) or a crypto payout address. For a
+/// card, assetCode is the ledger asset it settles in (EUR, or TEST_EUR with the
+/// sandbox); for an address, the payout rail (BTC, USDC_ERC20, ...).
+model PaymentInstrument {
+  id                  String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId              String
+  user                User              @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  kind                InstrumentKind
+  status              InstrumentStatus  @default(ACTIVE)
+  origin              InstrumentOrigin
+  providerKey         String
+  assetCode           String
+  asset               Asset             @relation(fields: [assetCode], references: [code], onDelete: Restrict, onUpdate: Restrict)
+  network             String?
+  address             String?
+  addressNormalized   String?
+  memo                String?
+  cardToken           String?
+  cardFingerprint     String?
+  cardBrand           String?
+  cardLast4           String?
+  cardExpMonth        Int?              @db.SmallInt
+  cardExpYear         Int?              @db.SmallInt
+  cardIssuerCountry   String?
+  /// debit | credit | prepaid | unknown
+  cardFunding         String?
+  depositEnabled      Boolean           @default(false)
+  payoutEnabled       Boolean           @default(false)
+  label               String?
+  createdBySessionId  String?
+  /// The consumed payout_destination StepUpGrant (required for origin PLAYER; one instrument per grant).
+  stepUpGrantId       String?           @unique
+  ownershipMethod     String?
+  ownershipProof      Json?
+  ownershipVerifiedAt DateTime?
+  /// Cooling-off end; the database enforces >= now + 24 h for every address the operator did not add.
+  usableAfter         DateTime          @default(now())
+  lastUsedAt          DateTime?
+  successfulPayouts   Int               @default(0)
+  revokedAt           DateTime?
+  revokedReason       String?
+  revokedBy           String?
+  createdAt           DateTime          @default(now())
+  updatedAt           DateTime          @default(now()) @updatedAt
+
+  deposits         Deposit[]
+  withdrawals      Withdrawal[]
+  withdrawalQuotes WithdrawalQuote[]
+
+  /// Not unique: a revoked row stays revoked and a fresh deposit with that card adds a new one. The instrument guard keeps one live row per user and card.
+  @@index([providerKey, cardToken])
+  @@index([userId, status])
+  @@index([addressNormalized])
+  @@index([cardFingerprint])
+}
+
+/// One deposit attempt. assetCode is the ledger asset credited (EUR with a real
+/// provider, TEST_EUR with the sandbox); a crypto deposit's pay* columns are
+/// informational chain units.
+model Deposit {
+  id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId            String
+  user              User               @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  clientRequestId   String?            @db.Uuid
+  requestHash       String?
+  method            PaymentMethodKind
+  providerKey       String
+  instrumentId      String?            @db.Uuid
+  instrument        PaymentInstrument? @relation(fields: [instrumentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  status            DepositStatus      @default(CREATED)
+  assetCode         String
+  asset             Asset              @relation(fields: [assetCode], references: [code], onDelete: Restrict, onUpdate: Restrict)
+  requestedMinor    BigInt
+  /// What the provider said it settled when the deposit went to review: the most a person may credit.
+  reportedMinor     BigInt?
+  creditedMinor     BigInt?
+  reversedMinor     BigInt             @default(0)
+  recoveredMinor    BigInt             @default(0)
+  /// Credited but over a limit (or not creditable): refund-held in a REFUND withdrawal.
+  excessMinor       BigInt             @default(0)
+  feeMinor          BigInt?
+  payAssetCode      String?
+  payAmount         String?
+  payNetwork        String?
+  payAddress        String?
+  payMemo           String?
+  txHash            String?
+  confirmations     Int?
+  providerPaymentId String?
+  providerStatus    String?
+  hostedUrl         String?
+  expiresAt         DateTime
+  statusReason      String?
+  lateSuccess       Boolean            @default(false)
+  ledgerCreditTxId  String?            @unique @db.Uuid
+  ledgerCredit      LedgerTransaction? @relation("DepositCreditTx", fields: [ledgerCreditTxId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  ip                String?
+  ipCountry         String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @default(now()) @updatedAt
+  confirmedAt       DateTime?
+  creditedAt        DateTime?
+  closedAt          DateTime?
+
+  reversals         DepositReversal[]
+  refundWithdrawals Withdrawal[]
+
+  @@unique([userId, clientRequestId])
+  @@unique([providerKey, providerPaymentId])
+  @@index([userId, createdAt])
+  @@index([status, expiresAt])
+}
+
+/// Chargebacks, provider refunds, chain reorganisations and their recoveries. Append-only.
+model DepositReversal {
+  id                 String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  depositId          String              @db.Uuid
+  deposit            Deposit             @relation(fields: [depositId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  userId             String
+  user               User                @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  providerKey        String
+  kind               DepositReversalKind
+  providerReversalId String
+  recoversReversalId String?             @unique @db.Uuid
+  recovers           DepositReversal?    @relation("ReversalRecovery", fields: [recoversReversalId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  recoveredBy        DepositReversal?    @relation("ReversalRecovery")
+  amountMinor        BigInt
+  userPortionMinor   BigInt
+  lossMinor          BigInt
+  reasonCode         String?
+  eventId            String?             @db.Uuid
+  event              PaymentEvent?       @relation(fields: [eventId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  ledgerTxId         String              @unique @db.Uuid
+  ledgerTx           LedgerTransaction   @relation("DepositReversalTx", fields: [ledgerTxId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  createdAt          DateTime            @default(now())
+
+  @@unique([providerKey, kind, providerReversalId])
+  @@index([depositId])
+}
+
+/// A priced withdrawal offer (at most 10 minutes). bindHash is what the
+/// withdrawal StepUpGrant must be bound to; a quote is consumed once.
+model WithdrawalQuote {
+  id               String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId           String
+  user             User              @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  instrumentId     String            @db.Uuid
+  instrument       PaymentInstrument @relation(fields: [instrumentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  providerKey      String
+  assetCode        String
+  asset            Asset             @relation(fields: [assetCode], references: [code], onDelete: Restrict, onUpdate: Restrict)
+  amountMinor      BigInt
+  feeMinor         BigInt
+  receiveAssetCode String
+  receiveEstimate  String?
+  rate             String?
+  bindHash         String
+  expiresAt        DateTime
+  consumedAt       DateTime?
+  createdAt        DateTime          @default(now())
+
+  withdrawal Withdrawal?
+
+  @@index([userId, createdAt])
+}
+
+model Withdrawal {
+  id                String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId            String
+  user              User               @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  /// PLAYER: requested with a quote and a step-up grant. REFUND: an excess or not-creditable deposit sent back.
+  kind              WithdrawalKind     @default(PLAYER)
+  clientRequestId   String?            @db.Uuid
+  requestHash       String?
+  quoteId           String?            @unique @db.Uuid
+  quote             WithdrawalQuote?   @relation(fields: [quoteId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  sourceDepositId   String?            @db.Uuid
+  sourceDeposit     Deposit?           @relation(fields: [sourceDepositId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  instrumentId      String?            @db.Uuid
+  instrument        PaymentInstrument? @relation(fields: [instrumentId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  providerKey       String?
+  status            WithdrawalStatus   @default(REQUESTED)
+  assetCode         String
+  asset             Asset              @relation(fields: [assetCode], references: [code], onDelete: Restrict, onUpdate: Restrict)
+  amountMinor       BigInt
+  feeMinor          BigInt             @default(0)
+  payoutAssetCode   String?
+  payoutAmount      String?
+  payoutRate        String?
+  /// JSON array of review reason codes; may only grow after the first evaluation.
+  reviewReasons     Json               @default("[]")
+  approvalsRequired Int                @default(1) @db.SmallInt
+  rulesVersion      String?
+  sessionId         String?
+  /// The consumed withdrawal StepUpGrant (required for kind PLAYER; one withdrawal per grant).
+  stepUpGrantId     String?            @unique
+  providerPayoutId  String?
+  txHash            String?
+  failureCode       String?
+  failureReason     String?
+  holdTxId          String?            @unique @db.Uuid
+  holdTx            LedgerTransaction? @relation("WithdrawalHoldTx", fields: [holdTxId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  releaseTxId       String?            @unique @db.Uuid
+  releaseTx         LedgerTransaction? @relation("WithdrawalReleaseTx", fields: [releaseTxId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  settleTxId        String?            @unique @db.Uuid
+  settleTx          LedgerTransaction? @relation("WithdrawalSettleTx", fields: [settleTxId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  returnTxId        String?            @unique @db.Uuid
+  returnTx          LedgerTransaction? @relation("WithdrawalReturnTx", fields: [returnTxId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  ip                String?
+  ipCountry         String?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @default(now()) @updatedAt
+  heldAt            DateTime?
+  decidedAt         DateTime?
+  submittedAt       DateTime?
+  settledAt         DateTime?
+  closedAt          DateTime?
+  /// Set once by a protective step (lockdown, freeze, screening hit): this withdrawal must not leave. Its release is a separate step the dispatcher retries.
+  cancelRequestedAt DateTime?
+  cancelCode        String?
+
+  dispatch PayoutDispatch?
+
+  @@unique([userId, clientRequestId])
+  @@unique([providerKey, providerPayoutId])
+  @@index([status, createdAt])
+  @@index([userId, createdAt])
+  @@index([cancelRequestedAt])
+}
+
+/// Payout outbox. providerIdempotencyKey never changes, so a resend can never pay twice.
+model PayoutDispatch {
+  withdrawalId           String               @id @db.Uuid
+  withdrawal             Withdrawal           @relation(fields: [withdrawalId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  userId                 String
+  user                   User                 @relation(fields: [userId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  providerKey            String
+  operation              PayoutOperation
+  providerIdempotencyKey String               @unique
+  status                 PayoutDispatchStatus @default(PENDING)
+  attempts               Int                  @default(0)
+  queries                Int                  @default(0)
+  nextAttemptAt          DateTime             @default(now())
+  leaseUntil             DateTime?
+  lastAttemptAt          DateTime?
+  uncertainSince         DateTime?
+  providerPayoutId       String?
+  lastError              String?
+  createdAt              DateTime             @default(now())
+  updatedAt              DateTime             @default(now()) @updatedAt
+
+  attemptLog PayoutAttempt[]
+
+  @@index([status, nextAttemptAt])
+}
+
+/// Append-only journal of every provider call a dispatch made.
+model PayoutAttempt {
+  id               String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  withdrawalId     String               @db.Uuid
+  dispatch         PayoutDispatch       @relation(fields: [withdrawalId], references: [withdrawalId], onDelete: Restrict, onUpdate: Restrict)
+  seq              Int
+  /// CREATE | QUERY | REFUND
+  action           String
+  requestSha256    String?
+  httpStatus       Int?
+  outcome          PayoutAttemptOutcome
+  providerPayoutId String?
+  errorClass       String?
+  startedAt        DateTime
+  finishedAt       DateTime             @default(now())
+
+  @@unique([withdrawalId, seq])
+}
+
+/// Durable inbox of signature-verified provider events (payload redacted).
+model PaymentEvent {
+  id                String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  provider          String
+  providerEventId   String
+  eventType         String
+  objectType        PaymentObjectType
+  objectRef         String?
+  merchantRef       String?
+  payloadSha256     String
+  payload           Json
+  signatureScheme   String
+  signatureVerified Boolean
+  sourceIp          String?
+  receivedAt        DateTime             @default(now())
+  processedAt       DateTime?
+  outcome           PaymentEventOutcome?
+  attempts          Int                  @default(0)
+  nextAttemptAt     DateTime             @default(now())
+  lastError         String?
+
+  reversals DepositReversal[]
+
+  @@unique([provider, providerEventId])
+  @@index([processedAt, nextAttemptAt])
+  @@index([provider, objectRef])
+}
+
+/// Append-only audit of every human or system decision. The database refuses
+/// a non-admin ADMIN actor, self-approval and a second approval by the same admin.
+model PaymentReviewAction {
+  id                String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  subjectType       PaymentReviewSubject
+  subjectId         String
+  subjectUserId     String?
+  subjectUser       User?                @relation("PaymentReviewSubjectUser", fields: [subjectUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  actorUserId       String?
+  actorUser         User?                @relation("PaymentReviewActor", fields: [actorUserId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  /// ADMIN | SYSTEM | PLAYER
+  actorKind         String
+  actorAccessEmail  String?
+  actorStepUpMethod String?
+  verb              PaymentReviewVerb
+  reasonCode        String?
+  note              String?
+  metadata          Json                 @default("{}")
+  createdAt         DateTime             @default(now())
+
+  @@index([subjectType, subjectId, createdAt])
+  @@index([subjectUserId, createdAt])
+}
+
+/// Per-flow kill switches, all seeded off: DEPOSIT_CARD, DEPOSIT_CRYPTO,
+/// WITHDRAW_CARD, WITHDRAW_CRYPTO, AUTO_APPROVE, PAYOUT_DISPATCH, NEW_INSTRUMENTS.
+model PaymentSwitch {
+  key       String   @id
+  enabled   Boolean  @default(false)
+  updatedBy String?
+  reason    String?
+  updatedAt DateTime @default(now()) @updatedAt
+}
+
+model ReconciliationRun {
+  id         String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// LEDGER | PAYMENTS | PROVIDER | CUSTODY
+  kind       String
+  scopeDate  DateTime?            @db.Date
+  status     ReconciliationStatus @default(RUNNING)
+  cursor     String?
+  summary    Json                 @default("{}")
+  startedAt  DateTime             @default(now())
+  finishedAt DateTime?
+
+  issues ReconciliationIssue[]
+}
+
+model ReconciliationIssue {
+  id          String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  runId       String                    @db.Uuid
+  run         ReconciliationRun         @relation(fields: [runId], references: [id], onDelete: Restrict, onUpdate: Restrict)
+  code        String
+  /// INFO | WARN | CRITICAL
+  severity    String
+  subjectType String?
+  subjectId   String
+  details     Json                      @default("{}")
+  status      ReconciliationIssueStatus @default(OPEN)
+  resolvedBy  String?
+  resolvedAt  DateTime?
+  resolution  String?
+  createdAt   DateTime                  @default(now())
+
+  @@unique([runId, code, subjectId])
+}
+
+/// Durable notification outbox (INTEGRATION.md override 10): inserted in the
+/// transaction of the change it reports, drained by the payments Worker
+/// through apps/edge/src/mail. No address is stored (User.email is read at
+/// send time); payload is the template's data only, never a secret.
+model EmailOutbox {
+  id            String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId        String
+  user          User              @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// deposit-credited, withdrawal-requested, withdrawal-paid, withdrawal-failed, destination-added, chargeback, refund-held, ...
+  template      String
+  /// The settlement asset of the Worker that wrote it (EUR or TEST_EUR): only that Worker sends it.
+  scope         String
+  payload       Json              @default("{}")
+  /// Idempotency of the notification, e.g. "deposit-credited:<depositId>".
+  dedupeKey     String            @unique
+  status        EmailOutboxStatus @default(PENDING)
+  attempts      Int               @default(0)
+  nextAttemptAt DateTime          @default(now())
+  leaseUntil    DateTime?
+  lastError     String?
+  createdAt     DateTime          @default(now())
+  sentAt        DateTime?
+
+  @@index([status, nextAttemptAt])
+  @@index([userId, createdAt])
 }

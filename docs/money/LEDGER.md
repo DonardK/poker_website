@@ -1,11 +1,19 @@
 # Money ledger
 
-Status: foundation only. Migration `20261002200000_ledger_foundation` adds the
-schema, the two database functions and the grants; `apps/server/src/money/`
-holds the TypeScript side. Nothing in the game server calls it yet: the legacy
-`User.bankroll` (signed 32-bit, mutated in place) stays authoritative until the
-integration step moves buy-ins, cash-outs, registration grants and rake
-onto the ledger. No existing balance is backfilled by this migration.
+Status: foundation plus the wallet's database layer. Migration
+`20261002200000_ledger_foundation` adds the schema, the database functions and
+the grants; `20261019110000_ledger_payment_types` and
+`20261019120000_payments_wallet` add the two payment types below, the asset
+`TEST_EUR`, one entry point per database role (section 10) and the payment
+tables (docs/money/WALLET.md). The TypeScript side is
+`apps/server/src/money/` and its byte-identical edge copy
+`apps/edge/src/money/` (`npm run check:money -w @poker/edge`), plus the
+edge-only `keys.ts` (idempotency keys) and `tx.ts` (payments transactions).
+Nothing in the game server calls it yet: the legacy `User.bankroll` (signed
+32-bit, mutated in place) stays authoritative for play chips until the
+integration step moves buy-ins, cash-outs, registration grants and rake onto
+the ledger. No existing balance is backfilled, and real money stays off
+(`EUR` disabled, every `PaymentSwitch` off, `PAYMENTS_MODE=off`).
 
 ## 1. Why
 
@@ -33,7 +41,16 @@ Amounts are integers of the asset's *minor unit* (`BIGINT` in Postgres,
 | `USDT_ERC20` | CRYPTO | 6 | 6 | ethereum | no |
 | `USDT_TRC20` | CRYPTO | 6 | 6 | tron | no |
 | `USDC_ERC20` | CRYPTO | 6 | 6 | ethereum | no |
+| `TEST_EUR` | TEST | 2 (cent) | - | - | yes |
 
+- `TEST_EUR` is sandbox money: enabled, worth nothing, and the database keeps
+  it apart from real money. A provider account (`DEPOSIT_CLEARING`,
+  `WITHDRAWAL_CLEARING`, `PROVIDER_FEES`), a deposit, a quote, a routed
+  withdrawal and a card are in a `TEST` asset exactly when the provider key is
+  the sandbox (`^sandbox([-_.:]|$)`): the sandbox can never touch `EUR`, and a
+  real provider can never pay out `TEST_EUR` (`LEDGER_BAD_ACCOUNT` /
+  `PAYMENT_MISMATCH`). A preview environment that shared this database could
+  not reach a real balance.
 - ETH is booked in gwei: wei precision (18) is far below any amount a poker
   table moves and would waste 9 of the 19 digits a `BIGINT` holds. A deposit
   of a wei amount that is not a whole number of gwei is a payment-integration
@@ -115,7 +132,24 @@ appear and with which sign); a shape that is not listed is refused
 | `WITHDRAWAL_RELEASE` | `USER_WITHDRAWAL_HOLD(user) -m`, `USER_AVAILABLE(user) +m` | Same user. Rejected/cancelled/failed payout. |
 | `WITHDRAWAL_SETTLE` | `USER_WITHDRAWAL_HOLD(user) -m`, `WITHDRAWAL_CLEARING(p) +(m-f)`, `PROVIDER_FEES(p) +f` | Same provider on both legs; fee leg absent when `f = 0`. Fee charged to the user out of the held amount. |
 | `PROVIDER_FEE` | `ADJUSTMENTS -f`, `PROVIDER_FEES(provider) +f` | A fee the house absorbs (e.g. deposit processing). |
-| `ADJUSTMENT` | `USER_AVAILABLE(user) ±m`, counterparty `∓m` | Counterparty is `ADJUSTMENTS` for real assets, `PLAY_ISSUANCE` for PLAY. Requires `createdBy` and a non-empty `reference.reason`. |
+| `ADJUSTMENT` | `USER_AVAILABLE(user) ±m`, counterparty `∓m` | Counterparty is `ADJUSTMENTS` for real assets, `PLAY_ISSUANCE` for PLAY. Requires `createdBy` and a non-empty `reference.reason`; through `ledger_post_backoffice` also `reference.ticket`, an `approvedBy` other than `createdBy`, and in any asset that is not PLAY two administrators' `APPROVE` review actions (reason `ADJUSTMENT:<key>`, metadata `asset` and `amountMinor`) from the last 24 hours. |
+| `CHARGEBACK_RECOVERY` | `DEPOSIT_CLEARING(provider) -m`, `USER_AVAILABLE(user) +u`, `CHARGEBACK_LOSSES +(m-u)` | A won dispute: the exact inverse of a `DEPOSIT_REVERSAL` of that deposit (at most its amount and user portion); either user or house leg may be absent when zero. |
+| `WITHDRAWAL_RETURN` | `WITHDRAWAL_CLEARING(provider) -m`, `USER_AVAILABLE(user) +m` | A settled payout the rail sent back; at most the settled amount minus the fee. |
+
+Each type can be posted through one entry point only (section 10).
+
+**Payment binding.** A deferred constraint trigger
+(`LedgerTransaction_payment_binding`) refuses, at commit, any
+`DEPOSIT_CREDIT`, `DEPOSIT_REVERSAL`, `CHARGEBACK_RECOVERY`,
+`WITHDRAWAL_HOLD`, `WITHDRAWAL_RELEASE`, `WITHDRAWAL_SETTLE` or
+`WITHDRAWAL_RETURN` that is not matched by exactly one `Deposit`,
+`DepositReversal` or `Withdrawal` row of the same user, provider and asset
+with equal amounts (`LEDGER_UNBOUND_PAYMENT`). The `*TxId` columns are unique,
+so a deposit is credited once even if a second key were used, and a
+withdrawal can never carry both a release and a settlement. The payments
+transaction (`moneyTx`) ends with `SET CONSTRAINTS ALL IMMEDIATE`, so the
+check fails at a known point; that setting lasts for the rest of the
+transaction, which is why it is the last statement.
 
 A reversal of any other posting is a new transaction with the opposite
 entries (never an edit): journal rows are append-only (section 9).
@@ -155,8 +189,13 @@ Business invariants checked by reconciliation (integration step):
 Every posting carries a caller-supplied, deterministic idempotency key derived
 from the business event, never random per attempt. Examples:
 `play-grant:registration:<userId>`, `buy-in:<tableId>:<commandId>`,
-`cash-out:<tableId>:<userId>:<leaveCommandId>`, `rake:<handUuid>`,
-`deposit:<provider>:<providerPaymentId>`, `withdrawal-hold:<withdrawalId>`.
+`cash-out:<tableId>:<userId>:<leaveCommandId>`, `rake:<handUuid>`. The payment
+keys are built only by `ledgerKeys` in `apps/edge/src/money/keys.ts`:
+`deposit-credit:<depositId>`, `deposit-reversal:<provider>:<kind>:<id>`,
+`chargeback-recovery:<provider>:<id>`, `provider-fee:deposit:<depositId>`,
+`provider-fee:statement:<provider>:<line>`, `withdrawal-hold|release|settle|return:<withdrawalId>`,
+`adjustment:<ticket>`; a provider id or ticket that is long or unsafe becomes
+`h` + 47 hex digits of its SHA-256.
 Format: `^[A-Za-z0-9][A-Za-z0-9:._/@-]{0,199}$`.
 
 `ledger_post` hashes a canonical payload: SHA-256 over the transaction type,
@@ -245,14 +284,41 @@ Runtime credential (`poker_server`, used by the game server):
   or cross-asset posting, overdraw a non-negative account, post to a disabled
   asset, exceed the per-entry cap, rewrite or delete history, or create an
   account with a forged owner/type/negative flag.
-- It *can* post any well-shaped transaction for an enabled asset: e.g. move
-  chips between a user and a table escrow, or mint PLAY chips. PLAY has no
-  monetary value, so this is acceptable for the play-money phase. **Before a
-  real asset is enabled**, `DEPOSIT_CREDIT`, `ADJUSTMENT` and the
-  withdrawal-settlement types must move to separate database roles used only
-  by the payment worker and the staff back office (each with its own
-  credential), leaving `poker_server` with `BUY_IN`, `CASH_OUT`, `RAKE`,
-  `WITHDRAWAL_HOLD` and `PLAY_GRANT`.
+- It *can* post any well-shaped transaction of its own types for an enabled
+  asset: move chips between a user and a table escrow, or mint PLAY chips.
+  PLAY has no monetary value, so this is acceptable for the play-money phase.
+- **Role split (implemented, `20261019120000_payments_wallet`).** Each
+  database role has its own entry point, a thin `SECURITY DEFINER` wrapper
+  over `ledger_post_core(p_allowed text[], ...)` that nobody may execute
+  directly. A type outside the wrapper's list is refused before any lookup
+  (`LEDGER_TYPE_FORBIDDEN`, so a forbidden caller cannot probe keys), and a
+  role calling another role's wrapper gets `42501 permission denied`:
+
+  | Role (login) | Entry point | Types |
+  |---|---|---|
+  | `poker_server` (Supabase: itself; local: `poker_app`) | `ledger_post` (name, signature and ACL unchanged) | `PLAY_GRANT`, `BUY_IN`, `CASH_OUT`, `RAKE`, in `PLAY` assets only |
+  | `poker_payments` (`poker_payments_app`, the payments Worker's own Hyperdrive) | `ledger_post_payments` | `DEPOSIT_CREDIT`, `DEPOSIT_REVERSAL`, `CHARGEBACK_RECOVERY`, `WITHDRAWAL_HOLD`, `WITHDRAWAL_RELEASE`, `WITHDRAWAL_SETTLE`, `WITHDRAWAL_RETURN`, `PROVIDER_FEE` |
+  | `poker_backoffice` (`poker_backoffice_app`, the operator's machine only) | `ledger_post_backoffice` | `ADJUSTMENT`, with `reference.ticket` and `approvedBy` ≠ `createdBy`; for money also two administrators' recorded approvals |
+
+  The entry point also decides which asset kinds move: `PLAY` for `ledger_post`,
+  `FIAT` and `TEST` for `ledger_post_payments`, any for the back office. The
+  game API's login therefore cannot touch `TEST_EUR` or `EUR`, even once `EUR`
+  is enabled (real-money tables, Phase 2, lift this deliberately). A transaction
+  that posts several times acquires shared accounts across postings in posting
+  order, not id order: a flow on a player's money takes `lockCompliance` first,
+  which serialises that player, and retries `40P01` (`moneyTx`). A back-office
+  adjustment tool must do the same.
+
+  `WITHDRAWAL_HOLD` and `WITHDRAWAL_RELEASE` left the runtime too: a runtime
+  able to release a hold that payments already paid out could pay a player
+  twice. All three roles may call `ledger_ensure_account`. No login may
+  belong to more than one of the three groups (the migration checks it), and
+  the logins have no password until the operator sets one
+  (`apps/server/prisma/RUNTIME_ROLE.md`). The payments role writes the payment
+  tables only through narrow column grants and guard triggers (state
+  machines, write-once identity, four-eyes approvals, step-up grants,
+  `User.securityHoldUntil`); `apps/server/test/db/payments-schema.test.mjs`
+  and `privileges.test.mjs` assert all of it.
 - It cannot change `User.role` or `User.kind` (trigger
   `User_guard_privileged_columns`, `USER_PRIVILEGE_CHANGE_FORBIDDEN`), so it
   cannot promote an account to ADMIN or turn a human into a bot. It still
@@ -296,6 +362,9 @@ and production administrator access must itself be audited.
 | LG017 | `LEDGER_ZERO_AMOUNT` | INVARIANT |
 | LG018 | `LEDGER_BAD_SHAPE` | INVARIANT |
 | LG019 | `LEDGER_UNKNOWN_OWNER` | INVARIANT |
+| LG022 | `LEDGER_TYPE_FORBIDDEN` (type not allowed through this entry point; a back-office adjustment without ticket or second approver) | FORBIDDEN |
+| LG023 | `LEDGER_UNBOUND_PAYMENT` (a payment posting without exactly its payment row, at commit or `SET CONSTRAINTS ALL IMMEDIATE`) | UNBOUND |
+| 42501 | (Postgres permission denied: this role may not execute that entry point) | FORBIDDEN, `dbCode` `PERMISSION_DENIED` |
 | 40001 | `LEDGER_RETRY` | RETRY (retry the whole transaction) |
 | 40001 | (Postgres serialization failure) | RETRY, `dbCode` `SERIALIZATION_FAILURE` |
 | 40P01 | (Postgres deadlock detected) | RETRY, `dbCode` `DEADLOCK_DETECTED` |
@@ -304,6 +373,31 @@ and production administrator access must itself be audited.
 
 `LedgerError.dbCode` keeps the precise database code for logs and tests.
 `toLedgerError` decides by SQLSTATE whenever the driver reports one
-(node-postgres `code`, Prisma P2010 `meta.code`); only without a SQLSTATE does
-it fall back to a known `LEDGER_*` message prefix. Any other error (connection
-loss, timeouts, unrelated SQLSTATEs) is not a refusal and propagates unchanged.
+(`sqlstateOf`: node-postgres `code`; Prisma's library engine `meta.code`;
+Prisma with `@prisma/adapter-pg`, as on the Workers,
+`meta.driverAdapterError.cause.originalCode` for a raw query or a mapped
+constraint error, and `cause.originalCode` when a model query is refused by a
+trigger); only without a SQLSTATE does it fall back to a known `LEDGER_*`
+message prefix. Any other error (connection loss, timeouts, unrelated
+SQLSTATEs) is not a refusal and propagates unchanged.
+
+The payment guards raise their own codes; `apps/edge/src/money/tx.ts`
+(`moneyTx`) maps them, and the ledger codes, to the wallet's answers:
+
+| SQLSTATE | Message prefix | `moneyTx` answer |
+|---|---|---|
+| PM001 | `PAYMENT_IMMUTABLE` (delete or rewrite of an append-only payment row) | 500 (invariant) |
+| PM002 | `PAYMENT_IMMUTABLE_FIELD` (identity, amounts, ledger links are write-once) | 500 (invariant) |
+| PM003 | `PAYMENT_BAD_TRANSITION` (a status change outside the state machine) | 500 (invariant) |
+| PM004 | `PAYMENT_APPROVAL_REQUIRED` (four-eyes: self-approval, a second approval by the same admin, a non-admin) | 500 (invariant; the admin route checks first) |
+| PM005 | `PAYMENT_DUPLICATE_INSTRUMENT` | 409 `DESTINATION_EXISTS` |
+| PM006 | `PAYMENT_MISMATCH` (wrong user, provider, asset or sandbox/real mix) | 500 (invariant) |
+| PM007 | `RG_RULE` (deposit-limit timing, self-exclusion reopening) | 422 `RG_RULE` |
+| PM008 | `PAYMENT_SECURITY_HOLD` (`User.securityHoldUntil` has not passed) | 403 `SECURITY_HOLD` |
+| PM009 | `PAYMENT_STEP_UP_REQUIRED` (no consumed grant of that purpose, bind and session) | 403 `STEP_UP_REQUIRED` |
+| PM010 | `PAYMENT_INSTRUMENT_UNAVAILABLE` (destination revoked, blocked, not for payouts or cooling off) | 409 `DESTINATION_UNAVAILABLE` |
+| LG011 | `LEDGER_INSUFFICIENT_FUNDS` | 422 `INSUFFICIENT_FUNDS` (or a retry when the caller asks, e.g. a reversal recomputing its user portion) |
+| LG009 | `LEDGER_ASSET_DISABLED` | 503 `PAYMENTS_PAUSED` (the emergency stop) |
+| LG012, LG022, LG023, other LG | | 500 (invariant, `alert: PAYMENTS_INVARIANT`, never retried) |
+| 40001, 40P01, P2034, 23505 | | retried (backoff `25·2^n` + jitter, 4 tries) |
+| 55P03, 57014 | lock or statement timeout | retried once, then 503 `PAYMENTS_UNAVAILABLE` |

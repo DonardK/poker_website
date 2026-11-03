@@ -23,6 +23,18 @@ export function pathname(c: Ctx): string {
   return new URL(c.req.url).pathname;
 }
 
+/**
+ * The one form of a path every /api decision compares (rate limits, the access
+ * log, the origin and probe checks): lower case, no doubled and no trailing
+ * slash. Hono itself matches exactly, so a variant reaches no handler; it
+ * still counts as the route it names. A path with a percent escape never gets
+ * this far (outer in app.ts refuses it), so this is also the path Hono routed.
+ */
+export function apiPath(c: Ctx): string {
+  const path = pathname(c).toLowerCase().replace(/\/{2,}/g, "/");
+  return path.length > 1 && path.endsWith("/") ? path.slice(0, -1) : path;
+}
+
 /** Address, user agent and Cloudflare country of this request, for sessions, devices and security events. */
 export function requestFacts(c: Ctx): { ip: string | null; userAgent: string | null; country: string | null } {
   const country = (c.req.raw as Request & { cf?: { country?: unknown } }).cf?.country;

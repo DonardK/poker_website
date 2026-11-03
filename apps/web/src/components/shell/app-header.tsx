@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { AccountMenu } from "@/components/shell/account-menu";
 import { BalancePill } from "@/components/shell/balance-pill";
 
-const NAV = [{ href: "/", label: "Lobby" }] as const;
+const NAV = [{ href: "/", label: "Lobby" }, { href: "/wallet", label: "Wallet" }] as const;
 
 /** The signed-in header: brand (a link, not a heading), the main nav on wide screens, balance and account menu. */
 export function AppHeader() {
@@ -19,7 +19,7 @@ export function AppHeader() {
             <ul className="flex gap-4 text-sm">
               {NAV.map((item) => (
                 <li key={item.href}>
-                  <Link href={item.href} aria-current={pathname === item.href ? "page" : undefined}
+                  <Link href={item.href} aria-current={pathname === item.href || (item.href !== "/" && pathname.startsWith(`${item.href}/`)) ? "page" : undefined}
                     className="text-emerald-50 underline-offset-4 hover:underline aria-[current=page]:font-semibold aria-[current=page]:text-amber-100">
                     {item.label}
                   </Link>

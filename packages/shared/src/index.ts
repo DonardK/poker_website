@@ -6,3 +6,4 @@ export * from "./account.js";
 export * from "./audit.js";
 export * from "./fairness.js";
 export * from "./protocol.js";
+export * from "./wallet.js";

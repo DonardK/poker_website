@@ -3,6 +3,7 @@
  * (/api/auth/reauth/*), requireMoneyAuth, and the single-use, action-bound
  * StepUpGrant for money (/api/auth/step-up and /api/auth/step-up/email-code).
  */
+import { adminPaymentsAction, stepUpBind } from "@poker/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { requireMoneyAuth } from "../src/auth/step-up";
 import { authed, authRoute } from "../src/http/guard";
@@ -274,14 +275,38 @@ describe("money step-up grants", () => {
     expect(h.db.rows("stepUpGrant").at(-1)).toMatchObject({ method: "PASSKEY", purpose: "withdrawal", bindHash: BIND });
     expect((await grant(bound)).body.code).toBe("CHALLENGE_INVALID");
 
-    // Admin payment decisions take a passkey only, and are not held by a security hold.
+    // Admin payment decisions take a passkey only, and wait out a security hold like every money grant:
+    // a passkey just enrolled on a taken-over admin account signs nothing.
     h.db.user(kai.userId)!.securityHoldUntil = new Date(Date.now() + 3_600_000);
+    const grants = h.db.rows("stepUpGrant").length;
+    const heldAdmin = await options({ purpose: "admin_payments", bind: BIND });
+    expect((await grant(heldAdmin, "admin_payments")).body.code).toBe("SECURITY_HOLD");
+    const held = await options({ purpose: "payout_destination", bind: BIND });
+    expect((await grant(held, "payout_destination")).body.code).toBe("SECURITY_HOLD");
+    expect(h.db.rows("stepUpGrant")).toHaveLength(grants);
+    // What can only stop money stays possible: a switch off, a freeze. The bind must really be that action.
+    const safely = async (action: { subject: string; decision: string }, bind: string) => {
+      const challenge = await options({ purpose: "admin_payments", bind });
+      return h.request("/auth/step-up", {
+        token: kai.accessToken,
+        body: { purpose: "admin_payments", bind, safetyAction: action, proof: { kind: "passkey", challengeToken: challenge.challengeToken, credential: await auth.get(challenge.options) } },
+      });
+    };
+    const off = { subject: "switch:PAYOUT_DISPATCH", decision: "OFF" };
+    const freeze = { subject: "user:player_1", decision: "RESTRICT:FROZEN" };
+    expect((await safely(off, await stepUpBind(adminPaymentsAction(off)))).status).toBe(200);
+    expect((await safely(freeze, await stepUpBind(adminPaymentsAction(freeze)))).status).toBe(200);
+    expect(h.db.rows("stepUpGrant").at(-1)).toMatchObject({ method: "PASSKEY", purpose: "admin_payments", bindHash: await stepUpBind(adminPaymentsAction(freeze)) });
+    // The claim cannot be pinned to another bind, and nothing that adds risk passes as one.
+    expect((await safely(off, await stepUpBind(adminPaymentsAction({ subject: "switch:PAYOUT_DISPATCH", decision: "ON" })))).body.code).toBe("SECURITY_HOLD");
+    expect((await safely({ subject: "switch:PAYOUT_DISPATCH", decision: "ON" }, await stepUpBind(adminPaymentsAction({ subject: "switch:PAYOUT_DISPATCH", decision: "ON" })))).body.code).toBe("SECURITY_HOLD");
+    expect((await safely({ subject: "withdrawal:x", decision: "APPROVE" }, await stepUpBind(adminPaymentsAction({ subject: "withdrawal:x", decision: "APPROVE" })))).body.code).toBe("SECURITY_HOLD");
+    expect((await safely({ subject: "user:player_1", decision: "RESTRICT:NONE" }, await stepUpBind(adminPaymentsAction({ subject: "user:player_1", decision: "RESTRICT:NONE" })))).body.code).toBe("SECURITY_HOLD");
+    h.db.user(kai.userId)!.securityHoldUntil = null;
     const admin = await options({ purpose: "admin_payments", bind: BIND });
     const adminGrant = await grant(admin, "admin_payments");
     expect(adminGrant.status).toBe(200);
     expect(h.db.rows("stepUpGrant").at(-1)).toMatchObject({ method: "PASSKEY", purpose: "admin_payments" });
-    const held = await options({ purpose: "payout_destination", bind: BIND });
-    expect((await grant(held, "payout_destination")).body.code).toBe("SECURITY_HOLD");
   }, SLOW);
 
   it("a factor enrolled with only the password holds withdrawals, so it cannot replace the emailed code for money at once", async () => {

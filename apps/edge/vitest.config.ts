@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { cloudflareTest } from "@cloudflare/vitest-plugin";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 import { bundlePg } from "./scripts/bundle-pg.mjs";
 
 /** Local secrets and the Docker Hyperdrive URL. The vitest pool does not load .dev.vars itself. */
@@ -34,11 +34,30 @@ function loopbackHyperdrive(value: string | undefined): string | undefined {
 
 const hyperdrive = loopbackHyperdrive(process.env.CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE)
   ?? loopbackHyperdrive(vars.CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE);
+/**
+ * The payments Worker's login (poker_payments_app), exported by
+ * apps/server/test/support/pg.mjs. A test-only binding: wrangler.jsonc
+ * (poker-api) never has it, and tests that need it skip without it.
+ */
+const paymentsHyperdrive = loopbackHyperdrive(process.env.CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE_PAYMENTS)
+  ?? loopbackHyperdrive(vars.CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE_PAYMENTS);
+/**
+ * The test database's superuser (POKER_TEST_ADMIN_DATABASE_URL from pg.mjs), for
+ * fixtures no runtime login may write (an ADMIN user). Test-only, loopback only.
+ */
+const adminHyperdrive = loopbackHyperdrive(process.env.POKER_TEST_ADMIN_DATABASE_URL);
+const hyperdrives: Record<string, string> = {
+  ...(hyperdrive ? { HYPERDRIVE: hyperdrive } : {}),
+  ...(paymentsHyperdrive ? { HYPERDRIVE_PAYMENTS: paymentsHyperdrive } : {}),
+  ...(adminHyperdrive ? { HYPERDRIVE_TEST_ADMIN: adminHyperdrive } : {}),
+};
 
 export default defineConfig(async () => {
   const pgBundle = await bundlePg();
   return {
     resolve: { alias: { pg: pgBundle } },
+    // test/payments-worker runs in its own project (vitest.payments.config.ts: the poker-payments Worker).
+    test: { exclude: [...configDefaults.exclude, "test/payments-worker/**"] },
     plugins: [
       cloudflareTest({
         wrangler: { configPath: "./wrangler.jsonc" },
@@ -59,10 +78,12 @@ export default defineConfig(async () => {
             AUTH_ENCRYPTION_ACTIVE_KEY_ID: "a1",
             // Tests never call Have I Been Pwned.
             PASSWORD_BREACH_CHECK: "false",
+            // "1" (CI): database suites fail instead of skipping when the database is absent.
+            POKER_REQUIRE_DB_TESTS: process.env.POKER_REQUIRE_DB_TESTS ?? "",
           },
           // Top-level Miniflare option. Nesting this under bindings is ignored,
           // and the Worker then uses wrangler.jsonc's port-5432 placeholder.
-          ...(hyperdrive ? { hyperdrives: { HYPERDRIVE: hyperdrive } } : {}),
+          ...(Object.keys(hyperdrives).length > 0 ? { hyperdrives } : {}),
         },
       }),
     ],

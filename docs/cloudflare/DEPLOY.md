@@ -61,6 +61,50 @@ The assert script prints only the host and port. It refuses loopback, port 6543,
 
 That npm script is `prisma migrate deploy`. It applies pending SQL files and does not seed. On Supabase, `poker_server` stays the runtime login. The migration does not create `poker_app` when `poker_server` can already log in.
 
+### Deploying the wallet migration
+
+`20261019110000_ledger_payment_types` and `20261019120000_payments_wallet` are additive: real money stays off, and the running `poker-api` keeps working on the new schema, so a failed step after the migration leaves the old Worker serving. The production job applies them on the first push that contains them. Rehearsed on PostgreSQL 17.6 (production) with a Supabase-shaped cluster and production-like rows, last on 2026-11-03 with the final files: existing rows untouched (only `Asset` gains `TEST_EUR`), `poker_server` keeps every privilege it had, no deploy notices, no drift, an injected failure rolls back whole, `P3009` recovery works, a second deploy applies nothing, and real money is off afterwards.
+
+**When:** a quiet time. The file is one transaction. It takes short `ACCESS EXCLUSIVE` locks on `User`, `Session` and the ledger tables, and logins queue behind them while it waits. `lock_timeout` (10 s, set at the top of the file) stops the wait: the migration then fails and rolls back, and the API carries on.
+
+**Read-only pre-checks**, as the Supabase admin in the SQL editor, before that push:
+
+```sql
+-- 1. Expect no rows. A row is fine only if it is NOSUPERUSER NOBYPASSRLS NOCREATEROLE NOCREATEDB NOREPLICATION,
+--    with poker_payments and poker_backoffice NOLOGIN, and the two *_app logins LOGIN INHERIT.
+SELECT rolname, rolcanlogin, rolinherit, rolsuper, rolbypassrls, rolcreaterole, rolcreatedb, rolreplication
+  FROM pg_roles WHERE rolname IN ('poker_payments', 'poker_backoffice', 'poker_payments_app', 'poker_backoffice_app');
+-- 2. Expect NULL: this migration creates the table.
+SELECT to_regclass('public."EmailOutbox"');
+-- 3. Expect the role in SUPABASE_DIRECT_URL (postgres): the migration must run as the owner of ledger_post.
+SELECT pg_get_userbyid(proowner) FROM pg_proc WHERE oid = 'public.ledger_post(text, text, jsonb, jsonb, text)'::regprocedure;
+-- 4. Expect one row, f, f: poker_server exists, not a superuser, no BYPASSRLS.
+SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = 'poker_server';
+-- 5. Expect no rows: no provider ledger account may mix sandbox and real money.
+SELECT a."id", a."providerKey", a."assetCode" FROM public."LedgerAccount" a JOIN public."Asset" s ON s."code" = a."assetCode"
+ WHERE a."providerKey" IS NOT NULL AND (s."kind"::text = 'TEST') IS DISTINCT FROM (a."providerKey" ~ '^sandbox([-_.:]|$)');
+-- 6. Expect no rows that matter: long transactions a lock would queue behind.
+SELECT pid, state, now() - xact_start AS age, left(query, 60) FROM pg_stat_activity
+ WHERE xact_start < now() - interval '1 minute' AND datname = current_database();
+```
+
+**If the job fails at "Apply Supabase migrations":**
+
+1. Nothing of the wallet file remains: it rolls back whole (tables, roles, policies, the `TEST_EUR` row). The three enum labels of `20261019110000` stay; they are harmless. `poker-api` and `poker-web` were not deployed, so the previous versions keep running.
+2. Read the error in the job log. `P3018` names the failed migration and the database's message. Most likely causes: a pre-check above, or `55P03` (`lock_timeout`, something held a lock for 10 s).
+3. **Every later deploy fails with `P3009`** until the failed row in `_prisma_migrations` is cleared. Fix the cause, then with the shell set up as above:
+
+   ```powershell
+   node .github/workflows/support/assert-supabase-direct-url.mjs
+   cd apps\server
+   npx prisma migrate resolve --rolled-back 20261019120000_payments_wallet
+   cd ..\..
+   ```
+
+4. Re-run the production job. It applies the file again from the start.
+
+Never run `prisma migrate reset` or `prisma db push` against Supabase, and never edit a migration that has been applied: `migrate deploy` compares checksums.
+
 ## 4. Runtime password
 
 The demo Hyperdrive user is the existing `poker_server` login. Do not create `poker_app` on this project and do not put a new password in a migration. If that login's password is already the one in the ignored root `.env`, reuse it only inside the Hyperdrive create command below. Local docker still uses `poker_app`; that password is not the Supabase password.

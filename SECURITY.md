@@ -76,6 +76,23 @@ of scope; a way around the mitigation it names is in scope):
   need the emailed code; it holds withdrawals for `SECURITY_HOLD_HOURS`
   (default 24) and mails a "This wasn't me" notice instead. Setting the hold
   to 0 removes that protection.
+- Real money is off in production (no `PAYMENTS` binding on `poker-api`,
+  `PAYMENTS_MODE` off, `EUR` disabled). The wallet code below ships but cannot
+  move money until the go-live steps in `docs/money/PAYMENTS_RUNBOOK.md`.
+- The "This wasn't me" link in a payments email (a payout destination added, a
+  withdrawal requested) works once, for 7 days, for whoever reads the mailbox
+  it was sent to; using it signs the account out and holds withdrawals. A link
+  sent at or after the incident of a later account lockdown is void. An owner
+  who recovers another way (a password reset without the lockdown link) leaves
+  such links usable once each until they expire. They can only protect the
+  account, never move money.
+- A self-exclusion covers the account, not the person: someone excluded could
+  open a second account and pass identity checks again. This is a go-live
+  blocker, open until the identity provider gives a stable identifier.
+- The card closed loop (a card receives at most what it deposited) tells cards
+  apart by token, and by fingerprint where the card provider gives one; until
+  the fingerprint is confirmed with the provider, one card under two tokens
+  counts as two cards.
 
 ## Safe harbour
 
