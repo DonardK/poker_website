@@ -1,0 +1,52 @@
+# Verified false positives in gitleaks findings, one fingerprint (commit:file:rule:line) per line.
+# Each was checked by hand on 2026-11-03: test fixtures (fake keys, made-up idempotency ids, the RFC 6238
+# TOTP and Hawk README test vectors), .env.example placeholders, file hashes in review/ tree listings,
+# the RFC 6455 sample WebSocket key, and per-build Next.js keys from a local test build that was
+# removed in a later commit. None is a live credential. A new finding is never covered by these lines.
+1003eadd6eb88df0f612f9b5360ca7ec704626e5:apps/edge/test/config.test.ts:generic-api-key:152
+1003eadd6eb88df0f612f9b5360ca7ec704626e5:apps/edge/test/config.test.ts:generic-api-key:186
+1003eadd6eb88df0f612f9b5360ca7ec704626e5:apps/edge/test/config.test.ts:generic-api-key:25
+1003eadd6eb88df0f612f9b5360ca7ec704626e5:apps/edge/test/config.test.ts:generic-api-key:252
+1003eadd6eb88df0f612f9b5360ca7ec704626e5:apps/edge/test/config.test.ts:generic-api-key:26
+92fb6dde21774f863d684f3e48dc5772db614b17:.env.example:generic-api-key:16
+95cb3ccb1a241cc362674bc7008c8ae6020fdce6:apps/edge/test/payments/providers/bvnk.unit.test.ts:generic-api-key:68
+95cb3ccb1a241cc362674bc7008c8ae6020fdce6:apps/edge/test/payments/providers/nuvei.unit.test.ts:generic-api-key:318
+95cb3ccb1a241cc362674bc7008c8ae6020fdce6:apps/edge/test/payments/providers/nuvei.unit.test.ts:generic-api-key:344
+95cb3ccb1a241cc362674bc7008c8ae6020fdce6:apps/edge/test/payments/providers/nuvei.unit.test.ts:generic-api-key:41
+95cb3ccb1a241cc362674bc7008c8ae6020fdce6:apps/edge/test/payments/providers/wire.unit.test.ts:generic-api-key:98
+cd651922c0d0050afbd074084195785b9cce01bf:apps/server/test/platform-config.test.mjs:generic-api-key:140
+cd651922c0d0050afbd074084195785b9cce01bf:apps/server/test/platform-crypto.test.mjs:generic-api-key:117
+cd651922c0d0050afbd074084195785b9cce01bf:apps/server/test/platform-crypto.test.mjs:generic-api-key:96
+d6e1151311f8e9d2c47255e9b335191f9c5adfba:deploy/README.md:generic-api-key:166
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:chatgpt-6-codex.md:generic-api-key:174
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/claude/recheck/auth-security/config-probes.mjs:generic-api-key:59
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/gpt-6.1-sol/baseline-tree.json:generic-api-key:2713
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/gpt-6.1-sol/baseline-tree.json:generic-api-key:2739
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/gpt-6.1-sol/baseline-tree.json:generic-api-key:2749
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/gpt-6.1-sol/baseline-tree.json:generic-api-key:2801
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/gpt-6.1-sol/baseline-tree.json:generic-api-key:2813
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/gpt-6.1-sol/final-tree.json:generic-api-key:313
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/gpt-6.1-sol/final-tree.json:generic-api-key:339
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/gpt-6.1-sol/final-tree.json:generic-api-key:349
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/gpt-6.1-sol/final-tree.json:generic-api-key:401
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/gpt-6.1-sol/final-tree.json:generic-api-key:413
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/gpt-6.1-sol/final-tree.json:generic-api-key:466
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/gpt-6.1-sol/final-tree.json:generic-api-key:487
+e6b07c40a655dbe8d832e74be0ba8076ad6c7d91:review/gpt-6.1-sol/final-tree.json:generic-api-key:488
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/edge/test/config.test.ts:generic-api-key:11
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/edge/test/config.test.ts:generic-api-key:12
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/edge/test/config.test.ts:generic-api-key:122
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/edge/test/config.test.ts:generic-api-key:124
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/edge/test/config.test.ts:generic-api-key:94
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/edge/test/config.test.ts:generic-api-key:96
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/edge/test/mail.test.ts:generic-api-key:134
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/edge/test/mail.test.ts:generic-api-key:14
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/edge/test/totp.test.ts:generic-api-key:11
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/web/.next-live-test/cache/.rscinfo:generic-api-key:1
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/web/.next-live-test/prerender-manifest.json:generic-api-key:8
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/web/.next-live-test/prerender-manifest.json:generic-api-key:9
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/web/.next-live-test/server/middleware-manifest.json:generic-api-key:21
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/web/.next-live-test/server/middleware-manifest.json:generic-api-key:23
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/web/.next-live-test/server/middleware-manifest.json:generic-api-key:24
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/web/.next-live-test/server/server-reference-manifest.json:generic-api-key:4
+f6a9eeb64b95189d2806ebb3e442c8f71df12c61:apps/web/test/support/auth-fixture.mjs:generic-api-key:15

@@ -6,6 +6,8 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   timeout: 30_000,
+  // On CI, "github" turns each failure into an annotation on the run, readable without downloading the job log.
+  reporter: process.env.CI ? [["github"], ["list"]] : "list",
   use: { baseURL: "http://127.0.0.1:3107", trace: "retain-on-failure", channel: process.env.PLAYWRIGHT_CHANNEL || "chrome" },
   projects: [
     { name: "desktop", use: { ...devices["Desktop Chrome"] } },
